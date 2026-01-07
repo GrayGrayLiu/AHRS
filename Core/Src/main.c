@@ -25,7 +25,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "scheduler.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -88,7 +88,7 @@ int main(void)
   SystemClock_Config();
 
   /* USER CODE BEGIN SysInit */
-
+  Scheduler_Setup();
   /* USER CODE END SysInit */
 
   /* Initialize all configured peripherals */
@@ -104,6 +104,7 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+    Scheduler_Run();
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
