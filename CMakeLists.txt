@@ -1,7 +1,7 @@
 #THIS FILE IS AUTO GENERATED FROM THE TEMPLATE! DO NOT CHANGE!
 set(CMAKE_SYSTEM_NAME Generic)
 set(CMAKE_SYSTEM_VERSION 1)
-cmake_minimum_required(VERSION 4.1)
+cmake_minimum_required(VERSION 4.2)
 
 # specify cross-compilers and tools
 set(CMAKE_C_COMPILER arm-none-eabi-gcc)
@@ -51,21 +51,25 @@ endif ()
 
 include_directories(Core/Inc Drivers/STM32H7xx_HAL_Driver/Inc Drivers/STM32H7xx_HAL_Driver/Inc/Legacy Drivers/CMSIS/Device/ST/STM32H7xx/Include Drivers/CMSIS/Include
                     Lib/EXIT
+                    Lib/ICM42688P
                     Lib/Printf
                     Lib/RGB
                     Lib/Scheduler
                     Lib/Timer
-                    Lib/Uart)
+                    Lib/Uart
+                    ThirdPartyLib/eigen/Eigen)
 
 add_definitions(-DDEBUG -DUSE_PWR_LDO_SUPPLY -DUSE_HAL_DRIVER -DSTM32H723xx)
 
 file(GLOB_RECURSE SOURCES "Core/*.*" "Drivers/*.*"
     Lib/EXIT/*.*
+    Lib/ICM42688P/*.*
     Lib/Printf/*.*
     Lib/RGB/*.*
     Lib/Scheduler/*.*
     Lib/Timer/*.*
-    Lib/Uart/*.*)
+    Lib/Uart/*.*
+    ThirdPartyLib/eigen/Eigen/*.*)
 
 set(LINKER_SCRIPT ${CMAKE_SOURCE_DIR}/STM32H723VGTX_FLASH.ld)
 

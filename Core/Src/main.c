@@ -26,6 +26,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "scheduler.h"
+#include "ICM42688_API.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -97,7 +98,9 @@ int main(void)
   MX_USART1_UART_Init();
   MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
-
+  MotorHandle motor = Motor_Create(1);
+  Motor_SetSpeed(motor, 1500.0f);
+  float rpm = Motor_GetSpeed(motor) ;
   /* USER CODE END 2 */
 
   /* Infinite loop */
