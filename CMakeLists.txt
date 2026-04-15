@@ -50,26 +50,30 @@ else ()
 endif ()
 
 include_directories(Core/Inc Drivers/STM32H7xx_HAL_Driver/Inc Drivers/STM32H7xx_HAL_Driver/Inc/Legacy Drivers/CMSIS/Device/ST/STM32H7xx/Include Drivers/CMSIS/Include
+                    Lib/Aided_INS
                     Lib/EXIT
                     Lib/ICM42688P
+                    Lib/Math
                     Lib/Printf
                     Lib/RGB
                     Lib/Scheduler
                     Lib/Timer
                     Lib/Uart
-                    ThirdPartyLib/eigen/Eigen)
+                    ThirdPartyLib/eigen)
 
 add_definitions(-DDEBUG -DUSE_PWR_LDO_SUPPLY -DUSE_HAL_DRIVER -DSTM32H723xx)
 
 file(GLOB_RECURSE SOURCES "Core/*.*" "Drivers/*.*"
+    Lib/Aided_INS/*.*
     Lib/EXIT/*.*
     Lib/ICM42688P/*.*
+    Lib/Math/*.*
     Lib/Printf/*.*
     Lib/RGB/*.*
     Lib/Scheduler/*.*
     Lib/Timer/*.*
     Lib/Uart/*.*
-    ThirdPartyLib/eigen/Eigen/*.*)
+    ThirdPartyLib/eigen/*.*)
 
 set(LINKER_SCRIPT ${CMAKE_SOURCE_DIR}/STM32H723VGTX_FLASH.ld)
 

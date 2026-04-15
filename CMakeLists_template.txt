@@ -49,26 +49,30 @@ else ()
 endif ()
 
 include_directories(${includes}
+                    Lib/Aided_INS
                     Lib/EXIT
                     Lib/ICM42688P
+                    Lib/Math
                     Lib/Printf
                     Lib/RGB
                     Lib/Scheduler
                     Lib/Timer
                     Lib/Uart
-                    ThirdPartyLib/eigen/Eigen)
+                    ThirdPartyLib/eigen)
 
 add_definitions(${defines})
 
 file(GLOB_RECURSE SOURCES ${sources}
+    Lib/Aided_INS/*.*
     Lib/EXIT/*.*
     Lib/ICM42688P/*.*
+    Lib/Math/*.*
     Lib/Printf/*.*
     Lib/RGB/*.*
     Lib/Scheduler/*.*
     Lib/Timer/*.*
     Lib/Uart/*.*
-    ThirdPartyLib/eigen/Eigen/*.*)
+    ThirdPartyLib/eigen/*.*)
 
 set(LINKER_SCRIPT $${CMAKE_SOURCE_DIR}/${linkerScript})
 
