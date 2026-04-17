@@ -19,7 +19,7 @@
 #ifndef AHRS_ANGLEUTILITIES_HPP
 #define AHRS_ANGLEUTILITIES_HPP
 
-#include <Eigen/Dense>
+// #include <Eigen/Dense>
 
 namespace Angle
 {
@@ -27,30 +27,36 @@ namespace Angle
     constexpr double D2R = PI / 180.0;
     constexpr double R2D = 180.0 / PI;
 
-    template <typename T>
-    constexpr T Deg2Rad(T deg)
+    inline double Rad2Deg(const double rad)
     {
-        return deg * static_cast<T>(D2R);
+        return rad * R2D;
     }
 
-    template <typename T>
-    constexpr T Rad2Deg(T rad)
+    inline double Deg2Rad(const double deg)
     {
-        return rad * static_cast<T>(R2D);
+        return deg * D2R;
     }
 
-    template <typename Derived>
-    auto Deg2Rad(const Eigen::MatrixBase<Derived>& x)
+    // inline float Rad2Deg(const float rad)
+    // {
+    //     return rad * static_cast<float>(R2D);
+    // }
+    //
+    // inline float Deg2Rad(const float deg)
+    // {
+    //     return deg * static_cast<float>(D2R);
+    // }
+
+    template <typename T, int Rows, int Cols>
+    Eigen::Matrix<T, Rows, Cols> Rad2Deg(const Eigen::Matrix<T, Rows, Cols> &array)
     {
-        using Scalar = typename Derived::Scalar;
-        return x * static_cast<Scalar>(D2R);
+        return array * R2D;
     }
 
-    template <typename Derived>
-    auto Rad2Deg(const Eigen::MatrixBase<Derived>& x)
+    template <typename T, int Rows, int Cols>
+    Eigen::Matrix<T, Rows, Cols> Deg2Rad(const Eigen::Matrix<T, Rows, Cols> &array)
     {
-        using Scalar = typename Derived::Scalar;
-        return x * static_cast<Scalar>(R2D);
+        return array * D2R;
     }
 }
 

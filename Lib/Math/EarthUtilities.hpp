@@ -28,7 +28,7 @@
 #include <Eigen/Dense>
 #include <cmath>
 
-namespace earth
+namespace Earth
 {
     using Eigen::Matrix3d;
     using Eigen::Vector2d;
@@ -219,11 +219,11 @@ namespace earth
      * @param blh 纬经高[rad-rad-m]
      * @retval 转换矩阵
      */
-    inline Matrix3d DR_inv(const Vector3d &blh)
+    inline Matrix3d DR_Inv(const Vector3d &blh)
     {
         Matrix3d DR_inv = Matrix3d::Zero();
 
-        Eigen::Vector2d RMN = RM_And_RN(blh[0]);
+        Vector2d RMN = RM_And_RN(blh[0]);
 
         DR_inv(0, 0) = 1.0 / (RMN[0] + blh[2]);
         DR_inv(1, 1) = 1.0 / ((RMN[1] + blh[2]) * cos(blh[0]));
@@ -240,7 +240,7 @@ namespace earth
     {
         Matrix3d DR = Matrix3d::Zero();
 
-        Eigen::Vector2d RMN = RM_And_RN(blh[0]);
+        Vector2d RMN = RM_And_RN(blh[0]);
 
         DR(0, 0) = RMN[0] + blh[2];
         DR(1, 1) = (RMN[1] + blh[2]) * cos(blh[0]);
@@ -267,7 +267,7 @@ namespace earth
      * @param global_blh 某一点的大地坐标纬经高[rad-rad-m]
      * @retval blh 某点在n系下的坐标三维[m]
      */
-    inline Vector3d global2local(const Vector3d& origin_blh, const Vector3d& global_blh)
+    inline Vector3d Global2Local(const Vector3d& origin_blh, const Vector3d& global_blh)
     {
         auto ECEF0 = blh2ECEF(origin_blh);
         auto C_ne     = Cne(origin_blh);
@@ -278,7 +278,7 @@ namespace earth
      * @brief 地球自转角速度投影到e系
      * @retval 转换矩阵
      */
-    inline Vector3d wie_e()
+    inline Vector3d w_ie_e()
     {
         return {0, 0, WIE};
     }
@@ -288,7 +288,7 @@ namespace earth
      * @param lat 纬度[rad]
      * @retval 转换矩阵
      */
-    inline Vector3d wie_n(const double lat)
+    inline Vector3d w_ie_n(const double lat)
     {
         return
     {
@@ -304,27 +304,27 @@ namespace earth
      * @param local_xyz n系下某一点的坐标三维[m]
      * @retval 转换矩阵
      */
-    inline Vector3d wie_n(const Vector3d& origin_blh, const Vector3d& local_xyz)
+    inline Vector3d w_ie_n(const Vector3d& origin_blh, const Vector3d& local_xyz)
     {
         Vector3d global = Local2Global(origin_blh, local_xyz);
 
-        return wie_n(global[0]);
+        return w_ie_n(global[0]);
     }
     
     /**
      * @brief 物体相对于e系转动角速度投影到n系
      * @param rmn 二维向量：某点的子午圈和卯酉圈曲率半径[m]
      * @param blh 三维向量：某点的纬经高[rad-rad-m]
-     * @param vel_xyz 三维向量：n系下的速度向量[m/s]
+     * @param vel_en_n 三维向量：n系相对于e系的速度向量[m/s]
      * @retval 转换矩阵
      */
-    inline Vector3d ven_n(const Vector2d& rmn, const Vector3d& blh, const Vector3d& vel_xyz)
+    inline Vector3d w_en_n(const Vector2d& rmn, const Vector3d& blh, const Vector3d& vel_en_n)
     {
         return
     {
-            vel_xyz[1] / (rmn[1] + blh[2]),
-           -vel_xyz[0] / (rmn[0] + blh[2]),
-           -vel_xyz[1] * std::tan(blh[0]) / (rmn[1] + blh[2])
+            vel_en_n[1] / (rmn[1] + blh[2]),
+           -vel_en_n[0] / (rmn[0] + blh[2]),
+           -vel_en_n[1] * std::tan(blh[0]) / (rmn[1] + blh[2])
        };
     }
 
@@ -332,28 +332,28 @@ namespace earth
      * @brief 物体相对于e系转动角速度投影到n系
      * @param origin_blh n系原点的纬经高[rad-rad-m]
      * @param local_xyz n系下某一点的坐标三维[m]
-     * @param vel_xyz 三维向量：n系下的速度向量[m/s]
+     * @param vel_en_n 三维向量：n系相对于e系的速度向量[m/s]
      * @retval 转换矩阵
      */
-    inline Vector3d ven_n(const Vector3d& origin_blh, const Vector3d& local_xyz, const Vector3d& vel_xyz)
+    inline Vector3d w_en_n(const Vector3d& origin_blh, const Vector3d& local_xyz, const Vector3d& vel_en_n)
     {
-        Vector3d global = Local2Global(origin_blh, local_xyz);
-        const Eigen::Vector2d RMN = RM_And_RN(global[0]);
+        Vector3d global_blh = Local2Global(origin_blh, local_xyz);
+        const Vector2d RMN = RM_And_RN(global_blh[0]);
 
-        return ven_n(RMN, global, vel_xyz);
+        return w_en_n(RMN, global_blh, vel_en_n);
     }
 
     /**
      * @brief 物体相对于e系转动角速度投影到n系
      * @param global_blh 某一点的大地坐标纬经高[rad-rad-m]
-     * @param vel_xyz 三维向量：n系下的速度向量[m/s]
+     * @param vel_en_n 三维向量：n系相对于e系的速度向量[m/s]
      * @retval 转换矩阵
      */
-    inline Vector3d ven_n(const Vector3d& global_blh, const Vector3d& vel_xyz)
+    inline Vector3d w_en_n(const Vector3d& global_blh, const Vector3d& vel_en_n)
     {
-        const Eigen::Vector2d RMN = RM_And_RN(global_blh[0]);
+        const Vector2d RMN = RM_And_RN(global_blh[0]);
 
-        return ven_n(RMN, global_blh, vel_xyz);
+        return w_en_n(RMN, global_blh, vel_en_n);
     }
 }
 

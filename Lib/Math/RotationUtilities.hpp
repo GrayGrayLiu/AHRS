@@ -27,6 +27,8 @@ namespace Rotation
     using Eigen::Matrix3d;
     using Eigen::Quaterniond;
     using Eigen::Vector3d;
+    using Eigen::AngleAxisd;
+    using Eigen::Matrix4d;
 
     constexpr double PI = 3.14159265358979323846;
 
@@ -112,44 +114,47 @@ namespace Rotation
     }
 
     // RPY --> C_b^n, ZYX顺序
-    static Matrix3d euler2matrix(const Vector3d &euler)
+    inline Matrix3d Euler2Matrix(const Vector3d &euler)
     {
         return Matrix3d(Eigen::AngleAxisd(euler[2], Vector3d::UnitZ()) *
                         Eigen::AngleAxisd(euler[1], Vector3d::UnitY()) *
                         Eigen::AngleAxisd(euler[0], Vector3d::UnitX()));
     }
 
-    static Quaterniond euler2quaternion(const Vector3d &euler)
+    inline Quaterniond Euler2Quaternion(const Vector3d &euler)
     {
         return Quaterniond(Eigen::AngleAxisd(euler[2], Vector3d::UnitZ()) *
                            Eigen::AngleAxisd(euler[1], Vector3d::UnitY()) *
                            Eigen::AngleAxisd(euler[0], Vector3d::UnitX()));
     }
 
-    static Matrix3d skewSymmetric(const Vector3d &vector)
+    //反对称矩阵
+    inline Matrix3d SkewSymmetric(const Vector3d &vector)
     {
         Matrix3d mat;
-        mat << 0, -vector(2), vector(1), vector(2), 0, -vector(0), -vector(1), vector(0), 0;
+        mat <<         0,        -vector(2), vector(1),
+               vector(2),         0,        -vector(0),
+              -vector(1),    vector(0),     0;
         return mat;
     }
 
-    static Eigen::Matrix4d quaternionleft(const Quaterniond &q)
+    inline Matrix4d QuaternionLeft(const Quaterniond &q)
     {
-        Eigen::Matrix4d ans;
+        Matrix4d ans;
         ans(0, 0)             = q.w();
         ans.block<1, 3>(0, 1) = -q.vec().transpose();
         ans.block<3, 1>(1, 0) = q.vec();
-        ans.block<3, 3>(1, 1) = q.w() * Eigen::Matrix3d::Identity() + skewSymmetric(q.vec());
+        ans.block<3, 3>(1, 1) = q.w() * Eigen::Matrix3d::Identity() + SkewSymmetric(q.vec());
         return ans;
     }
 
-    static Eigen::Matrix4d quaternionright(const Quaterniond &p)
+    inline Matrix4d QuaternionRight(const Quaterniond &p)
     {
-        Eigen::Matrix4d ans;
+        Matrix4d ans;
         ans(0, 0)             = p.w();
         ans.block<1, 3>(0, 1) = -p.vec().transpose();
         ans.block<3, 1>(1, 0) = p.vec();
-        ans.block<3, 3>(1, 1) = p.w() * Eigen::Matrix3d::Identity() - skewSymmetric(p.vec());
+        ans.block<3, 3>(1, 1) = p.w() * Eigen::Matrix3d::Identity() - SkewSymmetric(p.vec());
         return ans;
     }
 }

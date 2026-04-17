@@ -20,6 +20,7 @@
 
 #include "Aided_INS.hpp"
 #include "Configuration.h"
+#include "AngleUtilities.hpp"
 
 Aided_INS::Aided_INS(const uint8_t id)
 {

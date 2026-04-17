@@ -26,8 +26,8 @@ namespace Aided_INS_Space
 {
     struct Attitude
     {
-        Eigen::Vector3f euler;  //欧拉角
-        Eigen::Matrix3d cbn;    //方向余弦矩阵（b系转到n系）
+        Eigen::Vector3d euler;  //欧拉角
+        Eigen::Matrix3d Cbn;    //方向余弦矩阵（b系转到n系）
         Eigen::Quaterniond qbn; //姿态四元数（b系转到n系）
     };
 
