@@ -21,40 +21,21 @@
 
 #include "Aided_INS_Types.hpp"
 
-using namespace Aided_INS_Space;
+using Aided_INS_Space::PVA;
+using Aided_INS_Space::IMU;
 
-class INS_Mechanization
+namespace INS_Mechanization
 {
-public:
     /**
      * @brief INS机械编排算法, 利用IMU数据进行速度、位置和姿态更新
      *        INS Mechanization, update velocity, position and attitude using imudata
      * @param [in]     PVA_Pre 上一时刻状态
-     *                        the last imustate
+     *                        the previous imu state
      * @param [in,out] PVA_Cur 输出当前时刻状态
-     *                        output the current imustate
-     * @param [in]     IMU_Pre, IMU_Cur imudata
+     *                        output the current imu state
+     * @param [in]     IMU_Pre, IMU_Cur imu data
      * */
-    static void INS_Mech(const PVA &PVA_Pre, PVA &PVA_Cur, const IMU &IMU_Pre, const IMU &IMU_Cur);
-
-private:
-    /**
-     * @breif 位置更新
-     *        position update
-     * */
-    static void PosUpdate(const PVA &PVA_Pre, PVA &PVA_Cur, const IMU &IMU_Pre, const IMU &IMU_Cur);
-
-    /**
-     * @breif 速度更新
-     *        velocity update
-     * */
-    static void VelUpdate(const PVA &PVA_Pre, PVA &PVA_Cur, const IMU &IMU_Pre, const IMU &IMU_Cur);
-
-    /**
-     * @breif 姿态更新
-     *        attitude update
-     * */
-    static void AttUpdate(const PVA &PVA_Pre, PVA &PVA_Cur, const IMU &IMU_Pre, const IMU &IMU_Cur);
-};
+    void INS_Mech(const PVA &PVA_Pre, PVA &PVA_Cur, const IMU &IMU_Pre, const IMU &IMU_Cur);
+}
 
 #endif //AHRS_INS_MECHANIZATION_HPP

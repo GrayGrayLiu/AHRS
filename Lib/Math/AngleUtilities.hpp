@@ -19,7 +19,7 @@
 #ifndef AHRS_ANGLEUTILITIES_HPP
 #define AHRS_ANGLEUTILITIES_HPP
 
-// #include <Eigen/Dense>
+#include <Eigen/Dense>
 
 namespace Angle
 {

@@ -155,7 +155,7 @@ namespace Earth
      * @param height 高度[m]
      * @retval 三维向量：纬经高[rad-rad-m]
      */
-    inline Vector3d blh(const Quaterniond& qne, double height)
+    inline Vector3d blh(const Quaterniond& qne, const double height)
     {
         return
     {
