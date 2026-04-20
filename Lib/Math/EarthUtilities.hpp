@@ -47,10 +47,10 @@ namespace Earth
     /*****************************************************************/
 
     /**
-      * @brief 根据维度、高度计算重力加速度
-      * @param blh 纬经高[rad-rad-m]
-      * @retval 重力加速度[m/s²]
-      */
+     * @brief 根据维度、高度计算重力加速度
+     * @param blh 纬经高[rad-rad-m]
+     * @retval 重力加速度[m/s²]
+     */
     inline double Gravity(const Vector3d& blh)
     {
         const double sinPhi = std::sin(blh[0]);
@@ -67,10 +67,10 @@ namespace Earth
     }
 
     /**
-      * @brief 根据纬度计算子午圈曲率半径和卯酉圈曲率半径
-      * @param lat 纬度[rad]
-      * @retval 二维向量：子午圈曲率半径[m]和卯酉圈曲率半径[m]
-      */
+     * @brief 根据纬度计算子午圈曲率半径和卯酉圈曲率半径
+     * @param lat 纬度[rad]
+     * @retval 二维向量：子午圈曲率半径[m]和卯酉圈曲率半径[m]
+     */
     inline Vector2d RM_And_RN(const double lat)
     {
         const double sin_Lat = std::sin(lat);

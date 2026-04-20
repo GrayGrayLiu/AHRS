@@ -40,42 +40,44 @@ namespace Aided_INS_Space
 
     struct ImuError
     {
-        Eigen::Vector3d gyroBias;  //陀螺零偏
-        Eigen::Vector3d accBias;   //加速度计零偏
-        Eigen::Vector3d gyroScale; //陀螺比例因子
-        Eigen::Vector3d accScale;  //加速度计比例因子
+        Eigen::Vector3d gyrBias;  //陀螺零偏
+        Eigen::Vector3d accBias;  //加速度计零偏
+        Eigen::Vector3d gyrScale; //陀螺比例因子
+        Eigen::Vector3d accScale; //加速度计比例因子
     };
 
     struct NavState
     {
-        Eigen::Vector3d pos;       //位置
-        Eigen::Vector3d vel;       //速度
-        Eigen::Vector3d euler;     //欧拉角
-        Eigen::Vector3d gyroBias;  //陀螺零偏
-        Eigen::Vector3d accBias;   //加速度计零偏
-        Eigen::Vector3d gyroScale; //陀螺比例因子
-        Eigen::Vector3d accScale;  //加速度计比例因子
+        Eigen::Vector3d pos;      //位置
+        Eigen::Vector3d vel;      //速度
+        Eigen::Vector3d euler;    //欧拉角
+        Eigen::Vector3d gyrBias;  //陀螺零偏
+        Eigen::Vector3d accBias;  //加速度计零偏
+        Eigen::Vector3d gyrScale; //陀螺比例因子
+        Eigen::Vector3d accScale; //加速度计比例因子
     };
 
     struct ImuNoise
     {
-        Eigen::Vector3d gyro_ARW;     //陀螺角度随机游走
-        Eigen::Vector3d acc_VRW;      //加速度计速度随机游走
-        Eigen::Vector3d gyroBiasStd;  //陀螺零偏标准差
+        Eigen::Vector3d gyrArw;     //陀螺角度随机游走
+        Eigen::Vector3d accVrw;      //加速度计速度随机游走
+        Eigen::Vector3d gyrBiasStd;  //陀螺零偏标准差
         Eigen::Vector3d accBiasStd;   //加速度计零偏标准差
-        Eigen::Vector3d gyroScaleStd; //陀螺比例因子标准差
+        Eigen::Vector3d gyrScaleStd; //陀螺比例因子标准差
         Eigen::Vector3d accScaleStd;  //加速度计比例因子标准差
         double corr_time;             //陀螺和加速度计的零偏、比例因子的相关时间
     };
 
-    struct GINSOptions
+    struct Config
     {
-        NavState initState;     //初始状态值
+        NavState initState;    //初始状态值
         NavState initStateStd; //初始状态标准差
 
         ImuNoise imuNoise; //IMU噪声参数
 
-        Eigen::Vector3d ant_lever{0, 0, 0}; //GNSS天线杆臂
+        double magMeasureYawStd{0}; //磁力计测量偏航角的标准差
+
+        Eigen::Vector3d antennaLever = {0, 0, 0}; //GNSS天线杆臂
     };
 
     struct GNSS

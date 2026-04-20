@@ -325,22 +325,6 @@ class SelfAdjointEigenSolver {
     return m_eivec * m_eivalues.cwiseSqrt().asDiagonal() * m_eivec.adjoint();
   }
 
-  /** \brief Computes the matrix exponential the matrix.
-   *
-   * \returns the matrix exponential the matrix.
-   *
-   * \pre The eigenvalues and eigenvectors of a positive-definite matrix
-   * have been computed before.
-   *
-   * \sa operatorInverseSqrt(), operatorSqrt(),
-   * <a href="unsupported/group__MatrixFunctions__Module.html">MatrixFunctions Module</a>
-   */
-  EIGEN_DEVICE_FUNC MatrixType operatorExp() const {
-    eigen_assert(m_isInitialized && "SelfAdjointEigenSolver is not initialized.");
-    eigen_assert(m_eigenvectorsOk && "The eigenvectors have not been computed together with the eigenvalues.");
-    return m_eivec * m_eivalues.array().exp().matrix().asDiagonal() * m_eivec.adjoint();
-  }
-
   /** \brief Computes the inverse square root of the matrix.
    *
    * \returns the inverse positive-definite square root of the matrix
@@ -548,7 +532,8 @@ EIGEN_DEVICE_FUNC ComputationInfo computeFromTridiagonal_impl(DiagType& diag, Su
     info = NoConvergence;
 
   // Sort eigenvalues and corresponding vectors.
-  // TODO: make the sort optional and use a more efficient sorting algorithm.
+  // TODO make the sort optional ?
+  // TODO use a better sort algorithm !!
   if (info == Success) {
     for (Index i = 0; i < n - 1; ++i) {
       Index k;
@@ -652,12 +637,12 @@ struct direct_selfadjoint_eigenvalues<SolverType, 3, false> {
 
     // Shift the matrix to the mean eigenvalue and map the matrix coefficients to [-1:1] to avoid over- and underflow.
     Scalar shift = mat.trace() / Scalar(3);
-    // TODO: avoid this copy. Currently necessary to suppress bogus values when determining maxCoeff and for
-    // computing the eigenvectors later.
+    // TODO Avoid this copy. Currently it is necessary to suppress bogus values when determining maxCoeff and for
+    // computing the eigenvectors later
     MatrixType scaledMat = mat.template selfadjointView<Lower>();
     scaledMat.diagonal().array() -= shift;
     Scalar scale = scaledMat.cwiseAbs().maxCoeff();
-    if (scale > 0) scaledMat /= scale;  // TODO: skip remaining operations when scale==0.
+    if (scale > 0) scaledMat /= scale;  // TODO for scale==0 we could save the remaining operations
 
     // compute the eigenvalues
     computeRoots(scaledMat, eivals);
@@ -851,7 +836,7 @@ EIGEN_DEVICE_FUNC static void tridiagonal_qr_step(RealScalar* diag, RealScalar* 
 
     // apply the givens rotation to the unit matrix Q = Q * G
     if (matrixQ) {
-      // FIXME: this operation is inefficient for RowMajor storage order.
+      // FIXME if StorageOrder == RowMajor this operation is not very efficient
       Map<Matrix<Scalar, Dynamic, Dynamic, StorageOrder> > q(matrixQ, n, n);
       q.applyOnTheRight(k, k + 1, rot);
     }

@@ -33,30 +33,30 @@ namespace Rotation
     constexpr double PI = 3.14159265358979323846;
 
     /**
-      * @brief 将方向余弦矩阵转换为四元数
-      * @param DCM 方向余弦矩阵
-      * @retval 四元数
-      */
+     * @brief 将方向余弦矩阵转换为四元数
+     * @param DCM 方向余弦矩阵
+     * @retval 四元数
+     */
     inline Quaterniond DCM2Quaternion(const Matrix3d& DCM)
     {
         return Quaterniond(DCM);
     }
 
     /**
-      * @brief 将四元数转换为方向余弦矩阵
-      * @param q 四元数
-      * @retval 方向余弦矩阵
-      */
+     * @brief 将四元数转换为方向余弦矩阵
+     * @param q 四元数
+     * @retval 方向余弦矩阵
+     */
     inline Matrix3d Quaternion2DCM(const Quaterniond& q)
     {
         return q.toRotationMatrix();
     }
 
     /**
-      * @brief 根据方向余弦矩阵输出欧拉角。载体坐标系为前右下，旋转顺序为ZYX, 输出RPY（Roll、Pitch、Yaw）
-      * @param DCM 方向余弦矩阵
-      * @retval 欧拉角
-      */
+     * @brief 根据方向余弦矩阵输出欧拉角。载体坐标系为前右下，旋转顺序为ZYX, 输出RPY（Roll、Pitch、Yaw）
+     * @param DCM 方向余弦矩阵
+     * @retval 欧拉角
+     */
     inline Vector3d DCM2Euler(const Matrix3d& DCM)
     {
         Vector3d euler;
@@ -81,20 +81,20 @@ namespace Rotation
     }
 
     /**
-      * @brief 根据姿态四元数输出欧拉角
-      * @param q 姿态四元数
-      * @retval 欧拉角
-      */
+     * @brief 根据姿态四元数输出欧拉角
+     * @param q 姿态四元数
+     * @retval 欧拉角
+     */
     inline Vector3d Quaternion2Euler(const Quaterniond& q)
     {
         return DCM2Euler(q.toRotationMatrix());
     }
 
     /**
-      * @brief 等效旋转矢量转换为四元数
-      * @param rotVec 等效旋转矢量
-      * @retval 四元数
-      */
+     * @brief 等效旋转矢量转换为四元数
+     * @param rotVec 等效旋转矢量
+     * @retval 四元数
+     */
     inline Quaterniond RotVec2Quaternion(const Vector3d &rotVec)
     {
         const double angle = rotVec.norm();
@@ -103,10 +103,10 @@ namespace Rotation
     }
 
     /**
-      * @brief 四元数转换为等效旋转矢量
-      * @param quaternion 四元数
-      * @retval 欧拉角
-      */
+     * @brief 四元数转换为等效旋转矢量
+     * @param quaternion 四元数
+     * @retval 欧拉角
+     */
     inline Vector3d Quaternion2Vector(const Quaterniond &quaternion)
     {
         Eigen::AngleAxisd axisd(quaternion);
@@ -114,7 +114,7 @@ namespace Rotation
     }
 
     // RPY --> C_b^n, ZYX顺序
-    inline Matrix3d Euler2Matrix(const Vector3d &euler)
+    inline Matrix3d Euler2DCM(const Vector3d &euler)
     {
         return Matrix3d(Eigen::AngleAxisd(euler[2], Vector3d::UnitZ()) *
                         Eigen::AngleAxisd(euler[1], Vector3d::UnitY()) *

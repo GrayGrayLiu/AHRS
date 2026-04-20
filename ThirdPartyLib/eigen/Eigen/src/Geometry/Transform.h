@@ -365,15 +365,6 @@ class Transform {
    * \sa MatrixBase::operator(Index,Index) */
   EIGEN_DEVICE_FUNC inline Scalar& operator()(Index row, Index col) { return m_matrix(row, col); }
 
-#ifdef EIGEN_MULTIDIMENSIONAL_SUBSCRIPT
-  /** shortcut for m_matrix(row,col);
-   * \sa MatrixBase::operator(Index,Index) const */
-  EIGEN_DEVICE_FUNC inline Scalar operator[](Index row, Index col) const { return m_matrix[row, col]; }
-  /** shortcut for m_matrix(row,col);
-   * \sa MatrixBase::operator(Index,Index) */
-  EIGEN_DEVICE_FUNC inline Scalar& operator[](Index row, Index col) { return m_matrix[row, col]; }
-#endif
-
   /** \returns a read-only expression of the transformation matrix */
   EIGEN_DEVICE_FUNC inline const MatrixType& matrix() const { return m_matrix; }
   /** \returns a writable expression of the transformation matrix */
@@ -745,7 +736,7 @@ Transform<Scalar, Dim, Mode, Options>& Transform<Scalar, Dim, Mode, Options>::op
 
 /** \returns a QMatrix from \c *this assuming the dimension is 2.
  *
- * \warning this conversion might lose data if \c *this is not affine
+ * \warning this conversion might loss data if \c *this is not affine
  *
  * This function is available only if the token EIGEN_QT_SUPPORT is defined.
  */

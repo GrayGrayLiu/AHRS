@@ -29,13 +29,13 @@ namespace INS_Mechanization
     /**
      * @brief INS机械编排算法, 利用IMU数据进行速度、位置和姿态更新
      *        INS Mechanization, update velocity, position and attitude using imudata
-     * @param [in]     PVA_Pre 上一时刻状态
+     * @param [in]     pvaPre 上一时刻状态
      *                        the previous imu state
-     * @param [in,out] PVA_Cur 输出当前时刻状态
+     * @param [in,out] pvaCur 输出当前时刻状态
      *                        output the current imu state
-     * @param [in]     IMU_Pre, IMU_Cur imu data
-     * */
-    void INS_Mech(const PVA &PVA_Pre, PVA &PVA_Cur, const IMU &IMU_Pre, const IMU &IMU_Cur);
+     * @param [in]     imuPre, imuCur imu data
+     */
+    void INS_Mech(const PVA &pvaPre, PVA &pvaCur, const IMU &imuPre, const IMU &imuCur);
 }
 
 #endif //AHRS_INS_MECHANIZATION_HPP

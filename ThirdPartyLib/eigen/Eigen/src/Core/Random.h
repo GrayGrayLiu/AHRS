@@ -19,7 +19,7 @@ namespace internal {
 
 template <typename Scalar>
 struct scalar_random_op {
-  inline Scalar operator()() const { return random<Scalar>(); }
+  inline const Scalar operator()() const { return random<Scalar>(); }
 };
 
 template <typename Scalar>

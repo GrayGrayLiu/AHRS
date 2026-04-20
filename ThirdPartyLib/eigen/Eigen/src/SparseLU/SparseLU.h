@@ -51,7 +51,7 @@ class SparseLUTransposeView : public SparseSolverBase<SparseLUTransposeView<Conj
     eigen_assert(m_sparseLU->info() == Success && "The matrix should be factorized first");
     EIGEN_STATIC_ASSERT((Dest::Flags & RowMajorBit) == 0, THIS_METHOD_IS_ONLY_FOR_COLUMN_MAJOR_MATRICES);
 
-    // const_cast_derived() is needed to enable aliasing detection when applying the permutations.
+    // this ugly const_cast_derived() helps to detect aliasing when applying the permutations
     for (Index j = 0; j < B.cols(); ++j) {
       X.col(j) = m_sparseLU->colsPermutation() * B.const_cast_derived().col(j);
     }
@@ -310,7 +310,7 @@ class SparseLU : public SparseSolverBase<SparseLU<MatrixType_, OrderingType_>>,
    * \sa compute()
    */
   template <typename Rhs>
-  inline Solve<SparseLU, Rhs> solve(const MatrixBase<Rhs>& B) const;
+  inline const Solve<SparseLU, Rhs> solve(const MatrixBase<Rhs>& B) const;
 #endif  // EIGEN_PARSED_BY_DOXYGEN
 
   /** \brief Reports whether previous computation was successful.
@@ -344,7 +344,7 @@ class SparseLU : public SparseSolverBase<SparseLU<MatrixType_, OrderingType_>>,
     // on return, X is overwritten by the computed solution
     X.resize(B.rows(), B.cols());
 
-    // const_cast_derived() is needed to enable aliasing detection when applying the permutations.
+    // this ugly const_cast_derived() helps to detect aliasing when applying the permutations
     for (Index j = 0; j < B.cols(); ++j) X.col(j) = rowsPermutation() * B.const_cast_derived().col(j);
 
     // Forward substitution with L
@@ -360,7 +360,7 @@ class SparseLU : public SparseSolverBase<SparseLU<MatrixType_, OrderingType_>>,
   /** \brief Give the absolute value of the determinant.
    *
    * \returns the absolute value of the determinant of the matrix of which
-   * *this is the LU factorization.
+   * *this is the QR decomposition.
    *
    * \warning a determinant can be very big or small, so for matrices
    * of large enough dimension, there is a risk of overflow/underflow.
@@ -368,7 +368,7 @@ class SparseLU : public SparseSolverBase<SparseLU<MatrixType_, OrderingType_>>,
    *
    * \sa logAbsDeterminant(), signDeterminant()
    */
-  Scalar absDeterminant() const {
+  Scalar absDeterminant() {
     using std::abs;
     eigen_assert(m_factorizationIsOk && "The matrix should be factorized first.");
     // Initialize with the determinant of the row matrix
@@ -389,7 +389,7 @@ class SparseLU : public SparseSolverBase<SparseLU<MatrixType_, OrderingType_>>,
   /** \brief Give the natural log of the absolute determinant.
    *
    * \returns the natural log of the absolute value of the determinant of the matrix
-   * of which *this is the LU factorization
+   * of which **this is the QR decomposition
    *
    * \note This method is useful to work around the risk of overflow/underflow that's
    * inherent to the determinant computation.
@@ -420,7 +420,7 @@ class SparseLU : public SparseSolverBase<SparseLU<MatrixType_, OrderingType_>>,
    *
    * \sa absDeterminant(), logAbsDeterminant()
    */
-  Scalar signDeterminant() const {
+  Scalar signDeterminant() {
     eigen_assert(m_factorizationIsOk && "The matrix should be factorized first.");
     // Initialize with the determinant of the row matrix
     Index det = 1;
@@ -446,7 +446,7 @@ class SparseLU : public SparseSolverBase<SparseLU<MatrixType_, OrderingType_>>,
    *
    * \sa absDeterminant(), logAbsDeterminant()
    */
-  Scalar determinant() const {
+  Scalar determinant() {
     eigen_assert(m_factorizationIsOk && "The matrix should be factorized first.");
     // Initialize with the determinant of the row matrix
     Scalar det = Scalar(1.);
@@ -507,7 +507,7 @@ class SparseLU : public SparseSolverBase<SparseLU<MatrixType_, OrderingType_>>,
   SparseLU(const SparseLU&);
 };  // End class SparseLU
 
-// Functions needed by the analysis phase
+// Functions needed by the anaysis phase
 /** \brief Compute the column permutation.
  *
  * Compute the column permutation to minimize the fill-in
@@ -603,7 +603,7 @@ void SparseLU<MatrixType, OrderingType>::analyzePattern(const MatrixType& mat) {
  * > A->ncol: number of bytes allocated when memory allocation failure occurred, plus A->ncol.
  * If lwork = -1, it is the estimated amount of space needed, plus A->ncol.
  *
- * Note: 'A' in the above description refers to the factored matrix (historical naming from SuperLU).
+ * It seems that A was the name of the matrix in the past.
  *
  * \sa analyzePattern(), compute(), SparseLU(), info(), lastErrorMessage()
  */
@@ -616,6 +616,7 @@ void SparseLU<MatrixType, OrderingType>::factorize(const MatrixType& matrix) {
   m_isInitialized = true;
 
   // Apply the column permutation computed in analyzepattern()
+  //   m_mat = matrix * m_perm_c.inverse();
   m_mat = matrix;
   if (m_perm_c.size()) {
     m_mat.uncompress();  // NOTE: The effect of this command is only to create the InnerNonzeros pointers.
@@ -778,7 +779,7 @@ void SparseLU<MatrixType, OrderingType>::factorize(const MatrixType& matrix) {
       }
 
       // Update the determinant of the row permutation matrix
-      // FIXME: the following test is not correct; it should account for iperm_c, and pivrow is not
+      // FIXME: the following test is not correct, we should probably take iperm_c into account and pivrow is not
       // directly the row pivot.
       if (pivrow != jj) m_detPermR = -m_detPermR;
 

@@ -79,8 +79,8 @@ EIGEN_STRONG_INLINE Packet4cf pnegate(const Packet4cf& a) {
 }
 template <>
 EIGEN_STRONG_INLINE Packet4cf pconj(const Packet4cf& a) {
-  const __m256 mask = _mm256_castsi256_ps(_mm256_setr_epi32(0x00000000, SIGN_MASK_I32, 0x00000000, SIGN_MASK_I32,
-                                                            0x00000000, SIGN_MASK_I32, 0x00000000, SIGN_MASK_I32));
+  const __m256 mask = _mm256_castsi256_ps(_mm256_setr_epi32(0x00000000, 0x80000000, 0x00000000, 0x80000000, 0x00000000,
+                                                            0x80000000, 0x00000000, 0x80000000));
   return Packet4cf(_mm256_xor_ps(a.v, mask));
 }
 
@@ -245,7 +245,6 @@ struct packet_traits<std::complex<double> > : default_packet_traits {
     HasNegate = 1,
     HasSqrt = 1,
     HasLog = 1,
-    HasExp = 1,
     HasAbs = 0,
     HasAbs2 = 0,
     HasMin = 0,
@@ -283,8 +282,7 @@ EIGEN_STRONG_INLINE Packet2cd pnegate(const Packet2cd& a) {
 }
 template <>
 EIGEN_STRONG_INLINE Packet2cd pconj(const Packet2cd& a) {
-  const __m256d mask =
-      _mm256_castsi256_pd(_mm256_set_epi32(SIGN_MASK_I32, 0x0, 0x0, 0x0, SIGN_MASK_I32, 0x0, 0x0, 0x0));
+  const __m256d mask = _mm256_castsi256_pd(_mm256_set_epi32(0x80000000, 0x0, 0x0, 0x0, 0x80000000, 0x0, 0x0, 0x0));
   return Packet2cd(_mm256_xor_pd(a.v, mask));
 }
 
@@ -432,20 +430,29 @@ EIGEN_DEVICE_FUNC inline void ptranspose(PacketBlock<Packet2cd, 2>& kernel) {
   kernel.packet[0].v = tmp;
 }
 
-EIGEN_INSTANTIATE_COMPLEX_MATH_FUNCS_NO_EXP(Packet2cd)
-EIGEN_INSTANTIATE_COMPLEX_MATH_FUNCS(Packet4cf)
+template <>
+EIGEN_STRONG_INLINE Packet2cd psqrt<Packet2cd>(const Packet2cd& a) {
+  return psqrt_complex<Packet2cd>(a);
+}
 
 template <>
-EIGEN_STRONG_INLINE Packet2cd pexp<Packet2cd>(const Packet2cd& a) {
-#ifdef EIGEN_VECTORIZE_AVX2
-  return pexp_complex<Packet2cd>(a);
-#else
-  // Without AVX2, pexp_complex<Packet2cd> requires psincos_double<Packet4d> which needs
-  // 256-bit integer operations (Packet4l) not available on AVX-only targets.
-  // Process as two independent Packet1cd using the SSE implementation instead.
-  return Packet2cd(_mm256_insertf128_pd(_mm256_castpd128_pd256(pexp(Packet1cd(_mm256_castpd256_pd128(a.v))).v),
-                                        pexp(Packet1cd(_mm256_extractf128_pd(a.v, 1))).v, 1));
-#endif
+EIGEN_STRONG_INLINE Packet4cf psqrt<Packet4cf>(const Packet4cf& a) {
+  return psqrt_complex<Packet4cf>(a);
+}
+
+template <>
+EIGEN_STRONG_INLINE Packet2cd plog<Packet2cd>(const Packet2cd& a) {
+  return plog_complex<Packet2cd>(a);
+}
+
+template <>
+EIGEN_STRONG_INLINE Packet4cf plog<Packet4cf>(const Packet4cf& a) {
+  return plog_complex<Packet4cf>(a);
+}
+
+template <>
+EIGEN_STRONG_INLINE Packet4cf pexp<Packet4cf>(const Packet4cf& a) {
+  return pexp_complex<Packet4cf>(a);
 }
 
 #ifdef EIGEN_VECTORIZE_FMA

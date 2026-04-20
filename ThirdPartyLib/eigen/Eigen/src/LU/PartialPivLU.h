@@ -28,6 +28,9 @@ struct traits<PartialPivLU<MatrixType_, PermutationIndex_> > : traits<MatrixType
 
 template <typename T, typename Derived>
 struct enable_if_ref;
+// {
+//   typedef Derived type;
+// };
 
 template <typename T, typename Derived>
 struct enable_if_ref<Ref<T>, Derived> {
@@ -178,7 +181,7 @@ class PartialPivLU : public SolverBase<PartialPivLU<MatrixType_, PermutationInde
    * \sa TriangularView::solve(), inverse(), computeInverse()
    */
   template <typename Rhs>
-  inline Solve<PartialPivLU, Rhs> solve(const MatrixBase<Rhs>& b) const;
+  inline const Solve<PartialPivLU, Rhs> solve(const MatrixBase<Rhs>& b) const;
 #endif
 
   /** \returns an estimate of the reciprocal condition number of the matrix of which \c *this is
@@ -196,7 +199,7 @@ class PartialPivLU : public SolverBase<PartialPivLU<MatrixType_, PermutationInde
    *
    * \sa MatrixBase::inverse(), LU::inverse()
    */
-  inline Inverse<PartialPivLU> inverse() const {
+  inline const Inverse<PartialPivLU> inverse() const {
     eigen_assert(m_isInitialized && "PartialPivLU is not initialized.");
     return Inverse<PartialPivLU>(*this);
   }
@@ -559,8 +562,8 @@ struct Assignment<
  */
 template <typename Derived>
 template <typename PermutationIndex>
-inline PartialPivLU<typename MatrixBase<Derived>::PlainObject, PermutationIndex> MatrixBase<Derived>::partialPivLu()
-    const {
+inline const PartialPivLU<typename MatrixBase<Derived>::PlainObject, PermutationIndex>
+MatrixBase<Derived>::partialPivLu() const {
   return PartialPivLU<PlainObject, PermutationIndex>(eval());
 }
 
@@ -574,7 +577,7 @@ inline PartialPivLU<typename MatrixBase<Derived>::PlainObject, PermutationIndex>
  */
 template <typename Derived>
 template <typename PermutationIndex>
-inline PartialPivLU<typename MatrixBase<Derived>::PlainObject, PermutationIndex> MatrixBase<Derived>::lu() const {
+inline const PartialPivLU<typename MatrixBase<Derived>::PlainObject, PermutationIndex> MatrixBase<Derived>::lu() const {
   return PartialPivLU<PlainObject, PermutationIndex>(eval());
 }
 

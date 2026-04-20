@@ -33,7 +33,7 @@ static void conservative_sparse_sparse_product_impl(const Lhs& lhs, const Rhs& r
   ei_declare_aligned_stack_constructed_variable(ResScalar, values, rows, 0);
   ei_declare_aligned_stack_constructed_variable(Index, indices, rows, 0);
 
-  std::fill_n(mask, rows, false);
+  std::memset(mask, 0, sizeof(bool) * rows);
 
   evaluator<Lhs> lhsEval(lhs);
   evaluator<Rhs> rhsEval(rhs);
@@ -79,8 +79,8 @@ static void conservative_sparse_sparse_product_impl(const Lhs& lhs, const Rhs& r
       const Index t200 = rows / 11;  // 11 == (log2(200)*1.39)
       const Index t = (rows * 100) / 139;
 
-      // FIXME: reserve space for the expected number of non-zeros.
-      // FIXME: implement faster sorting for very small nnz counts.
+      // FIXME reserve nnz non zeros
+      // FIXME implement faster sorting algorithms for very small nnz
       // if the result is sparse enough => use a quick sort
       // otherwise => loop through the entire vector
       // In order to avoid to perform an expensive log2 when the
@@ -106,6 +106,10 @@ static void conservative_sparse_sparse_product_impl(const Lhs& lhs, const Rhs& r
   res.finalize();
 }
 
+}  // end namespace internal
+
+namespace internal {
+
 // Helper template to generate new sparse matrix types
 template <class Source, int Order>
 using WithStorageOrder = SparseMatrix<typename Source::Scalar, Order, typename Source::StorageIndex>;
@@ -127,7 +131,7 @@ struct conservative_sparse_sparse_product_selector<Lhs, Rhs, ResultType, ColMajo
 
     // If the result is tall and thin (in the extreme case a column vector)
     // then it is faster to sort the coefficients inplace instead of transposing twice.
-    // FIXME: this heuristic has known limitations and should be improved.
+    // FIXME, the following heuristic is probably not very good.
     if (lhs.rows() > rhs.cols()) {
       using ColMajorMatrix = typename sparse_eval<ColMajorMatrixAux, ResultType::RowsAtCompileTime,
                                                   ResultType::ColsAtCompileTime, ColMajorMatrixAux::Flags>::type;
@@ -227,6 +231,10 @@ struct conservative_sparse_sparse_product_selector<Lhs, Rhs, ResultType, RowMajo
     res = resCol;
   }
 };
+
+}  // end namespace internal
+
+namespace internal {
 
 template <typename Lhs, typename Rhs, typename ResultType>
 static void sparse_sparse_to_dense_product_impl(const Lhs& lhs, const Rhs& rhs, ResultType& res) {

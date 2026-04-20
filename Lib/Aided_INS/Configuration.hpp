@@ -21,7 +21,7 @@
 #ifndef AHRS_CONFIGURATION_H
 #define AHRS_CONFIGURATION_H
 
-namespace INS_Config
+namespace Aided_INS_Config
 {
     /****************************************初始状态****************************************/
     namespace StateInit
