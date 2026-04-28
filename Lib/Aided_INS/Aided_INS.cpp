@@ -1,5 +1,5 @@
 /******************************************************************************
- * @file    Configuration.h
+ * @file    Aided_INS.cpp
  * @brief   输入系统的一些参数
  *
  * @details
@@ -45,22 +45,22 @@ using Rotation::DCM2Euler;
 
 Aided_INS::Aided_INS(const uint8_t id)
 {
-    const Aided_INS_Space::Config &config = LoadConfig();
+    const Aided_INS_Space::Config config = LoadConfig();
     Initialize(config);
 }
 
 int Aided_INS::Run()
 {
     const bool imuReady = GetImuData();
-    GetMagData();
+    const bool magReady = GetMagData();
 
     if ( imuReady )
     {
         ProcessNewData();
-        return 1;
+        return 0;
     }
 
-    return 0;
+    return -1;
 }
 
 int Aided_INS::InitialAlignment()
@@ -78,18 +78,126 @@ bool Aided_INS::GetImuData()
     return false;
 }
 
-void Aided_INS::GetMagData()
+bool Aided_INS::GetMagData()
 {
     // if ()
     // {
     //     magData_.isUpdate = true;
     //     return true;
     // }
+
+    return false;
 }
 
 Aided_INS_Space::Config Aided_INS::LoadConfig()
 {
-    Aided_INS_Space::Config config = {};
+    using namespace Aided_INS_Config;
+    using Angle::D2R;
+
+    Aided_INS_Space::Config config{};
+
+    constexpr double DEG_TO_RAD   = D2R;
+    constexpr double HOUR_TO_SEC  = 3600.0;
+    constexpr double MGAL_TO_MPS2 = 1.0e-5; // 1 mGal = 1e-5 m/s^2
+    constexpr double PPM_TO_SCALE = 1.0e-6; // ppm：Parts Per Million，百万分之一
+
+    /********************************************初始状态********************************************/
+    config.initState.pos << StateInit::initPosLatitude  * DEG_TO_RAD,
+                            StateInit::initPosLongitude * DEG_TO_RAD,
+                            StateInit::initPosAltitude;
+
+    config.initState.vel << StateInit::initVelNorth,
+                            StateInit::initVelEast,
+                            StateInit::initVelDown;
+
+    config.initState.euler << StateInit::initAttRoll  * DEG_TO_RAD,
+                              StateInit::initAttPitch * DEG_TO_RAD,
+                              StateInit::initAttYaw   * DEG_TO_RAD;
+
+    config.initState.gyrBias << StateInit::initGyrBiasX * DEG_TO_RAD / HOUR_TO_SEC,
+                                StateInit::initGyrBiasY * DEG_TO_RAD / HOUR_TO_SEC,
+                                StateInit::initGyrBiasZ * DEG_TO_RAD / HOUR_TO_SEC;
+
+    config.initState.accBias << StateInit::initAccBiasX * MGAL_TO_MPS2,
+                                StateInit::initAccBiasY * MGAL_TO_MPS2,
+                                StateInit::initAccBiasZ * MGAL_TO_MPS2;
+
+    config.initState.gyrScale << StateInit::initGyrScaleX * PPM_TO_SCALE,
+                                 StateInit::initGyrScaleY * PPM_TO_SCALE,
+                                 StateInit::initGyrScaleZ * PPM_TO_SCALE;
+
+    config.initState.accScale << StateInit::initAccScaleX * PPM_TO_SCALE,
+                                 StateInit::initAccScaleY * PPM_TO_SCALE,
+                                 StateInit::initAccScaleZ * PPM_TO_SCALE;
+    /**********************************************************************************************/
+
+    /*****************************************初始状态标准差*****************************************/
+    config.initStateStd.pos << ErrStateStdInit::initPosStdLatitude,
+                               ErrStateStdInit::initPosStdLongitude,
+                               ErrStateStdInit::initPosStdAltitude;
+
+    config.initStateStd.vel << ErrStateStdInit::initVelStdNorth,
+                               ErrStateStdInit::initVelStdEast,
+                               ErrStateStdInit::initVelStdDown;
+
+    config.initStateStd.euler << ErrStateStdInit::initAttStdRoll  * DEG_TO_RAD,
+                                 ErrStateStdInit::initAttStdPitch * DEG_TO_RAD,
+                                 ErrStateStdInit::initAttStdYaw   * DEG_TO_RAD;
+
+    config.initStateStd.gyrBias << ErrStateStdInit::initGyrBiasStdX * DEG_TO_RAD / HOUR_TO_SEC,
+                                   ErrStateStdInit::initGyrBiasStdY * DEG_TO_RAD / HOUR_TO_SEC,
+                                   ErrStateStdInit::initGyrBiasStdZ * DEG_TO_RAD / HOUR_TO_SEC;
+
+    config.initStateStd.accBias << ErrStateStdInit::initAccBiasStdX * MGAL_TO_MPS2,
+                                   ErrStateStdInit::initAccBiasStdY * MGAL_TO_MPS2,
+                                   ErrStateStdInit::initAccBiasStdZ * MGAL_TO_MPS2;
+
+    config.initStateStd.gyrScale << ErrStateStdInit::initGyrScaleStdX * PPM_TO_SCALE,
+                                    ErrStateStdInit::initGyrScaleStdY * PPM_TO_SCALE,
+                                    ErrStateStdInit::initGyrScaleStdZ * PPM_TO_SCALE;
+
+    config.initStateStd.accScale << ErrStateStdInit::initAccScaleStdX * PPM_TO_SCALE,
+                                    ErrStateStdInit::initAccScaleStdY * PPM_TO_SCALE,
+                                    ErrStateStdInit::initAccScaleStdZ * PPM_TO_SCALE;
+    /**********************************************************************************************/
+
+    /*******************************************IMU噪声参数******************************************/
+    config.imuNoise.gyrArw << IMU_Noise::gyrArwX * DEG_TO_RAD / std::sqrt(HOUR_TO_SEC),
+                              IMU_Noise::gyrArwY * DEG_TO_RAD / std::sqrt(HOUR_TO_SEC),
+                              IMU_Noise::gyrArwZ * DEG_TO_RAD / std::sqrt(HOUR_TO_SEC);
+
+    config.imuNoise.accVrw << IMU_Noise::accVrwX / std::sqrt(HOUR_TO_SEC),
+                              IMU_Noise::accVrwY / std::sqrt(HOUR_TO_SEC),
+                              IMU_Noise::accVrwZ / std::sqrt(HOUR_TO_SEC);
+
+    config.imuNoise.gyrBiasStd << IMU_Noise::gyrBiasStdX * DEG_TO_RAD / HOUR_TO_SEC,
+                                  IMU_Noise::gyrBiasStdY * DEG_TO_RAD / HOUR_TO_SEC,
+                                  IMU_Noise::gyrBiasStdZ * DEG_TO_RAD / HOUR_TO_SEC;
+
+    config.imuNoise.accBiasStd << IMU_Noise::accBiasStdX * MGAL_TO_MPS2,
+                                  IMU_Noise::accBiasStdY * MGAL_TO_MPS2,
+                                  IMU_Noise::accBiasStdZ * MGAL_TO_MPS2;
+
+    config.imuNoise.gyrScaleStd << IMU_Noise::gyrScaleStdX * PPM_TO_SCALE,
+                                   IMU_Noise::gyrScaleStdY * PPM_TO_SCALE,
+                                   IMU_Noise::gyrScaleStdZ * PPM_TO_SCALE;
+
+    config.imuNoise.accScaleStd << IMU_Noise::accScaleStdX * PPM_TO_SCALE,
+                                   IMU_Noise::accScaleStdY * PPM_TO_SCALE,
+                                   IMU_Noise::accScaleStdZ * PPM_TO_SCALE;
+
+    config.imuNoise.corr_time = IMU_Noise::imuCorrTime * HOUR_TO_SEC;
+    /**********************************************************************************************/
+
+    /*****************************************磁力计噪声参数******************************************/
+    config.magMeasureYawStd = MagNoise::magMeasureYawStd * DEG_TO_RAD;
+    /**********************************************************************************************/
+
+    /**********************************天线杆臂，IMU坐标系前右下方向************************************/
+    config.antennaLever << GNSS_AntennaLever::gnssAntennaLeverX,
+                           GNSS_AntennaLever::gnssAntennaLeverY,
+                           GNSS_AntennaLever::gnssAntennaLeverZ;
+    /**********************************************************************************************/
 
     return config;
 }

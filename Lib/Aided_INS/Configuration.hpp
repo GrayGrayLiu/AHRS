@@ -45,7 +45,7 @@ namespace Aided_INS_Config
         constexpr double initGyrBiasX = 0.0; //陀螺X轴零偏[deg/h]
         constexpr double initGyrBiasY = 0.0; //陀螺Y轴零偏[deg/h]
         constexpr double initGyrBiasZ = 0.0; //陀螺Z轴零偏[deg/h]
-        constexpr double initAccBiasX = 0.0; //加速度计X轴零偏[mGal]，1Gal=10e^-2 m/s²
+        constexpr double initAccBiasX = 0.0; //加速度计X轴零偏[mGal]，1Gal=10e^-2 m/s²，1mGal==10e^-5 m/s²
         constexpr double initAccBiasY = 0.0; //加速度计Y轴零偏[mGal]
         constexpr double initAccBiasZ = 0.0; //加速度计Z轴零偏[mGal]
 
@@ -82,7 +82,7 @@ namespace Aided_INS_Config
         constexpr double initGyrBiasStdX = 0.0; //陀螺X轴零偏误差状态标准差[deg/h]
         constexpr double initGyrBiasStdY = 0.0; //陀螺Y轴零偏误差状态标准差[deg/h]
         constexpr double initGyrBiasStdZ = 0.0; //陀螺Z轴零偏误差状态标准差[deg/h]
-        constexpr double initAccBiasStdX = 0.0; //加速度计X轴零偏误差状态标准差[mGal]，1Gal=10e^-2 m/s²
+        constexpr double initAccBiasStdX = 0.0; //加速度计X轴零偏误差状态标准差[mGal]，1Gal=10e^-2 m/s²，1mGal==10e^-5 m/s²
         constexpr double initAccBiasStdY = 0.0; //加速度计Y轴零偏误差状态标准差[mGal]
         constexpr double initAccBiasStdZ = 0.0; //加速度计Z轴零偏误差状态标准差[mGal]
 

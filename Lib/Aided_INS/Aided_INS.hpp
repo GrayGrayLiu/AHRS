@@ -68,13 +68,13 @@ private:
     /**
      * @brief 获取磁力计数据
      */
-    void GetMagData();
+    bool GetMagData();
 
     /**
      * @brief
      * @return
      */
-    Aided_INS_Space::Config LoadConfig();
+    static Aided_INS_Space::Config LoadConfig();
 
     /**
      * @brief 初始化系统状态和协方差
@@ -207,7 +207,7 @@ private:
 
     Aided_INS_Space::Config config_;
 
-    double timestamp_;
+    double timestamp_{0.0};
 
     // 更新时间对齐误差，IMU状态和观测信息误差小于它则认为两者对齐
     const double TIME_ALIGN_ERR_ = 0.001;
