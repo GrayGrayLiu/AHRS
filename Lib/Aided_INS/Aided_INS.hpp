@@ -29,6 +29,7 @@ using Aided_INS_Space::IMU;
 using Aided_INS_Space::GNSS;
 using Aided_INS_Space::PVA;
 using Aided_INS_Space::ImuError;
+using Aided_INS_Space::Mag;
 
 using Eigen::MatrixXd;
 
@@ -59,6 +60,20 @@ private:
      */
     int InitialAlignment();
 
+    /**
+     * @brief 获取IMU数据
+     */
+    bool GetImuData();
+
+    /**
+     * @brief 获取磁力计数据
+     */
+    void GetMagData();
+
+    /**
+     * @brief
+     * @return
+     */
     Aided_INS_Space::Config LoadConfig();
 
     /**
@@ -69,32 +84,42 @@ private:
     void Initialize(const Aided_INS_Space::Config &config);
 
     /**
-     * @brief 当前IMU误差补偿到IMU数据中
-     *        componsate imu error to the imudata
-     * @param [in,out] imu 需要补偿的IMU数据
-     *                     imudata to be compensated
-     */
-    void ImuCompensate(IMU &imu) const;
+    * @brief 内插增量形式的IMU数据到指定时刻
+    *        interpolate incremental imudata to given timestamp
+    * @param [in]     imuPre      前一时刻IMU数据
+    *                           the previous imudata
+    * @param [in,out] imuCur      当前时刻IMU数据
+    *                           the current imudata
+    * @param [in]     timestamp 给定内插到的时刻
+    *                           given interpolate timestamp
+    * @param [in,out] middle    输出内插时刻的IMU数据
+    *                           output imudata at given timestamp
+    */
+    static void imuInterpolate(const IMU &imuPre, IMU &imuCur, const double timestamp, IMU &middle)
+    {
 
-// /**
-//  * @brief 判断是否需要更新,以及更新哪一时刻系统状态
-//  *        determine if we should do upate and which navstate to update
-//  * @param [in] imutime1   上一IMU状态时间
-//  *                        the last state time
-//  * @param [in] imutime2   当前IMU状态时间
-//  *                        the current state time
-//  * @param [in] updatetime 状态更新的时间
-//  *                        time to update state
-//  * @return 0: 不需要更新
-//  *            donot need update
-//  *         1: 需要更新上一IMU状态
-//  *            update the last navstate
-//  *         2: 需要更新当前IMU状态
-//  *            update the current navstate
-//  *         3: 需要将IMU进行内插到状态更新时间
-//  *            need interpolate imudata to updatetime
-//  */
-// int isToUpdate(double imutime1, double imutime2, double updatetime) const;
+        if (imuPre.time > timestamp || imuCur.time < timestamp)
+            return;
+
+        const double lamda = (timestamp - imuPre.time) / (imuCur.time - imuPre.time);
+
+        middle.time       = timestamp;
+        middle.deltaTheta = imuCur.deltaTheta * lamda;
+        middle.deltaVel   = imuCur.deltaVel * lamda;
+        middle.dt         = timestamp - imuPre.time;
+
+        imuCur.deltaTheta = imuCur.deltaTheta - middle.deltaTheta;
+        imuCur.deltaVel   = imuCur.deltaVel - middle.deltaVel;
+        imuCur.dt         = imuCur.dt - middle.dt;
+    }
+
+    /**
+    * @brief 当前IMU误差补偿到IMU数据中
+    *        componsate imu error to the imudata
+    * @param [in,out] imu 需要补偿的IMU数据
+    *                     imudata to be compensated
+    */
+    void ImuCompensate(IMU &imu) const;
 
     /**
      * @brief 进行INS状态更新(IMU机械编排算法), 并计算IMU状态转移矩阵和噪声阵
@@ -116,13 +141,28 @@ private:
      */
     void EKFPredict(const MatrixXd &Phi, const MatrixXd &Q);
 
+    /**
+     * @brief 加速度计观测方程
+     * @param imuData IMU的采样数据
+     * @param pvaCur 当前时刻IMU的导航解
+     * @param config 初始配置
+     */
+    bool AccUpdate(const IMU& imuData, const PVA& pvaCur, const Aided_INS_Space::Config& config);
 
-// /**
-//  * @brief 使用GNSS位置观测更新系统状态
-//  *        update state using gnss position
-//  * @param [in,out] gnssdata
-//  */
-// void gnssUpdate(GNSS &gnssdata);
+    /**
+     * @brief 磁力计观测方程
+     * @param magData 磁力计的采样数据
+     * @param pvaCur 当前时刻IMU的导航解
+     * @param config 初始配置
+     */
+    void MagUpdate(const Mag &magData, const PVA &pvaCur, const Aided_INS_Space::Config &config);
+
+    /**
+     * @brief 使用GNSS位置观测更新系统状态
+     *        update state using gnss position
+     * @param [in,out] gnssData
+     */
+    void GnssUpdate(GNSS &gnssData);
 
     /**
      * @brief Kalman 更新
@@ -134,13 +174,35 @@ private:
      * @param [in] R  观测噪声阵
      *                measurement noise matrix
      */
-    void EkfUpdate(MatrixXd &dz, MatrixXd &H, MatrixXd &R);
+    void EkfUpdate(const MatrixXd &dz, MatrixXd &H, const MatrixXd &R);
 
     /**
      * @brief 反馈误差状态到当前状态
      *        feedback error state to the current state
      */
     void StateFeedback();
+
+    enum class KfUpdateType: uint8_t
+    {
+        None,  //不需要KF更新
+        Prev,  //需要KF更新上一IMU状态
+        Curr,  //需要KF更新当前IMU状态
+        Middle //需要将IMU进行内插到观测量更新时间
+    };
+
+    /**
+     * @brief 判断是否需要KF更新
+     * @param imuTime1 上一IMU状态时间
+     * @param imuTime2 当前IMU状态时间
+     * @param updateTime 观测量更新的时间
+     * @return 需要KF的更新类型
+     */
+    [[nodiscard]] KfUpdateType IsToUpdate(double imuTime1, double imuTime2, double updateTime) const;
+
+    /**
+     * @brief 处理新数据
+     */
+    void ProcessNewData();
 
 
     Aided_INS_Space::Config config_;
@@ -150,9 +212,10 @@ private:
     // 更新时间对齐误差，IMU状态和观测信息误差小于它则认为两者对齐
     const double TIME_ALIGN_ERR_ = 0.001;
 
-    // IMU和GNSS原始数据
+    // IMU、磁力计和GNSS原始数据
     IMU imuPre_;
     IMU imuCur_;
+    Mag magData_;
     GNSS gnssData_;
 
     // IMU状态（位置、速度、姿态和IMU误差）
@@ -161,9 +224,9 @@ private:
     ImuError imuError_;
 
     // Kalman滤波相关
-    Eigen::MatrixXd P_;
-    Eigen::MatrixXd q_;
-    Eigen::MatrixXd dx_;
+    MatrixXd P_;  //协方差矩阵
+    MatrixXd q_;  //系统噪声矩阵
+    MatrixXd dx_; //误差状态向量
 
     const int RANK_       = 21;
     const int NOISE_RANK_ = 18;
@@ -171,6 +234,11 @@ private:
     // 状态ID和噪声ID
     enum StateID { P_ID = 0, V_ID = 3, PHI_ID = 6, GB_ID = 9, AB_ID = 12, GS_ID = 15, AS_ID = 18 };
     enum NoiseID { VRW_ID = 0, ARW_ID = 3, GBSTD_ID = 6, ABSTD_ID = 9, GSSTD_ID = 12, ASSTD_ID = 15 };
+
+    //传感器驱动类
+    // ImuDriver& imu_;
+    // MagDriver& mag_;
+    // GNSSDriver& gnss_;
 };
 
 #endif //AHRS_AIDED_INS_H

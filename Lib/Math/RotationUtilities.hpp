@@ -109,26 +109,30 @@ namespace Rotation
      */
     inline Vector3d Quaternion2Vector(const Quaterniond &quaternion)
     {
-        Eigen::AngleAxisd axisd(quaternion);
+        AngleAxisd axisd(quaternion);
         return axisd.angle() * axisd.axis();
     }
 
     // RPY --> C_b^n, ZYX顺序
     inline Matrix3d Euler2DCM(const Vector3d &euler)
     {
-        return Matrix3d(Eigen::AngleAxisd(euler[2], Vector3d::UnitZ()) *
-                        Eigen::AngleAxisd(euler[1], Vector3d::UnitY()) *
-                        Eigen::AngleAxisd(euler[0], Vector3d::UnitX()));
+        return Matrix3d(AngleAxisd(euler[2], Vector3d::UnitZ()) *
+                        AngleAxisd(euler[1], Vector3d::UnitY()) *
+                        AngleAxisd(euler[0], Vector3d::UnitX()));
     }
 
     inline Quaterniond Euler2Quaternion(const Vector3d &euler)
     {
-        return Quaterniond(Eigen::AngleAxisd(euler[2], Vector3d::UnitZ()) *
-                           Eigen::AngleAxisd(euler[1], Vector3d::UnitY()) *
-                           Eigen::AngleAxisd(euler[0], Vector3d::UnitX()));
+        return Quaterniond(AngleAxisd(euler[2], Vector3d::UnitZ()) *
+                           AngleAxisd(euler[1], Vector3d::UnitY()) *
+                           AngleAxisd(euler[0], Vector3d::UnitX()));
     }
 
-    //反对称矩阵
+    /**
+     * @brief 构造三维反对称矩阵
+     * @param vector 三维向量
+     * @return 三维反对称矩阵
+     */
     inline Matrix3d SkewSymmetric(const Vector3d &vector)
     {
         Matrix3d mat;

@@ -24,6 +24,7 @@
 
 namespace Aided_INS_Space
 {
+    /******************导航解算（机械编排+KF+状态误差反馈）状态量********************/
     struct Attitude
     {
         Eigen::Vector3d euler;  //欧拉角
@@ -45,7 +46,10 @@ namespace Aided_INS_Space
         Eigen::Vector3d gyrScale; //陀螺比例因子
         Eigen::Vector3d accScale; //加速度计比例因子
     };
+    /*************************************************************************/
 
+
+    /******************************初始配置数据结构******************************/
     struct NavState
     {
         Eigen::Vector3d pos;      //位置
@@ -79,17 +83,10 @@ namespace Aided_INS_Space
 
         Eigen::Vector3d antennaLever = {0, 0, 0}; //GNSS天线杆臂
     };
+    /*************************************************************************/
 
-    struct GNSS
-    {
-        double time; //GPS采样时间
 
-        Eigen::Vector3d blh; //纬经高
-        Eigen::Vector3d std; //标准差
-
-        bool isValid;
-    };
-
+    /*****************************传感器数据结构*********************************/
     struct IMU
     {
         double time; //IMU采样时间
@@ -98,6 +95,25 @@ namespace Aided_INS_Space
         Eigen::Vector3d deltaTheta; //角度增量
         Eigen::Vector3d deltaVel;   //速度增量
     };
+
+    struct Mag
+    {
+        double time; //磁力计采样时间
+        Eigen::Vector3d mag;
+
+        bool isUpdate; //是否更新了数据
+    };
+
+    struct GNSS
+    {
+        double time; //GPS采样时间
+
+        Eigen::Vector3d blh; //纬经高
+        Eigen::Vector3d std; //标准差
+
+        bool isUpdate; //是否更新了数据
+    };
+    /*************************************************************************/
 }
 
 #endif //AHRS_AIDED_INS_TYPES_HPP

@@ -34,6 +34,7 @@ using Earth::Gravity;
 using Earth::RM_And_RN;
 using Earth::WIE;
 using Earth::DR_Inv;
+using Earth::DR;
 
 using Rotation::Euler2DCM;
 using Rotation::Euler2Quaternion;
@@ -50,12 +51,40 @@ Aided_INS::Aided_INS(const uint8_t id)
 
 int Aided_INS::Run()
 {
+    const bool imuReady = GetImuData();
+    GetMagData();
+
+    if ( imuReady )
+    {
+        ProcessNewData();
+        return 1;
+    }
+
     return 0;
 }
 
 int Aided_INS::InitialAlignment()
 {
     return 0;
+}
+
+bool Aided_INS::GetImuData()
+{
+    // if ()
+    // {
+    //     return true;
+    // }
+
+    return false;
+}
+
+void Aided_INS::GetMagData()
+{
+    // if ()
+    // {
+    //     magData_.isUpdate = true;
+    //     return true;
+    // }
 }
 
 Aided_INS_Space::Config Aided_INS::LoadConfig()
@@ -67,7 +96,7 @@ Aided_INS_Space::Config Aided_INS::LoadConfig()
 
 void Aided_INS::Initialize(const Aided_INS_Space::Config &config)
 {
-    this->config_ = config;
+    config_ = config;
     timestamp_ = 0;
 
     //设置协方差矩阵Cov，系统噪声阵q和系统误差状态矩阵dx大小
@@ -165,7 +194,7 @@ void Aided_INS::InsPropagation(const IMU &imuPre, IMU &imuCur)
     const Vector3d f_b = imuCur.deltaVel / imuCur.dt;
     const Vector3d w_ib_b = imuCur.deltaTheta / imuCur.dt;
 
-    // 位置误差
+    //位置误差
     Matrix3d temp;
     temp.setZero();
     temp(0, 0) =  -pvaPre_.vel[2] / RM_h;
@@ -260,7 +289,102 @@ void Aided_INS::EKFPredict(const MatrixXd &Phi, const MatrixXd &Q)
     P_  = Phi * P_ * Phi.transpose() + Q;
 }
 
-void Aided_INS::EkfUpdate(MatrixXd &dz, MatrixXd &H, MatrixXd &R)
+bool Aided_INS::AccUpdate(const IMU& imuData, const PVA& pvaCur, const Aided_INS_Space::Config& config)
+{
+    const Vector3d f_b = imuData.deltaVel / imuData.dt;
+    const double gravity = Gravity(pvaCur.pos); //当地重力加速度
+    const Vector3d g_l_n{0, 0, gravity}; //当地重力加速度投影在n系
+    const Vector3d g_b_ByImu = pvaCur.att.Cbn.transpose() * g_l_n; //IMU测量到的重力加速度（假设没有运动加速度）。g_b_ByImu = Cnb * g_l_n
+
+    if (f_b.norm() > 1e-6f && g_b_ByImu.norm() > 1e-6f)
+    {
+        const double cos_gn_gb = f_b.dot(g_b_ByImu) / ( f_b.norm() * g_b_ByImu.norm() ); //重力测量值与理论值的夹角，如果不是1，说明测量值与理论值方向不重合
+
+        if ( fabs(f_b.norm() - gravity) < 0.8 && cos_gn_gb > 0.95) //运动加速度如果太大，则不用加速度计更新姿态
+        {
+            //构造输入加速度计观测方程的测量误差
+            const Vector3d f_b_ByImu = -g_b_ByImu; //IMU测量到的重力加速度（假设没有运动加速度）产生的比力
+            const MatrixXd dz = f_b_ByImu - f_b;
+
+            //构造加速度计观测矩阵
+            MatrixXd H_acc;
+            H_acc.resize(3, P_.rows());
+            H_acc.setZero();
+            H_acc.block(0, PHI_ID, 3, 3) = SkewSymmetric(-f_b_ByImu);
+            H_acc.block(0, AB_ID, 3, 3)  = -Matrix3d::Identity();
+            H_acc.block(0,AS_ID, 3, 3)   = (-f_b_ByImu).asDiagonal();
+
+            //加速度计观测噪声矩阵
+            const MatrixXd R_acc = (config.imuNoise.accVrw.cwiseProduct(config.imuNoise.accVrw)  / imuData.dt).asDiagonal();
+
+            // EKF更新协方差和误差状态
+            EkfUpdate(dz, H_acc, R_acc);
+
+            return true;
+        }
+    }
+
+    return false;
+}
+
+void Aided_INS::MagUpdate(const Mag &magData, const PVA &pvaCur, const Aided_INS_Space::Config &config)
+{
+    /**
+     *认为roll、pitch是准确的，认为pvaCur的估计结果只存在yaw误差，所以先将磁力计测量值转到n系，
+     *此时，hx_n、hy_n理论上就是地磁的水平分量。如果无磁偏角、yaw误差，hy_n应该为0，所以
+     *hy_n、hx_n形成的夹角就是磁偏角与yaw误差的总和。
+     */
+    Vector3d h_n = pvaCur.att.Cbn * magData.mag;
+
+    //构造输入磁力计观测方程的测量误差（先不修正磁偏角）
+    MatrixXd dz(1,1);
+    dz(0, 0) = -atan2(-h_n(1), h_n(0)); //磁力计测得的航向误差 = 偏航角误差 + 磁偏角
+
+    //构造磁力计观测矩阵
+    MatrixXd H_mag;
+    H_mag.resize(1, P_.rows());
+    H_mag.setZero();
+    H_mag(0, PHI_ID+2) = 1;
+
+    //磁力计观测噪声矩阵
+    MatrixXd R_mag(1,1);
+    R_mag(0, 0) = config.magMeasureYawStd * config.magMeasureYawStd;
+
+    // EKF更新协方差和误差状态
+    EkfUpdate(dz, H_mag, R_mag);
+
+    //磁力计更新之后设置为不可用
+    magData_.isUpdate = false;
+}
+
+void Aided_INS::GnssUpdate(GNSS &gnssData)
+{
+    //IMU位置转到GNSS天线相位中心位置
+    const Matrix3d Dr_inv = DR_Inv(pvaCur_.pos);
+    const Matrix3d Dr = DR(pvaCur_.pos);
+    const Vector3d antennaPosByImu = pvaCur_.pos + Dr_inv * pvaCur_.att.Cbn * config_.antennaLever;
+
+    //GNSS位置测量新息
+    const MatrixXd dz = Dr * (antennaPosByImu - gnssData.blh);
+
+    //构造GNSS位置观测矩阵
+    MatrixXd H_gnssPos;
+    H_gnssPos.resize(3, P_.rows());
+    H_gnssPos.setZero();
+    H_gnssPos.block(0, P_ID, 3, 3)   = Matrix3d::Identity();
+    H_gnssPos.block(0, PHI_ID, 3, 3) = SkewSymmetric(pvaCur_.att.Cbn * config_.antennaLever);
+
+    //位置观测噪声阵
+    const MatrixXd R_gnssPos = gnssData.std.cwiseProduct(gnssData.std).asDiagonal();
+
+    //EKF更新协方差和误差状态
+    EkfUpdate(dz, H_gnssPos, R_gnssPos);
+
+    //GNSS更新之后设置为不可用
+    gnssData.isUpdate = false;
+}
+
+void Aided_INS::EkfUpdate(const MatrixXd &dz, MatrixXd &H, const MatrixXd &R)
 {
     assert(H.cols()  == P_.rows());
     assert(dz.rows() == H.rows());
@@ -294,7 +418,7 @@ void Aided_INS::StateFeedback()
     //姿态误差反馈
     vecTemp               = dx_.block(PHI_ID, 0, 3, 1); //phi姿态失准角小角度下可近似为等效旋转矢量phi_n(k)_p(k)，p系为估计得到的导航系，n系为真导航系
     const Quaterniond qpn = RotVec2Quaternion(vecTemp); //q_p(k)_n(k)
-    pvaCur_.att.qbn       = qpn * pvaCur_.att.qbn; //q_b(k)_n(k) = q_p(k)_n(k) * q_b(k)_p(k)
+    pvaCur_.att.qbn       = (qpn * pvaCur_.att.qbn).normalized(); //q_b(k)_n(k) = q_p(k)_n(k) * q_b(k)_p(k)
     pvaCur_.att.Cbn       = Quaternion2DCM(pvaCur_.att.qbn);
     pvaCur_.att.euler     = DCM2Euler(pvaCur_.att.Cbn);
 
@@ -312,4 +436,95 @@ void Aided_INS::StateFeedback()
 
     // 误差状态反馈到系统状态后,将误差状态清零
     dx_.setZero();
+}
+
+Aided_INS::KfUpdateType Aided_INS::IsToUpdate(const double imuTime1, const double imuTime2,
+                                              const double updateTime) const
+{
+    if (fabs(imuTime1 - updateTime) < TIME_ALIGN_ERR_)
+        return KfUpdateType::Prev; //更新时间靠近imuTime1
+
+    if (fabs(imuTime2 - updateTime) <= TIME_ALIGN_ERR_)
+        return KfUpdateType::Curr; //更新时间靠近imuTime2
+
+    if (imuTime1 < updateTime && updateTime < imuTime2)
+        return KfUpdateType::Middle; //更新时间在imuTime1和imTime2之间, 但不靠近任何一个
+
+    return KfUpdateType::None; //更新时间不在imuTime1和imuTime2之间，且不靠近任何一个
+}
+
+void Aided_INS::ProcessNewData()
+{
+    //当前IMU时间作为系统当前状态时间
+    timestamp_ = imuCur_.time;
+
+    //如果磁力计有效，则将更新时间设置为磁力计采样时间
+    const double updateTime = magData_.isUpdate ? magData_.time : -1;
+
+    //判断是否需要进行KF磁力计更新
+    const KfUpdateType res = IsToUpdate(imuPre_.time, imuCur_.time, updateTime);
+
+    if ( res == KfUpdateType::None)
+    {
+        //只传播导航状态、加速度计更新
+        InsPropagation(imuPre_, imuCur_);
+        if (AccUpdate(imuCur_, pvaCur_, config_))
+        {
+            StateFeedback();
+        }
+    }
+    else if (res == KfUpdateType::Prev)
+    {
+        //磁力计数据靠近上一历元，先对上一历元进行磁力计更新
+        MagUpdate(magData_, pvaCur_, config_);
+        StateFeedback();
+
+        pvaPre_ = pvaCur_;
+        InsPropagation(imuPre_, imuCur_);
+        if (AccUpdate(imuCur_, pvaCur_, config_))
+        {
+            StateFeedback();
+        }
+    }
+    else if (res == KfUpdateType::Curr)
+    {
+        //磁力计数据靠近当前历元，先对当前IMU进行状态传播
+        InsPropagation(imuPre_, imuCur_);
+        if (AccUpdate(imuCur_, pvaCur_, config_))
+        {
+            StateFeedback();
+        }
+        MagUpdate(magData_, pvaCur_, config_);
+        StateFeedback();
+    }
+    else
+    {
+        //磁力计数据在两个IMU数据之间(不靠近任何一个), 将当前IMU内插到磁力计采样时刻
+        IMU imuMiddle;
+        imuInterpolate(imuPre_, imuCur_, updateTime, imuMiddle);
+        // NOTE：内插之后采样间隔会变化，严格上不满足INSMech的假设，但影响较小暂时忽略
+
+        //对前一半IMU进行状态传播
+        InsPropagation(imuPre_, imuMiddle);
+        if (AccUpdate(imuMiddle, pvaCur_, config_))
+        {
+            StateFeedback();
+        }
+
+        //进行磁力计更新，并反馈系统状态
+        MagUpdate(magData_, pvaCur_, config_);
+        StateFeedback();
+
+        //对后一半IMU进行状态传播
+        pvaPre_ = pvaCur_;
+        InsPropagation(imuMiddle, imuCur_);
+        if (AccUpdate(imuCur_, pvaCur_, config_))
+        {
+            StateFeedback();
+        }
+    }
+
+    //更新上一时刻的状态和IMU数据
+    pvaPre_ = pvaCur_;
+    imuPre_ = imuCur_;
 }
