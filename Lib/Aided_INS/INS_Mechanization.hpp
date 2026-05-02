@@ -21,11 +21,11 @@
 
 #include "Aided_INS_Types.hpp"
 
-using Aided_INS_Space::PVA;
-using Aided_INS_Space::IMU;
-
 namespace INS_Mechanization
 {
+    using Aided_INS_Space::PVA;
+    using Aided_INS_Space::IMU;
+
     /**
      * @brief INS机械编排算法, 利用IMU数据进行速度、位置和姿态更新
      *        INS Mechanization, update velocity, position and attitude using imudata

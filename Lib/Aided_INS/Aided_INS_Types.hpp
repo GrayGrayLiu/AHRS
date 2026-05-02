@@ -20,7 +20,6 @@
 #define AHRS_AIDED_INS_TYPES_HPP
 
 #include <Eigen/Dense>
-#include "AngleUtilities.hpp"
 
 namespace Aided_INS_Space
 {

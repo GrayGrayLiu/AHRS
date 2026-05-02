@@ -36,6 +36,9 @@ using Rotation::Quaternion2Vector;
 using Rotation::Quaternion2DCM;
 using Rotation::DCM2Euler;
 
+using Aided_INS_Space::PVA;
+using Aided_INS_Space::IMU;
+
 namespace //函数前置声明
 {
     /**

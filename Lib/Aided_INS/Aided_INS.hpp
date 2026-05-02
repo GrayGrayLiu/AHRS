@@ -24,15 +24,6 @@
 #include <Eigen/Dense>
 #include "Aided_INS_Types.hpp"
 
-using Aided_INS_Space::NavState;
-using Aided_INS_Space::IMU;
-using Aided_INS_Space::GNSS;
-using Aided_INS_Space::PVA;
-using Aided_INS_Space::ImuError;
-using Aided_INS_Space::Mag;
-
-using Eigen::MatrixXd;
-
 class Aided_INS
 {
 public:
@@ -53,6 +44,29 @@ public:
     int Run();
 
 private:
+    using NavState = Aided_INS_Space::NavState;
+    using IMU      = Aided_INS_Space::IMU;
+    using GNSS     = Aided_INS_Space::GNSS;
+    using PVA      = Aided_INS_Space::PVA;
+    using ImuError = Aided_INS_Space::ImuError;
+    using Mag      = Aided_INS_Space::Mag;
+    using Config   = Aided_INS_Space::Config;
+    using MatrixXd = Eigen::MatrixXd;
+    using Vector3d = Eigen::Vector3d;
+
+    enum class InsStatus : uint8_t
+    {
+        Unaligned = 0,
+        Aligning,
+        Running
+    };
+    InsStatus status_{InsStatus::Unaligned};
+    uint32_t alignStartTime_{0};
+    Vector3d alignGyroSum_ = Vector3d::Zero();
+    Vector3d alignAccSum_  = Vector3d::Zero();
+    Vector3d alignMagSum_  = Vector3d::Zero();
+    uint32_t alignCount_{0};
+
     /**
      * @brief 初始对准
      * @param
@@ -74,14 +88,13 @@ private:
      * @brief
      * @return
      */
-    static Aided_INS_Space::Config LoadConfig();
+    static Config LoadConfig();
 
     /**
      * @brief 初始化系统状态和协方差
      *        initialize state and state covariance
-     * @param config
      */
-    void Initialize(const Aided_INS_Space::Config &config);
+    void Initialize();
 
     /**
     * @brief 内插增量形式的IMU数据到指定时刻
@@ -147,7 +160,7 @@ private:
      * @param pvaCur 当前时刻IMU的导航解
      * @param config 初始配置
      */
-    bool AccUpdate(const IMU& imuData, const PVA& pvaCur, const Aided_INS_Space::Config& config);
+    bool AccUpdate(const IMU& imuData, const PVA& pvaCur, const Config& config);
 
     /**
      * @brief 磁力计观测方程
@@ -155,7 +168,7 @@ private:
      * @param pvaCur 当前时刻IMU的导航解
      * @param config 初始配置
      */
-    void MagUpdate(const Mag &magData, const PVA &pvaCur, const Aided_INS_Space::Config &config);
+    void MagUpdate(const Mag &magData, const PVA &pvaCur, const Config &config);
 
     /**
      * @brief 使用GNSS位置观测更新系统状态
@@ -184,7 +197,7 @@ private:
 
     enum class KfUpdateType: uint8_t
     {
-        None,  //不需要KF更新
+        None = 0,  //不需要KF更新
         Prev,  //需要KF更新上一IMU状态
         Curr,  //需要KF更新当前IMU状态
         Middle //需要将IMU进行内插到观测量更新时间
@@ -205,7 +218,7 @@ private:
     void ProcessNewData();
 
 
-    Aided_INS_Space::Config config_;
+    Config config_;
 
     double timestamp_{0.0};
 

@@ -24,6 +24,7 @@
 #include "EarthUtilities.hpp"
 #include "RotationUtilities.hpp"
 #include "INS_Mechanization.hpp"
+#include "stm32h7xx.h"
 
 using Eigen::Vector3d;
 using Eigen::Vector2d;
@@ -35,6 +36,7 @@ using Earth::RM_And_RN;
 using Earth::WIE;
 using Earth::DR_Inv;
 using Earth::DR;
+using Earth::w_ie_n;
 
 using Rotation::Euler2DCM;
 using Rotation::Euler2Quaternion;
@@ -43,29 +45,146 @@ using Rotation::RotVec2Quaternion;
 using Rotation::Quaternion2DCM;
 using Rotation::DCM2Euler;
 
+using Angle::Deg2Rad;
+
+using Aided_INS_Space::Config;
+
 Aided_INS::Aided_INS(const uint8_t id)
 {
-    const Aided_INS_Space::Config config = LoadConfig();
-    Initialize(config);
+    config_ = LoadConfig();
+    Initialize();
 }
 
 int Aided_INS::Run()
 {
-    const bool imuReady = GetImuData();
-    const bool magReady = GetMagData();
-
-    if ( imuReady )
+    switch (status_)
     {
-        ProcessNewData();
-        return 0;
-    }
+        case InsStatus::Unaligned:
+        {
+            alignStartTime_ = HAL_GetTick();
 
-    return -1;
+            alignGyroSum_.setZero();
+            alignAccSum_.setZero();
+            alignMagSum_.setZero();
+            alignCount_ = 0;
+
+            status_ = InsStatus::Aligning;
+            return 0;
+        }
+
+        case InsStatus::Aligning:
+        {
+            return InitialAlignment();
+        }
+
+        case InsStatus::Running:
+        {
+            const bool imuReady = GetImuData();
+            const bool magReady = GetMagData();
+
+            if (imuReady)
+            {
+                ProcessNewData();
+                return 1;
+            }
+
+            return 0;
+        }
+
+        default:
+            return -1;
+    }
 }
 
 int Aided_INS::InitialAlignment()
 {
-    return 0;
+    const bool imuReady = GetImuData();
+    const bool magReady = GetMagData();
+
+    if (!imuReady || !magReady)
+        return 0;
+
+    // 当前瞬时值
+    const Vector3d gyro = imuCur_.deltaTheta / imuCur_.dt;
+    const Vector3d acc  = imuCur_.deltaVel   / imuCur_.dt;
+    const Vector3d mag  = magData_.mag;
+
+    constexpr float ALIGN_ANGLE_SPEED_DEG_S = 1.0;
+    if (gyro.norm() > Deg2Rad(ALIGN_ANGLE_SPEED_DEG_S)) //载体角速度过大，退出初始对准
+    {
+        status_ = InsStatus::Unaligned;
+        return -1;
+    }
+
+    constexpr float ALIGN_ACCELERATION_MPS2 = 0.2; //载体运动角速度过大，退出初始对准
+    if (fabs(acc.norm() - Gravity(config_.initState.pos)) > ALIGN_ACCELERATION_MPS2)
+    {
+        status_ = InsStatus::Unaligned;
+        return -1;
+    }
+
+    // 累积
+    alignGyroSum_ += gyro;
+    alignAccSum_  += acc;
+    alignMagSum_  += mag;
+    alignCount_++;
+
+    const uint32_t elapsed = HAL_GetTick() - alignStartTime_;
+
+    constexpr uint32_t ALIGN_TIME_MS = 3000;
+    // 对准时间未到，继续累计
+    if (elapsed < ALIGN_TIME_MS)
+        return 0;
+
+    // 防止除0
+    if (alignCount_ == 0)
+        return -1;
+
+    // 平均
+    const Vector3d gyroMean = alignGyroSum_ / static_cast<double>(alignCount_);
+    const Vector3d accMean  = alignAccSum_  / static_cast<double>(alignCount_);
+    const Vector3d magMean  = alignMagSum_  / static_cast<double>(alignCount_);
+
+    const double ax = accMean(0);
+    const double ay = accMean(1);
+    const double az = accMean(2);
+
+    // roll / pitch
+    const double roll  = std::atan2(-ay, -az);
+    const double pitch = std::atan2(ax, std::sqrt(ay * ay + az * az));
+
+    // 磁力计倾斜补偿，当前未补偿当地磁偏角，yaw为磁北航向
+    const double mx = magMean(0);
+    const double my = magMean(1);
+    const double mz = magMean(2);
+
+    const double mx_h = mx * std::cos(pitch) + my * std::sin(roll) * std::sin(pitch) + mz * std::cos(roll) * std::sin(pitch);
+
+    const double my_h = my * std::cos(roll) - mz * std::sin(roll);
+
+    const double yaw = std::atan2(-my_h, mx_h);
+
+    // 初始化姿态
+    pvaCur_.att.euler << roll, pitch, yaw;
+    pvaCur_.att.Cbn = Euler2DCM(pvaCur_.att.euler);
+    pvaCur_.att.qbn = Euler2Quaternion(pvaCur_.att.euler);
+
+    pvaPre_ = pvaCur_;
+    imuPre_ = imuCur_;
+
+    // 估计初始陀螺零偏，扣除地球自转角速度
+    imuError_.gyrBias = gyroMean - pvaCur_.att.Cbn.transpose() * w_ie_n(config_.initState.pos[0]);
+
+    // 清零误差状态
+    dx_.setZero();
+
+    //清除磁力计更新标志位，避免刚进入运行时重复用旧磁力计。
+    magData_.isUpdate = false;
+
+    // 进入运行
+    status_ = InsStatus::Running;
+
+    return 1;
 }
 
 bool Aided_INS::GetImuData()
@@ -89,12 +208,12 @@ bool Aided_INS::GetMagData()
     return false;
 }
 
-Aided_INS_Space::Config Aided_INS::LoadConfig()
+Config Aided_INS::LoadConfig()
 {
     using namespace Aided_INS_Config;
     using Angle::D2R;
 
-    Aided_INS_Space::Config config{};
+    Config config{};
 
     constexpr double DEG_TO_RAD   = D2R;
     constexpr double HOUR_TO_SEC  = 3600.0;
@@ -202,9 +321,8 @@ Aided_INS_Space::Config Aided_INS::LoadConfig()
     return config;
 }
 
-void Aided_INS::Initialize(const Aided_INS_Space::Config &config)
+void Aided_INS::Initialize()
 {
-    config_ = config;
     timestamp_ = 0;
 
     //设置协方差矩阵Cov，系统噪声阵q和系统误差状态矩阵dx大小
@@ -397,7 +515,7 @@ void Aided_INS::EKFPredict(const MatrixXd &Phi, const MatrixXd &Q)
     P_  = Phi * P_ * Phi.transpose() + Q;
 }
 
-bool Aided_INS::AccUpdate(const IMU& imuData, const PVA& pvaCur, const Aided_INS_Space::Config& config)
+bool Aided_INS::AccUpdate(const IMU& imuData, const PVA& pvaCur, const Config& config)
 {
     const Vector3d f_b = imuData.deltaVel / imuData.dt;
     const double gravity = Gravity(pvaCur.pos); //当地重力加速度
@@ -435,7 +553,7 @@ bool Aided_INS::AccUpdate(const IMU& imuData, const PVA& pvaCur, const Aided_INS
     return false;
 }
 
-void Aided_INS::MagUpdate(const Mag &magData, const PVA &pvaCur, const Aided_INS_Space::Config &config)
+void Aided_INS::MagUpdate(const Mag &magData, const PVA &pvaCur, const Config &config)
 {
     /**
      *认为roll、pitch是准确的，认为pvaCur的估计结果只存在yaw误差，所以先将磁力计测量值转到n系，
