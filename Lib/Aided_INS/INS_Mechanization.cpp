@@ -3,7 +3,6 @@
  * @brief   惯导机械编排算法
  *
  * @details
- * 
  *
  * @author  Gray
  * @email   grayme12345@gmail.com

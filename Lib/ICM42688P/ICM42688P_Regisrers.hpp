@@ -1,13 +1,27 @@
-//
-// Created by Gray on 2026/1/14.
-//
+/******************************************************************************
+ * @file    ICM42688P_Regisrers.hpp
+ * @brief   ICM42688P主要寄存器描述，某些不太可能用到的寄存器未写入本文件
+ *
+ * @details
+ * 包含寄存器地址、4个分页的寄存器工能描述，实现了“与或非”位运算重载。
+ *
+ * @author  Gray
+ * @email   grayme12345@gmail.com
+ * @date    2026/1/14
+ *
+ * @copyright
+ * Copyright (c) 2026 Gray
+ *
+ * This software is provided "as is" without any warranties.
+ *
+ ******************************************************************************/
 
 #pragma once
 
 #include <cstdint>
 #include <type_traits>
 
-namespace ICM42688P
+namespace ICM42688P_Regs
 {
     /***************************************************************Define Bit***********************************************************************/
     inline constexpr uint8_t BitNone = 0u;
@@ -23,7 +37,7 @@ namespace ICM42688P
 
 
     /***********************************************************Registers Address********************************************************************/
-    namespace RegAdd
+    namespace RegsAdd
     {
         enum class BANK0:uint8_t
         {
@@ -1001,6 +1015,7 @@ namespace ICM42688P
     enum class GYRO_CONFIG_STATIC3_BITS:uint8_t
     {
         GYRO_AAF_DELT_MASK = Bit5 | Bit4 | Bit3 | Bit2 | Bit1 | Bit0, //Controls bandwidth of the gyroscope anti-alias filter See section 5.2 for details
+        GYRO_AAF_DELT_585HZ = Bit3 | Bit2 | Bit0, //585 Hz = 13 (0b00'1101)
     };
 
     /**
@@ -1013,6 +1028,7 @@ namespace ICM42688P
     enum class GYRO_CONFIG_STATIC4_BITS:uint8_t
     {
         GYRO_AAF_DELTSQR_7_0_MASK = Bit7 | Bit6 | Bit5 | Bit4 | Bit3 | Bit2 | Bit1 | Bit0, //Controls bandwidth of the gyroscope anti-alias filter See section 5.2 for details
+        GYRO_AAF_DELTSQR_7_0_585HZ = Bit7 | Bit5 | Bit3 | Bit1, //585 Hz = 170 (0b1010'1010)
     };
 
     /**
@@ -1025,7 +1041,10 @@ namespace ICM42688P
     enum class GYRO_CONFIG_STATIC5_BITS:uint8_t
     {
         GYRO_AAF_BITSHIFT_MASK = Bit7 | Bit6 | Bit5 | Bit4, //Controls bandwidth of the gyroscope anti-alias filter See section 5.2 for details
+        GYRO_AAF_BITSHIFT_585HZ = Bit7, //585 Hz = 8 (0b1000)
+
         GYRO_AAF_DELTSQR_11_8_MASK = Bit3 | Bit2 | Bit1 | Bit0, //Controls bandwidth of the gyroscope anti-alias filter See section 5.2 for details
+        GYRO_AAF_DELTSQR_11_8_585HZ = 0, //585 Hz = 170 (0b0000'1010'1010)
     };
 
     /**
@@ -1130,6 +1149,8 @@ namespace ICM42688P
     enum class ACCEL_CONFIG_STATIC2_BITS:uint8_t
     {
         ACCEL_AAF_DELT_MASK = Bit6 | Bit5 | Bit4 | Bit3 | Bit2 | Bit1, //Controls bandwidth of the accelerometer anti-alias filter See section 5.2 for details
+        ACCEL_AAF_DELT_585HZ = Bit4 | Bit3 | Bit1, //585 Hz = 13 (0b00'1101)
+
         ACCEL_AAF_DIS = Bit0, //0: Enable accelerometer anti-aliasing filter (default) 1: Disable accelerometer anti-aliasing filter
     };
 
@@ -1143,6 +1164,7 @@ namespace ICM42688P
     enum class ACCEL_CONFIG_STATIC3_BITS:uint8_t
     {
         ACCEL_AAF_DELTSQR_7_0_MASK = Bit7 | Bit6 | Bit5 | Bit4 | Bit3 | Bit2 | Bit1 | Bit0, //Controls bandwidth of the accelerometer anti-alias filter See section 5.2 for details
+        ACCEL_AAF_DELTSQR_7_0_585HZ = Bit7 | Bit5 | Bit3 | Bit1, //585 Hz = 170 (0b0000'1010'1010)
     };
 
     /**
@@ -1155,7 +1177,10 @@ namespace ICM42688P
     enum class ACCEL_CONFIG_STATIC4_BITS:uint8_t
     {
         ACCEL_AAF_BITSHIFT_MASK = Bit7 | Bit6 | Bit5 | Bit4, //Controls bandwidth of the accelerometer anti-alias filter See section 5.2 for details
+        ACCEL_AAF_BITSHIFT_585HZ = Bit7, //585 Hz = 8 (0b1000)
+
         ACCEL_AAF_DELTSQR_11_8_MASK = Bit3 | Bit2 | Bit1 | Bit0, //Controls bandwidth of the accelerometer anti-alias filter See section 5.2 for details
+        ACCEL_AAF_DELTSQR_11_8_585HZ = 0, //585 Hz = 170 (0b0000'1010'1010)
     };
     /************************************************************************************************************************************************/
 
@@ -1280,16 +1305,16 @@ namespace ICM42688P
 
     //特化DisableBitOperators<E>的值，置为true的枚举将不被允许后面的重载，因为寄存器地址不涉及需要位运算
     template<>
-    constexpr bool _disableBitOperators<RegAdd::BANK0> = true;
+    constexpr bool _disableBitOperators<RegsAdd::BANK0> = true;
 
     template<>
-    constexpr bool _disableBitOperators<RegAdd::BANK1> = true;
+    constexpr bool _disableBitOperators<RegsAdd::BANK1> = true;
 
     template<>
-    constexpr bool _disableBitOperators<RegAdd::BANK2> = true;
+    constexpr bool _disableBitOperators<RegsAdd::BANK2> = true;
 
     template<>
-    constexpr bool _disableBitOperators<RegAdd::BANK4> = true;
+    constexpr bool _disableBitOperators<RegsAdd::BANK4> = true;
 
     //重载“位与&”运算
     template<typename E>
