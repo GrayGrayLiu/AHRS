@@ -1,4 +1,4 @@
-/******************************************************************************
+﻿/******************************************************************************
  * @file    ICM42688P.hpp
  * @brief   ICM42688P头文件
  *
@@ -49,6 +49,10 @@ public:
     ICM42688P(SPI_HandleTypeDef* hspi,
               GPIO_TypeDef* cs_port, uint16_t cs_pin);
 
+    bool Init();
+    bool Update();
+    bool ReadLatest(int16_t accel[3], int16_t gyro[3], int16_t *temp) const;
+
     // ===== 单字节 =====
     void WriteByte(uint8_t reg, uint8_t value) const;
     void ReadByte(uint8_t reg);
@@ -66,6 +70,20 @@ public:
     void TxRxCpltCallback(SPI_HandleTypeDef* hspi);
 
 private:
+    bool CheckWhoAmI();
+    bool SelectBank(ICM42688P_Regs::REG_BANK_SEL_BITS bank, bool force = false);
+
+    bool WriteRegister(ICM42688P_Regs::RegsAdd::BANK0 reg, uint8_t value);
+    bool WriteRegister(ICM42688P_Regs::RegsAdd::BANK1 reg, uint8_t value);
+    bool WriteRegister(ICM42688P_Regs::RegsAdd::BANK2 reg, uint8_t value);
+
+    bool ReadRegister(ICM42688P_Regs::RegsAdd::BANK0 reg, uint8_t &value);
+    bool ReadRegister(ICM42688P_Regs::RegsAdd::BANK1 reg, uint8_t &value);
+    bool ReadRegister(ICM42688P_Regs::RegsAdd::BANK2 reg, uint8_t &value);
+
+    bool WriteRegisterRaw(uint8_t reg, uint8_t value) const;
+    bool ReadRegisterRaw(uint8_t reg, uint8_t &value) const;
+
     void CS_Low() const;
     void CS_High() const;
 
@@ -208,6 +226,11 @@ private:
 			static_cast<uint8_t>(ACCEL_CONFIG_STATIC4_BITS::ACCEL_AAF_BITSHIFT_585HZ | ACCEL_CONFIG_STATIC4_BITS::ACCEL_AAF_DELTSQR_11_8_585HZ),
 			static_cast<uint8_t>(ACCEL_CONFIG_STATIC4_BITS::ACCEL_AAF_BITSHIFT_MASK | ACCEL_CONFIG_STATIC4_BITS::ACCEL_AAF_DELTSQR_11_8_MASK)},
 	};
+
+    bool initialized_{false};
+    uint32_t error_count_{0};
+    bool bank_selected_valid_{false};
+    ICM42688P_Regs::REG_BANK_SEL_BITS current_bank_{ICM42688P_Regs::REG_BANK_SEL_BITS::BANK_SEL_0};
 };
 
     // void WriteBits(uint8_t reg, uint8_t set_bits, uint8_t clear_bits)

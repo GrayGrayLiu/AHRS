@@ -1,20 +1,17 @@
-//
-// Created by Gray on 2026/1/7.
-//
-
 #pragma once
 
+#include <stdint.h>
+
+#include "spi.h"
+
 #ifdef __cplusplus
-extern "C"
-{
+extern "C" {
 #endif
 
-    typedef struct Motor Motor;
-    typedef Motor* MotorHandle;
-
-    MotorHandle Motor_Create(int id);
-    void Motor_SetSpeed(MotorHandle motor, float speed);
-    float Motor_GetSpeed(MotorHandle motor);
+int ICM42688_Bind(SPI_HandleTypeDef *hspi, GPIO_TypeDef *cs_port, uint16_t cs_pin);
+int ICM42688_Init(void);
+int ICM42688_Update(void);
+int ICM42688_Read(int16_t accel[3], int16_t gyro[3], int16_t *temp);
 
 #ifdef __cplusplus
 }
