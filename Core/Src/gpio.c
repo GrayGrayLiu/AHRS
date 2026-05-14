@@ -54,6 +54,9 @@ void MX_GPIO_Init(void)
   HAL_GPIO_WritePin(GPIOE, RGB_R_Pin|RGB_G_Pin|RGB_B_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(IMU_SPI_CS_GPIO_Port, IMU_SPI_CS_Pin, GPIO_PIN_SET);
+
+  /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOB, MAG_RSTN_Pin|MAG_CAD0_Pin|MAG_CAD1_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pins : RGB_R_Pin RGB_G_Pin RGB_B_Pin */
@@ -74,6 +77,13 @@ void MX_GPIO_Init(void)
   GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(IMU_INT2_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : IMU_SPI_CS_Pin */
+  GPIO_InitStruct.Pin = IMU_SPI_CS_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(IMU_SPI_CS_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pins : MAG_RSTN_Pin MAG_CAD0_Pin MAG_CAD1_Pin */
   GPIO_InitStruct.Pin = MAG_RSTN_Pin|MAG_CAD0_Pin|MAG_CAD1_Pin;
