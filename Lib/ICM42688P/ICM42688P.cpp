@@ -22,41 +22,179 @@ using ICM42688P_Regs::RegsAdd::BANK0;
 using ICM42688P_Regs::RegsAdd::BANK1;
 using ICM42688P_Regs::RegsAdd::BANK2;
 
-namespace
-{
-constexpr uint8_t kReadFlag = 0x80U;
-constexpr uint8_t kWhoAmI = 0x47U;
-constexpr int kWhoAmIRetry = 3;
-}
-
 ICM42688P::ICM42688P(SPI_HandleTypeDef* hspi,
                      GPIO_TypeDef* cs_port, uint16_t cs_pin)
     : hspi_(hspi), cs_port_(cs_port), cs_pin_(cs_pin)
 {
 }
 
-bool ICM42688P::Init()
+ICM42688P::Status ICM42688P::Init()
 {
     initialized_ = false;
 
-    if (hspi_ == nullptr || cs_port_ == nullptr) {
+    if (!HasValidBus()) {
         ++error_count_;
-        return false;
+        return Status::InvalidArgument;
     }
 
-    // Do not assume current chip bank; force BANK0 once during init.
-    if (!SelectBank(ICM42688P_Regs::REG_BANK_SEL_BITS::BANK_SEL_0, true)) {
+    CS_High();
+    HAL_Delay(ICM42688P_Regs::POWER_ON_WAIT_MS);
+
+    Status status = Probe();
+
+    if (status != Status::Ok) {
         ++error_count_;
-        return false;
+        return status;
     }
 
-    if (!CheckWhoAmI()) {
+    status = Reset();
+
+    if (status != Status::Ok) {
         ++error_count_;
-        return false;
+        return status;
+    }
+
+    status = Probe();
+
+    if (status != Status::Ok) {
+        ++error_count_;
+        return status;
     }
 
     initialized_ = true;
-    return true;
+    return Status::Ok;
+}
+
+ICM42688P::Status ICM42688P::Probe()
+{
+    if (!HasValidBus()) {
+        return Status::InvalidArgument;
+    }
+
+    const Status bank_status = SelectBank(ICM42688P_Regs::REG_BANK_SEL_BITS::BANK_SEL_0, true);
+
+    if (bank_status != Status::Ok) {
+        return bank_status;
+    }
+
+    uint8_t who_am_i{};
+    const Status read_status = ReadRegisterRaw(static_cast<uint8_t>(BANK0::WHO_AM_I), who_am_i);
+
+    if (read_status != Status::Ok) {
+        return read_status;
+    }
+
+    return who_am_i == ICM42688P_Regs::WHO_AM_I_EXPECTED
+        ? Status::Ok
+        : Status::WrongDeviceId;
+}
+
+ICM42688P::Status ICM42688P::Reset()
+{
+    if (!HasValidBus()) {
+        return Status::InvalidArgument;
+    }
+
+    initialized_ = false;
+    Status status = RegisterWrite(BANK0::DEVICE_CONFIG,
+                                  static_cast<uint8_t>(ICM42688P_Regs::DEVICE_CONFIG_BITS::SOFT_RESET_CONFIG));
+
+    if (status != Status::Ok) {
+        return status;
+    }
+
+    HAL_Delay(ICM42688P_Regs::SOFT_RESET_WAIT_MS);
+    bank_selected_valid_ = false;
+
+    const uint32_t reset_start = HAL_GetTick();
+
+    while ((HAL_GetTick() - reset_start) <= ICM42688P_Regs::SOFT_RESET_TIMEOUT_MS) {
+        uint8_t device_config{};
+        status = RegisterRead(BANK0::DEVICE_CONFIG, device_config);
+
+        if (status != Status::Ok) {
+            return status;
+        }
+
+        if ((device_config & static_cast<uint8_t>(ICM42688P_Regs::DEVICE_CONFIG_BITS::SOFT_RESET_CONFIG))
+            == ICM42688P_Regs::BitNone) {
+            return Status::Ok;
+        }
+
+        HAL_Delay(ICM42688P_Regs::RESET_POLL_INTERVAL_MS);
+    }
+
+    return Status::ResetTimeout;
+}
+
+ICM42688P::Status ICM42688P::RegisterRead(const BANK0 reg, uint8_t& value)
+{
+    const Status status = SelectBank(ICM42688P_Regs::REG_BANK_SEL_BITS::BANK_SEL_0);
+    return status == Status::Ok ? ReadRegisterRaw(static_cast<uint8_t>(reg), value) : status;
+}
+
+ICM42688P::Status ICM42688P::RegisterWrite(const BANK0 reg, const uint8_t value)
+{
+    const Status status = SelectBank(ICM42688P_Regs::REG_BANK_SEL_BITS::BANK_SEL_0);
+    return status == Status::Ok ? WriteRegisterRaw(static_cast<uint8_t>(reg), value) : status;
+}
+
+ICM42688P::Status ICM42688P::ReadBuffer(const BANK0 start_reg,
+                                        uint8_t* buffer,
+                                        const uint16_t length)
+{
+    if (buffer == nullptr
+        || length == 0u
+        || length > ICM42688P_Regs::MAX_READ_LENGTH) {
+        return Status::InvalidArgument;
+    }
+
+    const Status status = SelectBank(ICM42688P_Regs::REG_BANK_SEL_BITS::BANK_SEL_0);
+    return status == Status::Ok ? ReadBufferRaw(static_cast<uint8_t>(start_reg), buffer, length) : status;
+}
+
+ICM42688P::Status ICM42688P::ReadRawAccel(RawVector& data)
+{
+    uint8_t buffer[ICM42688P_Regs::RAW_ACCEL_BURST_LENGTH]{};
+    const Status status = ReadBuffer(BANK0::ACCEL_DATA_X1,
+                                     buffer,
+                                     ICM42688P_Regs::RAW_ACCEL_BURST_LENGTH);
+
+    if (status != Status::Ok) {
+        return status;
+    }
+
+    RawVector new_data{};
+    new_data.x = CombineBigEndian(buffer[ICM42688P_Regs::RAW_X_HIGH_INDEX],
+                                  buffer[ICM42688P_Regs::RAW_X_LOW_INDEX]);
+    new_data.y = CombineBigEndian(buffer[ICM42688P_Regs::RAW_Y_HIGH_INDEX],
+                                  buffer[ICM42688P_Regs::RAW_Y_LOW_INDEX]);
+    new_data.z = CombineBigEndian(buffer[ICM42688P_Regs::RAW_Z_HIGH_INDEX],
+                                  buffer[ICM42688P_Regs::RAW_Z_LOW_INDEX]);
+    data = new_data;
+    return Status::Ok;
+}
+
+ICM42688P::Status ICM42688P::ReadRawGyro(RawVector& data)
+{
+    uint8_t buffer[ICM42688P_Regs::RAW_GYRO_BURST_LENGTH]{};
+    const Status status = ReadBuffer(BANK0::GYRO_DATA_X1,
+                                     buffer,
+                                     ICM42688P_Regs::RAW_GYRO_BURST_LENGTH);
+
+    if (status != Status::Ok) {
+        return status;
+    }
+
+    RawVector new_data{};
+    new_data.x = CombineBigEndian(buffer[ICM42688P_Regs::RAW_X_HIGH_INDEX],
+                                  buffer[ICM42688P_Regs::RAW_X_LOW_INDEX]);
+    new_data.y = CombineBigEndian(buffer[ICM42688P_Regs::RAW_Y_HIGH_INDEX],
+                                  buffer[ICM42688P_Regs::RAW_Y_LOW_INDEX]);
+    new_data.z = CombineBigEndian(buffer[ICM42688P_Regs::RAW_Z_HIGH_INDEX],
+                                  buffer[ICM42688P_Regs::RAW_Z_LOW_INDEX]);
+    data = new_data;
+    return Status::Ok;
 }
 
 bool ICM42688P::Update()
@@ -85,155 +223,118 @@ void ICM42688P::CS_High() const
     HAL_GPIO_WritePin(cs_port_, cs_pin_, GPIO_PIN_SET);
 }
 
-//////////////////////////////////////////////////////////
-// 单字节写（阻塞即可，没必要DMA）
-//////////////////////////////////////////////////////////
-void ICM42688P::WriteByte(const uint8_t reg, const uint8_t value) const
-{
-    uint8_t tx[2];
-    tx[0] = reg & 0x7F;
-    tx[1] = value;
-
-    CS_Low();
-    HAL_SPI_Transmit(hspi_, tx, 2, HAL_MAX_DELAY);
-    CS_High();
-}
-
-//////////////////////////////////////////////////////////
-// 单字节读（DMA）
-//////////////////////////////////////////////////////////
-void ICM42688P::ReadByte(uint8_t reg)
-{
-    tx_buf_[0] = reg | 0x80;
-    tx_buf_[1] = 0xFF;
-
-    rx_len_ = 1;
-    transfer_done_ = false;
-
-    CS_Low();
-    HAL_SPI_TransmitReceive_DMA(hspi_, tx_buf_, rx_buf_, 2);
-}
-
-//////////////////////////////////////////////////////////
-// 多字节读（DMA）
-//////////////////////////////////////////////////////////
-void ICM42688P::ReadBytes(uint8_t reg, uint16_t len)
-{
-    if (len > MAX_LEN) return;
-
-    tx_buf_[0] = reg | 0x80;
-    memset(&tx_buf_[1], 0xFF, len);
-
-    rx_len_ = len;
-    transfer_done_ = false;
-
-    CS_Low();
-    HAL_SPI_TransmitReceive_DMA(hspi_, tx_buf_, rx_buf_, len + 1);
-}
-
-//////////////////////////////////////////////////////////
-// DMA完成回调（核心）
-//////////////////////////////////////////////////////////
-void ICM42688P::TxRxCpltCallback(SPI_HandleTypeDef* hspi)
-{
-    if (hspi != hspi_) return;
-
-    CS_High();
-
-    transfer_done_ = true;
-}
-
-bool ICM42688P::CheckWhoAmI()
-{
-    uint8_t who_am_i = 0;
-
-    for (int i = 0; i < kWhoAmIRetry; ++i) {
-        if (ReadRegister(BANK0::WHO_AM_I, who_am_i) && who_am_i == kWhoAmI) {
-            return true;
-        }
-    }
-
-    return false;
-}
-
-bool ICM42688P::SelectBank(ICM42688P_Regs::REG_BANK_SEL_BITS bank, bool force)
+ICM42688P::Status ICM42688P::SelectBank(const ICM42688P_Regs::REG_BANK_SEL_BITS bank,
+                                        const bool force)
 {
     if (!force && bank_selected_valid_ && bank == current_bank_) {
-        return true;
+        return Status::Ok;
     }
 
     const uint8_t bank_value = static_cast<uint8_t>(bank) &
         static_cast<uint8_t>(ICM42688P_Regs::REG_BANK_SEL_BITS::BANK_SEL_MASK);
 
-    if (!WriteRegisterRaw(static_cast<uint8_t>(BANK0::REG_BANK_SEL), bank_value)) {
-        return false;
+    const Status status = WriteRegisterRaw(static_cast<uint8_t>(BANK0::REG_BANK_SEL), bank_value);
+
+    if (status != Status::Ok) {
+        return status;
     }
 
     current_bank_ = bank;
     bank_selected_valid_ = true;
-    return true;
+    return Status::Ok;
 }
 
-bool ICM42688P::WriteRegister(BANK0 reg, uint8_t value)
+ICM42688P::Status ICM42688P::WriteRegister(const BANK1 reg, const uint8_t value)
 {
-    return SelectBank(ICM42688P_Regs::REG_BANK_SEL_BITS::BANK_SEL_0) &&
-        WriteRegisterRaw(static_cast<uint8_t>(reg), value);
+    const Status status = SelectBank(ICM42688P_Regs::REG_BANK_SEL_BITS::BANK_SEL_1);
+    return status == Status::Ok ? WriteRegisterRaw(static_cast<uint8_t>(reg), value) : status;
 }
 
-bool ICM42688P::WriteRegister(BANK1 reg, uint8_t value)
+ICM42688P::Status ICM42688P::WriteRegister(const BANK2 reg, const uint8_t value)
 {
-    return SelectBank(ICM42688P_Regs::REG_BANK_SEL_BITS::BANK_SEL_1) &&
-        WriteRegisterRaw(static_cast<uint8_t>(reg), value);
+    const Status status = SelectBank(ICM42688P_Regs::REG_BANK_SEL_BITS::BANK_SEL_2);
+    return status == Status::Ok ? WriteRegisterRaw(static_cast<uint8_t>(reg), value) : status;
 }
 
-bool ICM42688P::WriteRegister(BANK2 reg, uint8_t value)
+ICM42688P::Status ICM42688P::ReadRegister(const BANK1 reg, uint8_t& value)
 {
-    return SelectBank(ICM42688P_Regs::REG_BANK_SEL_BITS::BANK_SEL_2) &&
-        WriteRegisterRaw(static_cast<uint8_t>(reg), value);
+    const Status status = SelectBank(ICM42688P_Regs::REG_BANK_SEL_BITS::BANK_SEL_1);
+    return status == Status::Ok ? ReadRegisterRaw(static_cast<uint8_t>(reg), value) : status;
 }
 
-bool ICM42688P::ReadRegister(BANK0 reg, uint8_t &value)
+ICM42688P::Status ICM42688P::ReadRegister(const BANK2 reg, uint8_t& value)
 {
-    return SelectBank(ICM42688P_Regs::REG_BANK_SEL_BITS::BANK_SEL_0) &&
-        ReadRegisterRaw(static_cast<uint8_t>(reg), value);
+    const Status status = SelectBank(ICM42688P_Regs::REG_BANK_SEL_BITS::BANK_SEL_2);
+    return status == Status::Ok ? ReadRegisterRaw(static_cast<uint8_t>(reg), value) : status;
 }
 
-bool ICM42688P::ReadRegister(BANK1 reg, uint8_t &value)
+ICM42688P::Status ICM42688P::WriteRegisterRaw(const uint8_t reg, const uint8_t value) const
 {
-    return SelectBank(ICM42688P_Regs::REG_BANK_SEL_BITS::BANK_SEL_1) &&
-        ReadRegisterRaw(static_cast<uint8_t>(reg), value);
-}
+    if (!HasValidBus()) {
+        return Status::InvalidArgument;
+    }
 
-bool ICM42688P::ReadRegister(BANK2 reg, uint8_t &value)
-{
-    return SelectBank(ICM42688P_Regs::REG_BANK_SEL_BITS::BANK_SEL_2) &&
-        ReadRegisterRaw(static_cast<uint8_t>(reg), value);
-}
-
-bool ICM42688P::WriteRegisterRaw(uint8_t reg, uint8_t value) const
-{
-    uint8_t tx[2] = {static_cast<uint8_t>(reg & static_cast<uint8_t>(~kReadFlag)), value};
+    uint8_t tx[ICM42688P_Regs::REGISTER_TRANSACTION_LENGTH] = {
+        static_cast<uint8_t>(reg & ICM42688P_Regs::SPI_WRITE_ADDRESS_MASK),
+        value
+    };
 
     CS_Low();
-    const HAL_StatusTypeDef status = HAL_SPI_Transmit(hspi_, tx, 2, HAL_MAX_DELAY);
+    const HAL_StatusTypeDef status = HAL_SPI_Transmit(hspi_,
+                                                      tx,
+                                                      ICM42688P_Regs::REGISTER_TRANSACTION_LENGTH,
+                                                      ICM42688P_Regs::SPI_TRANSACTION_TIMEOUT_MS);
     CS_High();
 
-    return status == HAL_OK;
+    return status == HAL_OK ? Status::Ok : Status::SpiError;
 }
 
-bool ICM42688P::ReadRegisterRaw(uint8_t reg, uint8_t &value) const
+ICM42688P::Status ICM42688P::ReadRegisterRaw(const uint8_t reg, uint8_t& value)
 {
-    uint8_t tx[2] = {static_cast<uint8_t>(reg | kReadFlag), 0xFFU};
-    uint8_t rx[2] = {0U, 0U};
+    return ReadBufferRaw(reg, &value, ICM42688P_Regs::REGISTER_VALUE_LENGTH);
+}
+
+ICM42688P::Status ICM42688P::ReadBufferRaw(const uint8_t start_reg,
+                                           uint8_t* buffer,
+                                           const uint16_t length)
+{
+    if (!HasValidBus()
+        || buffer == nullptr
+        || length == 0u
+        || length > ICM42688P_Regs::MAX_READ_LENGTH) {
+        return Status::InvalidArgument;
+    }
+
+    tx_buf_[0] = static_cast<uint8_t>(start_reg | ICM42688P_Regs::SPI_READ_BIT);
+    memset(&tx_buf_[ICM42688P_Regs::SPI_COMMAND_LENGTH],
+           ICM42688P_Regs::SPI_DUMMY_BYTE,
+           length);
 
     CS_Low();
-    const HAL_StatusTypeDef status = HAL_SPI_TransmitReceive(hspi_, tx, rx, 2, HAL_MAX_DELAY);
+    const HAL_StatusTypeDef status = HAL_SPI_TransmitReceive(
+        hspi_,
+        tx_buf_,
+        rx_buf_,
+        static_cast<uint16_t>(length + ICM42688P_Regs::SPI_COMMAND_LENGTH),
+        ICM42688P_Regs::SPI_TRANSACTION_TIMEOUT_MS);
     CS_High();
 
     if (status != HAL_OK) {
-        return false;
+        return Status::SpiError;
     }
 
-    value = rx[1];
-    return true;
+    memcpy(buffer, &rx_buf_[ICM42688P_Regs::SPI_COMMAND_LENGTH], length);
+    return Status::Ok;
+}
+
+bool ICM42688P::HasValidBus() const
+{
+    return hspi_ != nullptr && cs_port_ != nullptr && cs_pin_ != 0u;
+}
+
+int16_t ICM42688P::CombineBigEndian(const uint8_t high, const uint8_t low)
+{
+    const uint16_t combined = static_cast<uint16_t>(
+        (static_cast<uint16_t>(high) << ICM42688P_Regs::RAW_HIGH_BYTE_SHIFT) | low);
+    return static_cast<int16_t>(combined);
 }

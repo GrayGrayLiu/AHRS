@@ -1,5 +1,5 @@
 /******************************************************************************
- * @file    ICM42688P_Regisrers.hpp
+ * @file    ICM42688P_Registers.hpp
  * @brief   ICM42688P主要寄存器描述，某些不太可能用到的寄存器未写入本文件
  *
  * @details
@@ -33,6 +33,33 @@ namespace ICM42688P_Regs
     inline constexpr uint8_t Bit5 = 1u << 5;
     inline constexpr uint8_t Bit6 = 1u << 6;
     inline constexpr uint8_t Bit7 = 1u << 7;
+
+    inline constexpr uint8_t SPI_READ_BIT = Bit7;
+    inline constexpr uint8_t SPI_WRITE_ADDRESS_MASK = static_cast<uint8_t>(~SPI_READ_BIT);
+    inline constexpr uint8_t SPI_DUMMY_BYTE = 0xFF;
+    inline constexpr uint8_t WHO_AM_I_EXPECTED = 0x47;
+
+    inline constexpr uint32_t SPI_TRANSACTION_TIMEOUT_MS = 10u;
+    inline constexpr uint32_t POWER_ON_WAIT_MS = 1u;
+    inline constexpr uint32_t SOFT_RESET_WAIT_MS = 1u;
+    inline constexpr uint32_t SOFT_RESET_TIMEOUT_MS = 10u;
+    inline constexpr uint32_t RESET_POLL_INTERVAL_MS = 1u;
+
+    inline constexpr uint16_t SPI_COMMAND_LENGTH = 1u;
+    inline constexpr uint16_t REGISTER_VALUE_LENGTH = 1u;
+    inline constexpr uint16_t REGISTER_TRANSACTION_LENGTH = SPI_COMMAND_LENGTH + REGISTER_VALUE_LENGTH;
+    inline constexpr uint16_t MAX_READ_LENGTH = 256u;
+    inline constexpr uint16_t RAW_ACCEL_BURST_LENGTH = 6u;
+    inline constexpr uint16_t RAW_GYRO_BURST_LENGTH = 6u;
+    inline constexpr uint16_t RAW_ACCEL_GYRO_BURST_LENGTH = 12u;
+
+    inline constexpr uint8_t RAW_X_HIGH_INDEX = 0u;
+    inline constexpr uint8_t RAW_X_LOW_INDEX = 1u;
+    inline constexpr uint8_t RAW_Y_HIGH_INDEX = 2u;
+    inline constexpr uint8_t RAW_Y_LOW_INDEX = 3u;
+    inline constexpr uint8_t RAW_Z_HIGH_INDEX = 4u;
+    inline constexpr uint8_t RAW_Z_LOW_INDEX = 5u;
+    inline constexpr uint8_t RAW_HIGH_BYTE_SHIFT = 8u;
     /************************************************************************************************************************************************/
 
 

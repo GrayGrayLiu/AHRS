@@ -18,7 +18,7 @@
 #pragma once
 
 #include "spi.h"
-#include "ICM42688P_Regisrers.hpp"
+#include "ICM42688P_Registers.hpp"
 
 using namespace ICM42688P_Regs;
 
@@ -46,43 +46,58 @@ struct register_bank2_config_t
 class ICM42688P
 {
 public:
+    enum class Status : int32_t
+    {
+        Ok = 0,
+        InvalidArgument = -1,
+        SpiError = -2,
+        WrongDeviceId = -3,
+        ResetTimeout = -4,
+        Unsupported = -5,
+        ConfigMismatch = -6,
+    };
+
+    struct RawVector
+    {
+        int16_t x{0};
+        int16_t y{0};
+        int16_t z{0};
+    };
+
     ICM42688P(SPI_HandleTypeDef* hspi,
               GPIO_TypeDef* cs_port, uint16_t cs_pin);
 
-    bool Init();
+    // Stage 1 hardware bring-up only: wait for power-on, probe, soft reset and
+    // probe again. This does not configure or enable the accelerometer/gyro.
+    [[nodiscard]] Status Init();
+    [[nodiscard]] Status Probe();
+    [[nodiscard]] Status Reset();
+
+    [[nodiscard]] Status RegisterRead(ICM42688P_Regs::RegsAdd::BANK0 reg, uint8_t& value);
+    [[nodiscard]] Status RegisterWrite(ICM42688P_Regs::RegsAdd::BANK0 reg, uint8_t value);
+    [[nodiscard]] Status ReadBuffer(ICM42688P_Regs::RegsAdd::BANK0 start_reg,
+                                    uint8_t* buffer,
+                                    uint16_t length);
+    [[nodiscard]] Status ReadRawAccel(RawVector& data);
+    [[nodiscard]] Status ReadRawGyro(RawVector& data);
+
     bool Update();
     bool ReadLatest(int16_t accel[3], int16_t gyro[3], int16_t *temp) const;
 
-    // ===== 单字节 =====
-    void WriteByte(uint8_t reg, uint8_t value) const;
-    void ReadByte(uint8_t reg);
-
-    // ===== 多字节 =====
-    void ReadBytes(uint8_t reg, uint16_t len);
-
-    // DMA完成标志
-    volatile bool transfer_done_{false};
-
-    // 获取数据（跳过dummy）
-    uint8_t* GetRxData() { return &rx_buf_[1]; }
-
-    // HAL回调入口
-    void TxRxCpltCallback(SPI_HandleTypeDef* hspi);
-
 private:
-    bool CheckWhoAmI();
-    bool SelectBank(ICM42688P_Regs::REG_BANK_SEL_BITS bank, bool force = false);
+    [[nodiscard]] Status SelectBank(ICM42688P_Regs::REG_BANK_SEL_BITS bank, bool force = false);
 
-    bool WriteRegister(ICM42688P_Regs::RegsAdd::BANK0 reg, uint8_t value);
-    bool WriteRegister(ICM42688P_Regs::RegsAdd::BANK1 reg, uint8_t value);
-    bool WriteRegister(ICM42688P_Regs::RegsAdd::BANK2 reg, uint8_t value);
+    [[nodiscard]] Status WriteRegister(ICM42688P_Regs::RegsAdd::BANK1 reg, uint8_t value);
+    [[nodiscard]] Status WriteRegister(ICM42688P_Regs::RegsAdd::BANK2 reg, uint8_t value);
 
-    bool ReadRegister(ICM42688P_Regs::RegsAdd::BANK0 reg, uint8_t &value);
-    bool ReadRegister(ICM42688P_Regs::RegsAdd::BANK1 reg, uint8_t &value);
-    bool ReadRegister(ICM42688P_Regs::RegsAdd::BANK2 reg, uint8_t &value);
+    [[nodiscard]] Status ReadRegister(ICM42688P_Regs::RegsAdd::BANK1 reg, uint8_t& value);
+    [[nodiscard]] Status ReadRegister(ICM42688P_Regs::RegsAdd::BANK2 reg, uint8_t& value);
 
-    bool WriteRegisterRaw(uint8_t reg, uint8_t value) const;
-    bool ReadRegisterRaw(uint8_t reg, uint8_t &value) const;
+    [[nodiscard]] Status WriteRegisterRaw(uint8_t reg, uint8_t value) const;
+    [[nodiscard]] Status ReadRegisterRaw(uint8_t reg, uint8_t& value);
+    [[nodiscard]] Status ReadBufferRaw(uint8_t start_reg, uint8_t* buffer, uint16_t length);
+    [[nodiscard]] bool HasValidBus() const;
+    [[nodiscard]] static int16_t CombineBigEndian(uint8_t high, uint8_t low);
 
     void CS_Low() const;
     void CS_High() const;
@@ -91,12 +106,8 @@ private:
     GPIO_TypeDef* cs_port_;
     uint16_t cs_pin_;
 
-    // DMA缓冲区（必须是成员变量）
-    static constexpr uint16_t MAX_LEN = 256;
-    uint8_t tx_buf_[MAX_LEN + 1];
-    uint8_t rx_buf_[MAX_LEN + 1];
-
-    uint16_t rx_len_{0};
+    uint8_t tx_buf_[ICM42688P_Regs::MAX_READ_LENGTH + ICM42688P_Regs::SPI_COMMAND_LENGTH]{};
+    uint8_t rx_buf_[ICM42688P_Regs::MAX_READ_LENGTH + ICM42688P_Regs::SPI_COMMAND_LENGTH]{};
 
 	using BANK0 = ICM42688P_Regs::RegsAdd::BANK0;
 	using BANK1 = ICM42688P_Regs::RegsAdd::BANK1;
