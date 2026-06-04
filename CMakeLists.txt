@@ -53,6 +53,7 @@ include_directories(Core/Inc Drivers/STM32H7xx_HAL_Driver/Inc Drivers/STM32H7xx_
                     Lib/Aided_INS
                     Lib/EXIT
                     Lib/ICM42688P
+                    Lib/IST8310
                     Lib/Math
                     Lib/Printf
                     Lib/RGB
@@ -67,6 +68,7 @@ file(GLOB_RECURSE SOURCES "Core/*.*" "Drivers/*.*"
     Lib/Aided_INS/*.*
     Lib/EXIT/*.*
     Lib/ICM42688P/*.*
+    Lib/IST8310/*.*
     Lib/Math/*.*
     Lib/Printf/*.*
     Lib/RGB/*.*

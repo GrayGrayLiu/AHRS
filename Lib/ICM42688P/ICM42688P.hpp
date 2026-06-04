@@ -18,7 +18,7 @@
 #pragma once
 
 #include "spi.h"
-#include "ICM42688P_Regisrers.hpp"
+#include "ICM42688P_Registers.hpp"
 
 using namespace ICM42688P_Regs;
 

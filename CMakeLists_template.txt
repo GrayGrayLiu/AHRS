@@ -52,6 +52,7 @@ include_directories(${includes}
                     Lib/Aided_INS
                     Lib/EXIT
                     Lib/ICM42688P
+                    Lib/IST8310
                     Lib/Math
                     Lib/Printf
                     Lib/RGB
@@ -66,6 +67,7 @@ file(GLOB_RECURSE SOURCES ${sources}
     Lib/Aided_INS/*.*
     Lib/EXIT/*.*
     Lib/ICM42688P/*.*
+    Lib/IST8310/*.*
     Lib/Math/*.*
     Lib/Printf/*.*
     Lib/RGB/*.*

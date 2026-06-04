@@ -29,6 +29,7 @@
 #include "scheduler.h"
 #include "ICM42688_API.h"
 #include "Aided_INS_API.h"
+#include "IST8310_API.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
