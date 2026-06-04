@@ -95,7 +95,7 @@ IST8310::Status IST8310::Probe() const
 IST8310::Status IST8310::Reset() const
 {
     Status status = RegisterWrite(IST8310_Regs::Register::CNTL2,
-                                  ToByte(IST8310_Regs::CNTL2_BITS::SRST));
+                                  ToByte(IST8310_Regs::CNTL2_BITS::SRST_START_POR));
 
     if (status != Status::Ok)
     {
@@ -115,7 +115,7 @@ IST8310::Status IST8310::Reset() const
             return status;
         }
 
-        if ((control_2 & ToByte(IST8310_Regs::CNTL2_BITS::SRST)) == IST8310_Regs::BitNone)
+        if ((control_2 & ToByte(IST8310_Regs::CNTL2_BITS::SRST_MASK)) == IST8310_Regs::BitNone)
         {
             return Probe();
         }
@@ -192,6 +192,9 @@ IST8310::Status IST8310::ReadRawMag(RawMagData& data)
         return status;
     }
 
+    // Datasheet read flow polls STAT1 before reading measurement registers
+    // 0x03-0x08. This driver combines STAT1 and those six data bytes into one
+    // I2C auto-increment transaction: STAT1, X_L, X_H, Y_L, Y_H, Z_L, Z_H.
     uint8_t buffer[IST8310_Regs::DATA_BURST_LENGTH]{};
     status = ReadBuffer(IST8310_Regs::Register::STAT1, buffer, IST8310_Regs::DATA_BURST_LENGTH);
 
@@ -202,12 +205,12 @@ IST8310::Status IST8310::ReadRawMag(RawMagData& data)
 
     const uint8_t stat1 = buffer[IST8310_Regs::DATA_BURST_STAT1_INDEX];
 
-    if ((stat1 & ToByte(IST8310_Regs::STAT1_BITS::DOR)) != IST8310_Regs::BitNone)
+    if ((stat1 & ToByte(IST8310_Regs::STAT1_BITS::DOR_OVERRUN)) != IST8310_Regs::BitNone)
     {
         return Status::DataOverrun;
     }
 
-    if ((stat1 & ToByte(IST8310_Regs::STAT1_BITS::DRDY)) == IST8310_Regs::BitNone)
+    if ((stat1 & ToByte(IST8310_Regs::STAT1_BITS::DRDY_READY)) == IST8310_Regs::BitNone)
     {
         return Status::DataNotReady;
     }
@@ -263,26 +266,9 @@ IST8310::Status IST8310::ReleaseHardwareReset() const
 
 IST8310::Status IST8310::Configure()
 {
-    Status status = RegisterWrite(IST8310_Regs::Register::PDCNTL,
-                                  IST8310_Regs::PDCNTL_NORMAL_RECOMMENDED);
-
-    if (status != Status::Ok)
+    for (const auto& config : register_cfg_)
     {
-        return status;
-    }
-
-    status = RegisterWrite(IST8310_Regs::Register::AVGCNTL,
-                           IST8310_Regs::AVGCNTL_LOW_NOISE_RECOMMENDED);
-
-    if (status != Status::Ok)
-    {
-        return status;
-    }
-
-    if constexpr (IST8310_Regs::DEFAULT_USE_PX4_16BIT_MODE)
-    {
-        status = RegisterWrite(IST8310_Regs::Register::CNTL3,
-                               IST8310_Regs::CNTL3_PX4_16BIT_CONFIG);
+        const Status status = ApplyRegisterConfig(config);
 
         if (status != Status::Ok)
         {
@@ -290,54 +276,46 @@ IST8310::Status IST8310::Configure()
         }
     }
 
-    uint8_t register_value{};
-    status = RegisterRead(IST8310_Regs::Register::PDCNTL, register_value);
-
-    if (status != Status::Ok)
-    {
-        return status;
-    }
-
-    if (register_value != IST8310_Regs::PDCNTL_NORMAL_RECOMMENDED)
-    {
-        return Status::ConfigMismatch;
-    }
-
-    status = RegisterRead(IST8310_Regs::Register::AVGCNTL, register_value);
-
-    if (status != Status::Ok)
-    {
-        return status;
-    }
-
-    if (register_value != IST8310_Regs::AVGCNTL_LOW_NOISE_RECOMMENDED)
-    {
-        return Status::ConfigMismatch;
-    }
-
-    if constexpr (IST8310_Regs::DEFAULT_USE_PX4_16BIT_MODE)
-    {
-        status = RegisterRead(IST8310_Regs::Register::CNTL3, register_value);
-
-        if (status != Status::Ok)
-        {
-            return status;
-        }
-
-        if (register_value != IST8310_Regs::CNTL3_PX4_16BIT_CONFIG)
-        {
-            return Status::ConfigMismatch;
-        }
-    }
-
-    scale_uT_per_lsb_ = IST8310_Regs::DEFAULT_UT_PER_LSB;
+    scale_uT_per_lsb_ = IST8310_Regs::DATASHEET_DEFAULT_UT_PER_LSB;
     return Status::Ok;
+}
+
+IST8310::Status IST8310::ApplyRegisterConfig(const ist8310_register_config_t& config) const
+{
+    uint8_t old_value{};
+    Status status = RegisterRead(config.reg, old_value);
+
+    if (status != Status::Ok)
+    {
+        return status;
+    }
+
+    const uint8_t new_value = static_cast<uint8_t>(
+        (old_value & static_cast<uint8_t>(~config.mask)) | config.setBits);
+    status = RegisterWrite(config.reg, new_value);
+
+    if (status != Status::Ok)
+    {
+        return status;
+    }
+
+    uint8_t readback{};
+    status = RegisterRead(config.reg, readback);
+
+    if (status != Status::Ok)
+    {
+        return status;
+    }
+
+    return (readback & config.mask) == config.setBits
+        ? Status::Ok
+        : Status::ConfigMismatch;
 }
 
 IST8310::Status IST8310::StartSingleMeasurement() const
 {
     return RegisterWrite(IST8310_Regs::Register::CNTL1,
-                         ToByte(IST8310_Regs::CNTL1_VALUES::SINGLE_MEASUREMENT));
+                         ToByte(IST8310_Regs::CNTL1_BITS::MODE_SINGLE_MEASUREMENT));
 }
 
 IST8310::Status IST8310::WaitDataReady() const
@@ -355,7 +333,7 @@ IST8310::Status IST8310::WaitDataReady() const
             return status;
         }
 
-        if ((stat1 & ToByte(IST8310_Regs::STAT1_BITS::DRDY)) != IST8310_Regs::BitNone)
+        if ((stat1 & ToByte(IST8310_Regs::STAT1_BITS::DRDY_READY)) != IST8310_Regs::BitNone)
         {
             return Status::Ok;
         }

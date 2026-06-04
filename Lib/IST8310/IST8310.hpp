@@ -19,13 +19,19 @@
  *
  ******************************************************************************/
 
-#ifndef AHRS_IST8310_HPP
-#define AHRS_IST8310_HPP
+#pragma once
 
 #include <cstdint>
 
 #include "i2c.h"
 #include "IST8310_Registers.hpp"
+
+struct ist8310_register_config_t
+{
+    IST8310_Regs::Register reg{IST8310_Regs::Register::WAI};
+    uint8_t setBits{0};
+    uint8_t mask{0};
+};
 
 class IST8310
 {
@@ -78,8 +84,11 @@ public:
     [[nodiscard]] Status ReadMag_uT(MagData_uT& data);
 
 private:
+    using Register = IST8310_Regs::Register;
+
     [[nodiscard]] Status ReleaseHardwareReset() const;
     [[nodiscard]] Status Configure();
+    [[nodiscard]] Status ApplyRegisterConfig(const ist8310_register_config_t& config) const;
     [[nodiscard]] Status StartSingleMeasurement() const;
     [[nodiscard]] Status WaitDataReady() const;
 
@@ -91,6 +100,25 @@ private:
     GPIO_TypeDef* reset_port_;
     uint16_t reset_pin_;
     float scale_uT_per_lsb_{IST8310_Regs::DEFAULT_UT_PER_LSB};
-};
 
-#endif //AHRS_IST8310_HPP
+    static constexpr uint8_t size_register_cfg_{2};
+    ist8310_register_config_t register_cfg_[size_register_cfg_]
+    {
+        // Register      | Set bits, Mask
+        // 设置 PDCNTL 的脉冲持续时间为 Normal，对应手册推荐值 PDCNTL=0xC0。
+        {
+            Register::PDCNTL,
+            static_cast<uint8_t>(IST8310_Regs::PDCNTL_BITS::PULSE_DURATION_NORMAL),
+            static_cast<uint8_t>(IST8310_Regs::PDCNTL_BITS::PULSE_DURATION_MASK)
+        },
+
+        // 设置 AVGCNTL 中 Y 轴与 X/Z 轴平均次数均为 16 次，对应手册推荐值 AVGCNTL=0x24。
+        {
+            Register::AVGCNTL,
+            static_cast<uint8_t>(IST8310_Regs::AVGCNTL_BITS::Y_AVG_16_TIMES
+                                 | IST8310_Regs::AVGCNTL_BITS::XZ_AVG_16_TIMES),
+            static_cast<uint8_t>(IST8310_Regs::AVGCNTL_BITS::Y_AVG_MASK
+                                 | IST8310_Regs::AVGCNTL_BITS::XZ_AVG_MASK)
+        },
+    };
+};
