@@ -153,7 +153,38 @@ extern "C" ICM42688_Status ICM42688_Update(void)
         return ICM42688_STATUS_INVALID_ARGUMENT;
     }
 
-    return ICM42688_STATUS_UNSUPPORTED;
+    return ToApiStatus(g_icm->Update());
+}
+
+extern "C" ICM42688_Status ICM42688_GetLatest(ICM42688_Sample *sample)
+{
+    if (!IsBound() || !g_initialized || sample == nullptr) {
+        return ICM42688_STATUS_INVALID_ARGUMENT;
+    }
+
+    ICM42688P::Sample latest{};
+    const ICM42688P::Status status = g_icm->GetLatest(latest);
+
+    if (status != ICM42688P::Status::Ok) {
+        return ToApiStatus(status);
+    }
+
+    sample->timestamp_ms = latest.timestamp_ms;
+
+    for (uint8_t axis = 0u; axis < 3u; ++axis) {
+        sample->accel_raw[axis] = latest.accel_raw[axis];
+        sample->gyro_raw[axis] = latest.gyro_raw[axis];
+        sample->accel_m_s2[axis] = latest.accel_m_s2[axis];
+        sample->gyro_rad_s[axis] = latest.gyro_rad_s[axis];
+    }
+
+    sample->temp_raw = latest.temp_raw;
+    sample->temperature_deg_c = latest.temperature_deg_c;
+    sample->sample_counter = latest.sample_counter;
+    sample->error_counter = latest.error_counter;
+    sample->configured = latest.configured ? 1u : 0u;
+    sample->data_valid = latest.data_valid ? 1u : 0u;
+    return ICM42688_STATUS_OK;
 }
 
 extern "C" ICM42688_Status ICM42688_Read(int16_t accel[3], int16_t gyro[3], int16_t *temp)

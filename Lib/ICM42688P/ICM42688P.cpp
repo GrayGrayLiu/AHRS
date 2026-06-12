@@ -22,6 +22,33 @@ using ICM42688P_Regs::RegsAdd::BANK0;
 using ICM42688P_Regs::RegsAdd::BANK1;
 using ICM42688P_Regs::RegsAdd::BANK2;
 
+namespace
+{
+constexpr uint16_t SENSOR_DATA_BURST_LENGTH{14u};
+constexpr uint8_t TEMP_HIGH_INDEX{0u};
+constexpr uint8_t TEMP_LOW_INDEX{1u};
+constexpr uint8_t ACCEL_X_HIGH_INDEX{2u};
+constexpr uint8_t ACCEL_X_LOW_INDEX{3u};
+constexpr uint8_t ACCEL_Y_HIGH_INDEX{4u};
+constexpr uint8_t ACCEL_Y_LOW_INDEX{5u};
+constexpr uint8_t ACCEL_Z_HIGH_INDEX{6u};
+constexpr uint8_t ACCEL_Z_LOW_INDEX{7u};
+constexpr uint8_t GYRO_X_HIGH_INDEX{8u};
+constexpr uint8_t GYRO_X_LOW_INDEX{9u};
+constexpr uint8_t GYRO_Y_HIGH_INDEX{10u};
+constexpr uint8_t GYRO_Y_LOW_INDEX{11u};
+constexpr uint8_t GYRO_Z_HIGH_INDEX{12u};
+constexpr uint8_t GYRO_Z_LOW_INDEX{13u};
+
+constexpr float STANDARD_GRAVITY_M_S2{9.80665F};
+constexpr float ACCEL_LSB_PER_G{2048.0F};
+constexpr float GYRO_FULL_SCALE_DPS{2000.0F};
+constexpr float SIGNED_16BIT_HALF_RANGE{32768.0F};
+constexpr float DEG_TO_RAD{0.01745329251994329577F};
+constexpr float TEMPERATURE_SENSITIVITY_LSB_PER_DEG_C{132.48F};
+constexpr float TEMPERATURE_OFFSET_DEG_C{25.0F};
+}
+
 ICM42688P::ICM42688P(SPI_HandleTypeDef* hspi,
                      GPIO_TypeDef* cs_port, uint16_t cs_pin)
     : hspi_(hspi), cs_port_(cs_port), cs_pin_(cs_pin)
@@ -31,6 +58,9 @@ ICM42688P::ICM42688P(SPI_HandleTypeDef* hspi,
 ICM42688P::Status ICM42688P::Init()
 {
     initialized_ = false;
+    configured_ = false;
+    latest_.configured = false;
+    latest_.data_valid = false;
 
     if (!HasValidBus()) {
         ++error_count_;
@@ -69,6 +99,9 @@ ICM42688P::Status ICM42688P::Init()
     }
 
     initialized_ = true;
+    configured_ = true;
+    latest_.configured = true;
+    latest_.error_counter = error_count_;
     return Status::Ok;
 }
 
@@ -153,6 +186,9 @@ ICM42688P::Status ICM42688P::Reset()
     }
 
     initialized_ = false;
+    configured_ = false;
+    latest_.configured = false;
+    latest_.data_valid = false;
     Status status = RegisterWrite(BANK0::DEVICE_CONFIG,
                                   static_cast<uint8_t>(ICM42688P_Regs::DEVICE_CONFIG_BITS::SOFT_RESET_CONFIG));
 
@@ -254,20 +290,73 @@ ICM42688P::Status ICM42688P::ReadRawGyro(RawVector& data)
     return Status::Ok;
 }
 
-bool ICM42688P::Update()
+ICM42688P::Status ICM42688P::Update()
 {
-    // Stage1: no health check and no data path.
-    return false;
+    if (!initialized_ || !configured_) {
+        return Status::InvalidArgument;
+    }
+
+    uint8_t buffer[SENSOR_DATA_BURST_LENGTH]{};
+    const Status status = ReadBuffer(BANK0::TEMP_DATA1, buffer, SENSOR_DATA_BURST_LENGTH);
+
+    if (status != Status::Ok) {
+        ++error_count_;
+        latest_.error_counter = error_count_;
+        latest_.data_valid = false;
+        return status;
+    }
+
+    Sample sample{};
+    sample.temp_raw = CombineBigEndian(buffer[TEMP_HIGH_INDEX], buffer[TEMP_LOW_INDEX]);
+    sample.accel_raw[0] = CombineBigEndian(buffer[ACCEL_X_HIGH_INDEX], buffer[ACCEL_X_LOW_INDEX]);
+    sample.accel_raw[1] = CombineBigEndian(buffer[ACCEL_Y_HIGH_INDEX], buffer[ACCEL_Y_LOW_INDEX]);
+    sample.accel_raw[2] = CombineBigEndian(buffer[ACCEL_Z_HIGH_INDEX], buffer[ACCEL_Z_LOW_INDEX]);
+    sample.gyro_raw[0] = CombineBigEndian(buffer[GYRO_X_HIGH_INDEX], buffer[GYRO_X_LOW_INDEX]);
+    sample.gyro_raw[1] = CombineBigEndian(buffer[GYRO_Y_HIGH_INDEX], buffer[GYRO_Y_LOW_INDEX]);
+    sample.gyro_raw[2] = CombineBigEndian(buffer[GYRO_Z_HIGH_INDEX], buffer[GYRO_Z_LOW_INDEX]);
+
+    if (sample.accel_raw[0] == INT16_MIN
+        && sample.accel_raw[1] == INT16_MIN
+        && sample.accel_raw[2] == INT16_MIN
+        && sample.gyro_raw[0] == INT16_MIN
+        && sample.gyro_raw[1] == INT16_MIN
+        && sample.gyro_raw[2] == INT16_MIN) {
+        ++error_count_;
+        latest_.error_counter = error_count_;
+        latest_.data_valid = false;
+        return Status::ConfigMismatch;
+    }
+
+    constexpr float accel_scale = STANDARD_GRAVITY_M_S2 / ACCEL_LSB_PER_G;
+    constexpr float gyro_scale = (GYRO_FULL_SCALE_DPS / SIGNED_16BIT_HALF_RANGE) * DEG_TO_RAD;
+
+    for (uint8_t axis = 0u; axis < 3u; ++axis) {
+        sample.accel_m_s2[axis] = static_cast<float>(sample.accel_raw[axis]) * accel_scale;
+        sample.gyro_rad_s[axis] = static_cast<float>(sample.gyro_raw[axis]) * gyro_scale;
+    }
+
+    sample.temperature_deg_c = static_cast<float>(sample.temp_raw)
+                               / TEMPERATURE_SENSITIVITY_LSB_PER_DEG_C
+                               + TEMPERATURE_OFFSET_DEG_C;
+    sample.timestamp_ms = HAL_GetTick();
+    sample.sample_counter = ++sample_count_;
+    sample.error_counter = error_count_;
+    sample.configured = configured_;
+    sample.data_valid = true;
+
+    last_update_ms_ = sample.timestamp_ms;
+    latest_ = sample;
+    return Status::Ok;
 }
 
-bool ICM42688P::ReadLatest(int16_t accel[3], int16_t gyro[3], int16_t *temp) const
+ICM42688P::Status ICM42688P::GetLatest(Sample& sample) const
 {
-    (void)accel;
-    (void)gyro;
-    (void)temp;
+    if (!initialized_) {
+        return Status::InvalidArgument;
+    }
 
-    // Stage1: no sample fetch.
-    return false;
+    sample = latest_;
+    return Status::Ok;
 }
 
 void ICM42688P::CS_Low() const

@@ -26,6 +26,21 @@ typedef struct
     int16_t z;
 } ICM42688_RawVector;
 
+typedef struct
+{
+    uint32_t timestamp_ms;
+    int16_t accel_raw[3];
+    int16_t gyro_raw[3];
+    int16_t temp_raw;
+    float accel_m_s2[3];
+    float gyro_rad_s[3];
+    float temperature_deg_c;
+    uint32_t sample_counter;
+    uint32_t error_counter;
+    uint8_t configured;
+    uint8_t data_valid;
+} ICM42688_Sample;
+
 ICM42688_Status ICM42688_Bind(SPI_HandleTypeDef *hspi, GPIO_TypeDef *cs_port, uint16_t cs_pin);
 ICM42688_Status ICM42688_Init(void);
 ICM42688_Status ICM42688_Probe(void);
@@ -38,6 +53,7 @@ ICM42688_Status ICM42688_ReadRawAccel(ICM42688_RawVector *data);
 ICM42688_Status ICM42688_ReadRawGyro(ICM42688_RawVector *data);
 
 ICM42688_Status ICM42688_Update(void);
+ICM42688_Status ICM42688_GetLatest(ICM42688_Sample *sample);
 ICM42688_Status ICM42688_Read(int16_t accel[3], int16_t gyro[3], int16_t *temp);
 
 #ifdef __cplusplus

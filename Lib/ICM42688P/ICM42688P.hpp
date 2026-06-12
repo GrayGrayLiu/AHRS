@@ -64,6 +64,21 @@ public:
         int16_t z{0};
     };
 
+    struct Sample
+    {
+        uint32_t timestamp_ms{0};
+        int16_t accel_raw[3]{};
+        int16_t gyro_raw[3]{};
+        int16_t temp_raw{0};
+        float accel_m_s2[3]{};
+        float gyro_rad_s[3]{};
+        float temperature_deg_c{0.0F};
+        uint32_t sample_counter{0};
+        uint32_t error_counter{0};
+        bool configured{false};
+        bool data_valid{false};
+    };
+
     ICM42688P(SPI_HandleTypeDef* hspi,
               GPIO_TypeDef* cs_port, uint16_t cs_pin);
 
@@ -81,8 +96,8 @@ public:
     [[nodiscard]] Status ReadRawAccel(RawVector& data);
     [[nodiscard]] Status ReadRawGyro(RawVector& data);
 
-    bool Update();
-    bool ReadLatest(int16_t accel[3], int16_t gyro[3], int16_t *temp) const;
+    [[nodiscard]] Status Update();
+    [[nodiscard]] Status GetLatest(Sample& sample) const;
 
 private:
     [[nodiscard]] Status Configure();
@@ -242,7 +257,11 @@ private:
 	};
 
     bool initialized_{false};
+    bool configured_{false};
+    uint32_t sample_count_{0};
     uint32_t error_count_{0};
+    uint32_t last_update_ms_{0};
+    Sample latest_{};
     bool bank_selected_valid_{false};
     ICM42688P_Regs::REG_BANK_SEL_BITS current_bank_{ICM42688P_Regs::REG_BANK_SEL_BITS::BANK_SEL_0};
 };
