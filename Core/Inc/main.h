@@ -57,16 +57,9 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
-#define RGB_R_Pin GPIO_PIN_2
-#define RGB_R_GPIO_Port GPIOE
-#define RGB_G_Pin GPIO_PIN_3
-#define RGB_G_GPIO_Port GPIOE
-#define RGB_B_Pin GPIO_PIN_4
-#define RGB_B_GPIO_Port GPIOE
-#define IMU_INT1_Pin GPIO_PIN_2
+#define IMU_INT1_Pin GPIO_PIN_3
 #define IMU_INT1_GPIO_Port GPIOA
-#define IMU_INT2_Pin GPIO_PIN_3
-#define IMU_INT2_GPIO_Port GPIOA
+#define IMU_INT1_EXTI_IRQn EXTI3_IRQn
 #define IMU_SPI_CS_Pin GPIO_PIN_4
 #define IMU_SPI_CS_GPIO_Port GPIOA
 #define IMU_SPI_SCK_Pin GPIO_PIN_5
@@ -75,10 +68,16 @@ void Error_Handler(void);
 #define IMU_SPI_MISO_GPIO_Port GPIOA
 #define IMU_SPI_MOSI_Pin GPIO_PIN_7
 #define IMU_SPI_MOSI_GPIO_Port GPIOA
-#define MAG_RSTN_Pin GPIO_PIN_4
-#define MAG_RSTN_GPIO_Port GPIOB
-#define MAG_DRDY_Pin GPIO_PIN_5
-#define MAG_DRDY_GPIO_Port GPIOB
+#define IMU_INT2_Pin GPIO_PIN_4
+#define IMU_INT2_GPIO_Port GPIOC
+#define RGB_G_Pin GPIO_PIN_14
+#define RGB_G_GPIO_Port GPIOE
+#define KEY_Pin GPIO_PIN_15
+#define KEY_GPIO_Port GPIOE
+#define RGB_B_Pin GPIO_PIN_10
+#define RGB_B_GPIO_Port GPIOB
+#define RGB_R_Pin GPIO_PIN_11
+#define RGB_R_GPIO_Port GPIOB
 #define MAG_I2C_SCL_Pin GPIO_PIN_6
 #define MAG_I2C_SCL_GPIO_Port GPIOB
 #define MAG_I2C_SDA_Pin GPIO_PIN_7
@@ -87,6 +86,11 @@ void Error_Handler(void);
 #define MAG_CAD0_GPIO_Port GPIOB
 #define MAG_CAD1_Pin GPIO_PIN_9
 #define MAG_CAD1_GPIO_Port GPIOB
+#define MAG_DRDY_Pin GPIO_PIN_0
+#define MAG_DRDY_GPIO_Port GPIOE
+#define MAG_DRDY_EXTI_IRQn EXTI0_IRQn
+#define MAG_RSTN_Pin GPIO_PIN_1
+#define MAG_RSTN_GPIO_Port GPIOE
 
 /* USER CODE BEGIN Private defines */
 

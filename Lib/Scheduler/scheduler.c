@@ -52,6 +52,7 @@ static void Loop_2Hz(void) //500ms执行一次
 
 static void Loop_1Hz(void) //1000ms执行一次
 {
+    // printf("Test\r\n");
 }
 
 static void Loop_0_5Hz(void) //2s执行一次
