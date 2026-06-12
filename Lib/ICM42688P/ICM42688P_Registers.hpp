@@ -44,6 +44,11 @@ namespace ICM42688P_Regs
     inline constexpr uint32_t SOFT_RESET_WAIT_MS = 1u;
     inline constexpr uint32_t SOFT_RESET_TIMEOUT_MS = 10u;
     inline constexpr uint32_t RESET_POLL_INTERVAL_MS = 1u;
+    // Datasheet requires at least 200 us without register writes after enabling
+    // accel or gyro. HAL_Delay resolution is 1 ms in this project.
+    inline constexpr uint32_t SENSOR_MODE_CHANGE_WAIT_MS = 1u;
+    // Gyroscope must remain enabled for at least 45 ms before data is valid.
+    inline constexpr uint32_t SENSOR_STARTUP_WAIT_MS = 45u;
 
     inline constexpr uint16_t SPI_COMMAND_LENGTH = 1u;
     inline constexpr uint16_t REGISTER_VALUE_LENGTH = 1u;
@@ -645,6 +650,16 @@ namespace ICM42688P_Regs
         ACCEL_ODR_1_5625HZ = Bit3 | Bit2 | Bit1, //1110: 1.5625Hz (LP mode)
         ACCEL_ODR_500HZ = Bit3 | Bit2 | Bit1 | Bit0, //1111: 500Hz (LP or LN mode)
     };
+
+    inline constexpr uint8_t MINIMAL_GYRO_CONFIG0 =
+        static_cast<uint8_t>(GYRO_CONFIG0_BITS::GYRO_FS_SEL_2000DPS) |
+        static_cast<uint8_t>(GYRO_CONFIG0_BITS::GYRO_ODR_1KHZ);
+    inline constexpr uint8_t MINIMAL_ACCEL_CONFIG0 =
+        static_cast<uint8_t>(ACCEL_CONFIG0_BITS::ACCEL_FS_SEL_16G) |
+        static_cast<uint8_t>(ACCEL_CONFIG0_BITS::ACCEL_ODR_1KHZ);
+    inline constexpr uint8_t MINIMAL_PWR_MGMT0 =
+        static_cast<uint8_t>(PWR_MGMT0_BITS::GYRO_MODE_GYRO_LOW_NOISE) |
+        static_cast<uint8_t>(PWR_MGMT0_BITS::ACCEL_MODE_ACC_LOW_NOISE);
 
     /**
      * @Name: GYRO_CONFIG1

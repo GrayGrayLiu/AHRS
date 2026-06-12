@@ -67,8 +67,8 @@ public:
     ICM42688P(SPI_HandleTypeDef* hspi,
               GPIO_TypeDef* cs_port, uint16_t cs_pin);
 
-    // Stage 1 hardware bring-up only: wait for power-on, probe, soft reset and
-    // probe again. This does not configure or enable the accelerometer/gyro.
+    // Minimal hardware bring-up: probe, soft reset, probe again, then enable
+    // accel and gyro in low-noise mode at 1 kHz using their default ranges.
     [[nodiscard]] Status Init();
     [[nodiscard]] Status Probe();
     [[nodiscard]] Status Reset();
@@ -85,6 +85,9 @@ public:
     bool ReadLatest(int16_t accel[3], int16_t gyro[3], int16_t *temp) const;
 
 private:
+    [[nodiscard]] Status Configure();
+    [[nodiscard]] Status VerifyRegister(ICM42688P_Regs::RegsAdd::BANK0 reg,
+                                        uint8_t expected_value);
     [[nodiscard]] Status SelectBank(ICM42688P_Regs::REG_BANK_SEL_BITS bank, bool force = false);
 
     [[nodiscard]] Status WriteRegister(ICM42688P_Regs::RegsAdd::BANK1 reg, uint8_t value);

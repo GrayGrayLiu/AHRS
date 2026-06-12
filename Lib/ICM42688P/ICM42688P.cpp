@@ -61,8 +61,65 @@ ICM42688P::Status ICM42688P::Init()
         return status;
     }
 
+    status = Configure();
+
+    if (status != Status::Ok) {
+        ++error_count_;
+        return status;
+    }
+
     initialized_ = true;
     return Status::Ok;
+}
+
+ICM42688P::Status ICM42688P::Configure()
+{
+    Status status = RegisterWrite(BANK0::GYRO_CONFIG0, ICM42688P_Regs::MINIMAL_GYRO_CONFIG0);
+
+    if (status != Status::Ok) {
+        return status;
+    }
+
+    status = RegisterWrite(BANK0::ACCEL_CONFIG0, ICM42688P_Regs::MINIMAL_ACCEL_CONFIG0);
+
+    if (status != Status::Ok) {
+        return status;
+    }
+
+    status = RegisterWrite(BANK0::PWR_MGMT0, ICM42688P_Regs::MINIMAL_PWR_MGMT0);
+
+    if (status != Status::Ok) {
+        return status;
+    }
+
+    HAL_Delay(ICM42688P_Regs::SENSOR_MODE_CHANGE_WAIT_MS);
+    HAL_Delay(ICM42688P_Regs::SENSOR_STARTUP_WAIT_MS);
+
+    status = VerifyRegister(BANK0::PWR_MGMT0, ICM42688P_Regs::MINIMAL_PWR_MGMT0);
+
+    if (status != Status::Ok) {
+        return status;
+    }
+
+    status = VerifyRegister(BANK0::GYRO_CONFIG0, ICM42688P_Regs::MINIMAL_GYRO_CONFIG0);
+
+    if (status != Status::Ok) {
+        return status;
+    }
+
+    return VerifyRegister(BANK0::ACCEL_CONFIG0, ICM42688P_Regs::MINIMAL_ACCEL_CONFIG0);
+}
+
+ICM42688P::Status ICM42688P::VerifyRegister(const BANK0 reg, const uint8_t expected_value)
+{
+    uint8_t readback{};
+    const Status status = RegisterRead(reg, readback);
+
+    if (status != Status::Ok) {
+        return status;
+    }
+
+    return readback == expected_value ? Status::Ok : Status::ConfigMismatch;
 }
 
 ICM42688P::Status ICM42688P::Probe()

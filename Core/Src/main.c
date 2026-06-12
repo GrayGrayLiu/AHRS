@@ -28,7 +28,6 @@
 /* USER CODE BEGIN Includes */
 #include <stdio.h>
 #include "scheduler.h"
-#include "ICM42688_API.h"
 #include "Aided_INS_API.h"
 /* USER CODE END Includes */
 
@@ -50,8 +49,6 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-static int icm_bind_ret = -999;
-static int icm_init_ret = -999;
 
 /* USER CODE END PV */
 
@@ -104,13 +101,8 @@ int main(void)
   MX_USART1_UART_Init();
   MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
-  // TODO: verify SPI1 and IMU CS GPIO configuration in CubeMX.
-  // Driver expects manual CS toggle on IMU_SPI_CS pin.
-  icm_bind_ret = ICM42688_Bind(&hspi1, IMU_SPI_CS_GPIO_Port, IMU_SPI_CS_Pin);
-  icm_init_ret = ICM42688_Init();
-
   // UART output via __io_putchar (Lib/Printf/Printf.c)
-  printf("icm stage1 bind=%d init=%d\r\n", icm_bind_ret, icm_init_ret);
+  printf("ICM42688P hardware bring-up start\r\n");
   /* USER CODE END 2 */
 
   /* Infinite loop */
