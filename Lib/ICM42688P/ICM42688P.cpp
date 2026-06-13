@@ -59,47 +59,71 @@ ICM42688P::Status ICM42688P::Init()
 {
     initialized_ = false;
     configured_ = false;
+    state_ = DriverState::Uninitialized;
+    last_status_ = Status::Ok;
     latest_.configured = false;
     latest_.data_valid = false;
 
     if (!HasValidBus()) {
         ++error_count_;
+        ++failure_count_;
+        last_status_ = Status::InvalidArgument;
+        state_ = DriverState::Error;
         return Status::InvalidArgument;
     }
 
     CS_High();
     HAL_Delay(ICM42688P_Regs::POWER_ON_WAIT_MS);
 
+    state_ = DriverState::Probing;
     Status status = Probe();
 
     if (status != Status::Ok) {
         ++error_count_;
+        ++failure_count_;
+        last_status_ = status;
+        state_ = DriverState::Error;
         return status;
     }
 
+    state_ = DriverState::Resetting;
     status = Reset();
 
     if (status != Status::Ok) {
         ++error_count_;
+        ++failure_count_;
+        last_status_ = status;
+        state_ = DriverState::Error;
         return status;
     }
 
+    state_ = DriverState::Probing;
     status = Probe();
 
     if (status != Status::Ok) {
         ++error_count_;
+        ++failure_count_;
+        last_status_ = status;
+        state_ = DriverState::Error;
         return status;
     }
 
+    state_ = DriverState::Configuring;
     status = Configure();
 
     if (status != Status::Ok) {
         ++error_count_;
+        ++failure_count_;
+        last_status_ = status;
+        state_ = DriverState::Error;
         return status;
     }
 
     initialized_ = true;
     configured_ = true;
+    state_ = DriverState::Running;
+    last_status_ = Status::Ok;
+    failure_count_ = 0u;
     latest_.configured = true;
     latest_.error_counter = error_count_;
     return Status::Ok;
@@ -107,19 +131,49 @@ ICM42688P::Status ICM42688P::Init()
 
 ICM42688P::Status ICM42688P::Configure()
 {
-    Status status = RegisterWrite(BANK0::GYRO_CONFIG0, ICM42688P_Regs::MINIMAL_GYRO_CONFIG0);
+    configured_ = false;
+    latest_.configured = false;
 
-    if (status != Status::Ok) {
-        return status;
+    for (const auto& config : register_bank1_cfg_) {
+        const Status status = RegisterSetAndClearBits(config);
+
+        if (status != Status::Ok) {
+            return status;
+        }
     }
 
-    status = RegisterWrite(BANK0::ACCEL_CONFIG0, ICM42688P_Regs::MINIMAL_ACCEL_CONFIG0);
+    for (const auto& config : register_bank2_cfg_) {
+        const Status status = RegisterSetAndClearBits(config);
 
-    if (status != Status::Ok) {
-        return status;
+        if (status != Status::Ok) {
+            return status;
+        }
     }
 
-    status = RegisterWrite(BANK0::PWR_MGMT0, ICM42688P_Regs::MINIMAL_PWR_MGMT0);
+    const register_bank0_config_t* power_config = nullptr;
+
+    for (const auto& config : register_bank0_cfg_) {
+        if (config.reg == BANK0::PWR_MGMT0) {
+            power_config = &config;
+            continue;
+        }
+
+        if (!ShouldApplyPollingConfig(config.reg)) {
+            continue;
+        }
+
+        const Status status = RegisterSetAndClearBits(config);
+
+        if (status != Status::Ok) {
+            return status;
+        }
+    }
+
+    if (power_config == nullptr) {
+        return Status::ConfigMismatch;
+    }
+
+    Status status = RegisterSetAndClearBits(*power_config);
 
     if (status != Status::Ok) {
         return status;
@@ -128,19 +182,118 @@ ICM42688P::Status ICM42688P::Configure()
     HAL_Delay(ICM42688P_Regs::SENSOR_MODE_CHANGE_WAIT_MS);
     HAL_Delay(ICM42688P_Regs::SENSOR_STARTUP_WAIT_MS);
 
-    status = VerifyRegister(BANK0::PWR_MGMT0, ICM42688P_Regs::MINIMAL_PWR_MGMT0);
+    for (const auto& config : register_bank1_cfg_) {
+        status = RegisterCheck(config);
+
+        if (status != Status::Ok) {
+            return status;
+        }
+    }
+
+    for (const auto& config : register_bank2_cfg_) {
+        status = RegisterCheck(config);
+
+        if (status != Status::Ok) {
+            return status;
+        }
+    }
+
+    for (const auto& config : register_bank0_cfg_) {
+        if (!ShouldApplyPollingConfig(config.reg)) {
+            continue;
+        }
+
+        status = RegisterCheck(config);
+
+        if (status != Status::Ok) {
+            return status;
+        }
+    }
+
+    configured_ = true;
+    latest_.configured = true;
+    return Status::Ok;
+}
+
+ICM42688P::Status ICM42688P::RegisterSetAndClearBits(const register_bank0_config_t& config)
+{
+    uint8_t old_value{};
+    Status status = RegisterRead(config.reg, old_value);
 
     if (status != Status::Ok) {
         return status;
     }
 
-    status = VerifyRegister(BANK0::GYRO_CONFIG0, ICM42688P_Regs::MINIMAL_GYRO_CONFIG0);
+    const uint8_t new_value = ComposeRegisterValue(old_value, config.setBits, config.mask);
+    return new_value == old_value ? Status::Ok : RegisterWrite(config.reg, new_value);
+}
+
+ICM42688P::Status ICM42688P::RegisterSetAndClearBits(const register_bank1_config_t& config)
+{
+    uint8_t old_value{};
+    Status status = ReadRegister(config.reg, old_value);
 
     if (status != Status::Ok) {
         return status;
     }
 
-    return VerifyRegister(BANK0::ACCEL_CONFIG0, ICM42688P_Regs::MINIMAL_ACCEL_CONFIG0);
+    const uint8_t new_value = ComposeRegisterValue(old_value, config.setBits, config.mask);
+    return new_value == old_value ? Status::Ok : WriteRegister(config.reg, new_value);
+}
+
+ICM42688P::Status ICM42688P::RegisterSetAndClearBits(const register_bank2_config_t& config)
+{
+    uint8_t old_value{};
+    Status status = ReadRegister(config.reg, old_value);
+
+    if (status != Status::Ok) {
+        return status;
+    }
+
+    const uint8_t new_value = ComposeRegisterValue(old_value, config.setBits, config.mask);
+    return new_value == old_value ? Status::Ok : WriteRegister(config.reg, new_value);
+}
+
+ICM42688P::Status ICM42688P::RegisterCheck(const register_bank0_config_t& config)
+{
+    uint8_t value{};
+    const Status status = RegisterRead(config.reg, value);
+
+    if (status != Status::Ok) {
+        return status;
+    }
+
+    return RegisterValueMatches(value, config.setBits, config.mask)
+        ? Status::Ok
+        : Status::ConfigMismatch;
+}
+
+ICM42688P::Status ICM42688P::RegisterCheck(const register_bank1_config_t& config)
+{
+    uint8_t value{};
+    const Status status = ReadRegister(config.reg, value);
+
+    if (status != Status::Ok) {
+        return status;
+    }
+
+    return RegisterValueMatches(value, config.setBits, config.mask)
+        ? Status::Ok
+        : Status::ConfigMismatch;
+}
+
+ICM42688P::Status ICM42688P::RegisterCheck(const register_bank2_config_t& config)
+{
+    uint8_t value{};
+    const Status status = ReadRegister(config.reg, value);
+
+    if (status != Status::Ok) {
+        return status;
+    }
+
+    return RegisterValueMatches(value, config.setBits, config.mask)
+        ? Status::Ok
+        : Status::ConfigMismatch;
 }
 
 ICM42688P::Status ICM42688P::VerifyRegister(const BANK0 reg, const uint8_t expected_value)

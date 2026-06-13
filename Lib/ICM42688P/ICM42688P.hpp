@@ -100,9 +100,26 @@ public:
     [[nodiscard]] Status GetLatest(Sample& sample) const;
 
 private:
+    enum class DriverState : uint8_t
+    {
+        Uninitialized,
+        Probing,
+        Resetting,
+        Configuring,
+        Running,
+        Reconfiguring,
+        Error,
+    };
+
     [[nodiscard]] Status Configure();
     [[nodiscard]] Status VerifyRegister(ICM42688P_Regs::RegsAdd::BANK0 reg,
                                         uint8_t expected_value);
+    [[nodiscard]] Status RegisterSetAndClearBits(const register_bank0_config_t& config);
+    [[nodiscard]] Status RegisterSetAndClearBits(const register_bank1_config_t& config);
+    [[nodiscard]] Status RegisterSetAndClearBits(const register_bank2_config_t& config);
+    [[nodiscard]] Status RegisterCheck(const register_bank0_config_t& config);
+    [[nodiscard]] Status RegisterCheck(const register_bank1_config_t& config);
+    [[nodiscard]] Status RegisterCheck(const register_bank2_config_t& config);
     [[nodiscard]] Status SelectBank(ICM42688P_Regs::REG_BANK_SEL_BITS bank, bool force = false);
 
     [[nodiscard]] Status WriteRegister(ICM42688P_Regs::RegsAdd::BANK1 reg, uint8_t value);
@@ -116,6 +133,37 @@ private:
     [[nodiscard]] Status ReadBufferRaw(uint8_t start_reg, uint8_t* buffer, uint16_t length);
     [[nodiscard]] bool HasValidBus() const;
     [[nodiscard]] static int16_t CombineBigEndian(uint8_t high, uint8_t low);
+    [[nodiscard]] static constexpr uint8_t ComposeRegisterValue(uint8_t old_value,
+                                                                 uint8_t set_bits,
+                                                                 uint8_t mask)
+    {
+        return static_cast<uint8_t>((old_value & static_cast<uint8_t>(~mask))
+                                    | (set_bits & mask));
+    }
+    [[nodiscard]] static constexpr bool RegisterValueMatches(uint8_t value,
+                                                              uint8_t set_bits,
+                                                              uint8_t mask)
+    {
+        return (value & mask) == (set_bits & mask);
+    }
+    [[nodiscard]] static constexpr bool ShouldApplyPollingConfig(
+        ICM42688P_Regs::RegsAdd::BANK0 reg)
+    {
+        using PollingBank0 = ICM42688P_Regs::RegsAdd::BANK0;
+
+        switch (reg) {
+        case PollingBank0::INT_CONFIG:
+        case PollingBank0::FIFO_CONFIG:
+        case PollingBank0::FIFO_CONFIG1:
+        case PollingBank0::INT_CONFIG0:
+        case PollingBank0::INT_CONFIG1:
+        case PollingBank0::INT_SOURCE0:
+            return false;
+
+        default:
+            return true;
+        }
+    }
 
     void CS_Low() const;
     void CS_High() const;
@@ -250,6 +298,9 @@ private:
 
     bool initialized_{false};
     bool configured_{false};
+    DriverState state_{DriverState::Uninitialized};
+    Status last_status_{Status::Ok};
+    uint32_t failure_count_{0};
     uint32_t sample_count_{0};
     uint32_t error_count_{0};
     uint32_t last_update_ms_{0};
