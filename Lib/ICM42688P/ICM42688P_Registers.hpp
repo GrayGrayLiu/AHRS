@@ -1340,6 +1340,61 @@ namespace ICM42688P_Regs
     /************************************************************************************************************************************************/
 
 
+    /******************************************************************FIFO描述***********************************************************************/
+    namespace FIFO
+    {
+        static constexpr size_t SIZE = 2048;
+
+        // FIFO_DATA layout when FIFO_CONFIG1 has FIFO_GYRO_EN and FIFO_ACCEL_EN set
+
+        // Packet 4
+        struct DATA {
+            uint8_t FIFO_Header;
+            uint8_t ACCEL_X_19_12; // Accel X [19:12]
+            uint8_t ACCEL_X_11_4;  // Accel X [11:4]
+            uint8_t ACCEL_Y_19_12; // Accel Y [19:12]
+            uint8_t ACCEL_Y_11_4;  // Accel Y [11:4]
+            uint8_t ACCEL_Z_19_12; // Accel Z [19:12]
+            uint8_t ACCEL_Z_11_4;  // Accel Z [11:4]
+            uint8_t GYRO_X_19_12;  // Gyro X [19:12]
+            uint8_t GYRO_X_11_4;   // Gyro X [11:4]
+            uint8_t GYRO_Y_19_12;  // Gyro Y [19:12]
+            uint8_t GYRO_Y_11_4;   // Gyro Y [11:4]
+            uint8_t GYRO_Z_19_12;  // Gyro Z [19:12]
+            uint8_t GYRO_Z_11_4;   // Gyro Z [11:4]
+            uint8_t TEMPERATURE_15_8; // Temperature[15:8]
+            uint8_t TEMPERATURE_7_0;  // Temperature[7:0]
+            uint8_t TIME_STAMP_15_8;  // TimeStamp[15:8]
+            uint8_t TIME_STAMP_7_0;   // TimeStamp[7:0]
+            uint8_t ACCEL_X_3_0_GYRO_X_3_0; // Accel X [3:0] Gyro X [3:0]
+            uint8_t ACCEL_Y_3_0_GYRO_Y_3_0; // Accel Y [3:0] Gyro Y [3:0]
+            uint8_t ACCEL_Z_3_0_GYRO_Z_3_0; // Accel Z [3:0] Gyro Z [3:0]
+        };
+
+        // With FIFO_ACCEL_EN and FIFO_GYRO_EN header should be 8’b_0110_10xx
+        enum FIFO_HEADER_BIT : uint8_t {
+            HEADER_MSG             = Bit7, // 1: FIFO is empty
+                                           // 0: Packet contains sensor data
+            HEADER_ACCEL           = Bit6, // 1: Packet is sized so that accel data have location in the packet, FIFO_ACCEL_EN must be 1
+                                           // 0: Packet does not contain accel sample
+            HEADER_GYRO            = Bit5, // 1: Packet is sized so that gyro data have location in the packet, FIFO_GYRO_EN must be 1
+                                           // 0: Packet does not contain gyro sample
+            HEADER_20              = Bit4, // 1: Packet has a new and valid sample of extended 20-bit data for gyro and/or accel
+                                           // 0: Packet does not contain a new and valid extended 20-bit data
+            HEADER_TIMESTAMP_FSYNC = Bit3 | Bit2, // 00: Packet does not contain timestamp or FSYNC time data
+                                                  // 01: Reserved
+                                                  // 10: Packet contains ODR Timestamp
+                                                  // 11: Packet contains FSYNC time, and this packet is flagged as first ODR after FSYNC (only if FIFO_TMST_FSYNC_EN is 1)
+            HEADER_ODR_ACCEL       = Bit1, // 1: The ODR for accel is different for this accel data packet compared to the previous accel packet
+                                           // 0: The ODR for accel is the same as the previous packet with accel
+            HEADER_ODR_GYRO        = Bit0, // 1: The ODR for gyro is different for this gyro data packet compared to the previous gyro packet
+                                           // 0: The ODR for gyro is the same as the previous packet with gyro
+        };
+
+    }
+    /************************************************************************************************************************************************/
+
+
     /********************************************位运算重载，因为作用域枚举（enum class）不支持位运算******************************************************/
     //定义trait（默认 false）
     template<typename E>
