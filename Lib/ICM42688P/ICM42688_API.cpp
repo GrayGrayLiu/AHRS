@@ -28,6 +28,9 @@ static_assert(static_cast<int32_t>(ICM42688P::Status::WrongDeviceId) == ICM42688
 static_assert(static_cast<int32_t>(ICM42688P::Status::ResetTimeout) == ICM42688_STATUS_RESET_TIMEOUT);
 static_assert(static_cast<int32_t>(ICM42688P::Status::Unsupported) == ICM42688_STATUS_UNSUPPORTED);
 static_assert(static_cast<int32_t>(ICM42688P::Status::ConfigMismatch) == ICM42688_STATUS_CONFIG_MISMATCH);
+static_assert(static_cast<int32_t>(ICM42688P::Status::NoData) == ICM42688_STATUS_NO_DATA);
+static_assert(static_cast<int32_t>(ICM42688P::Status::FifoOverflow) == ICM42688_STATUS_FIFO_OVERFLOW);
+static_assert(static_cast<int32_t>(ICM42688P::Status::BadFifoPacket) == ICM42688_STATUS_BAD_FIFO_PACKET);
 } // namespace
 
 extern "C" ICM42688_Status ICM42688_Bind(SPI_HandleTypeDef *hspi,
@@ -176,6 +179,10 @@ extern "C" ICM42688_Status ICM42688_GetLatest(ICM42688_Sample *sample)
         sample->gyro_raw[axis] = latest.gyro_raw[axis];
         sample->accel_m_s2[axis] = latest.accel_m_s2[axis];
         sample->gyro_rad_s[axis] = latest.gyro_rad_s[axis];
+        sample->accel_raw20[axis] = latest.accel_raw20[axis];
+        sample->gyro_raw20[axis] = latest.gyro_raw20[axis];
+        sample->accel_effective[axis] = latest.accel_effective[axis];
+        sample->gyro_effective[axis] = latest.gyro_effective[axis];
     }
 
     sample->temp_raw = latest.temp_raw;
@@ -184,6 +191,11 @@ extern "C" ICM42688_Status ICM42688_GetLatest(ICM42688_Sample *sample)
     sample->error_counter = latest.error_counter;
     sample->configured = latest.configured ? 1u : 0u;
     sample->data_valid = latest.data_valid ? 1u : 0u;
+    sample->fifo_count_bytes = latest.fifo_count_bytes;
+    sample->fifo_valid_packets = latest.fifo_valid_packets;
+    sample->fifo_timestamp = latest.fifo_timestamp;
+    sample->fifo_header = latest.fifo_header;
+    sample->data_source = latest.data_source;
     return ICM42688_STATUS_OK;
 }
 

@@ -150,6 +150,7 @@ ICM42688P::Status ICM42688P::Configure()
         }
     }
 
+    const register_bank0_config_t* fifo_config1 = nullptr;
     const register_bank0_config_t* power_config = nullptr;
 
     for (const auto& config : register_bank0_cfg_) {
@@ -158,7 +159,12 @@ ICM42688P::Status ICM42688P::Configure()
             continue;
         }
 
-        if (!ShouldApplyPollingConfig(config.reg)) {
+        if (config.reg == BANK0::FIFO_CONFIG1) {
+            fifo_config1 = &config;
+            continue;
+        }
+
+        if (!ShouldApplyFifoPollingConfig(config.reg)) {
             continue;
         }
 
@@ -169,11 +175,23 @@ ICM42688P::Status ICM42688P::Configure()
         }
     }
 
-    if (power_config == nullptr) {
+    if (fifo_config1 == nullptr || power_config == nullptr) {
         return Status::ConfigMismatch;
     }
 
-    Status status = RegisterSetAndClearBits(*power_config);
+    Status status = ConfigureFifoWatermark(FIFO_WATERMARK_BYTES);
+
+    if (status != Status::Ok) {
+        return status;
+    }
+
+    status = RegisterSetAndClearBits(*fifo_config1);
+
+    if (status != Status::Ok) {
+        return status;
+    }
+
+    status = RegisterSetAndClearBits(*power_config);
 
     if (status != Status::Ok) {
         return status;
@@ -199,7 +217,7 @@ ICM42688P::Status ICM42688P::Configure()
     }
 
     for (const auto& config : register_bank0_cfg_) {
-        if (!ShouldApplyPollingConfig(config.reg)) {
+        if (!ShouldApplyFifoPollingConfig(config.reg)) {
             continue;
         }
 
@@ -210,8 +228,255 @@ ICM42688P::Status ICM42688P::Configure()
         }
     }
 
+    status = FifoReset();
+
+    if (status != Status::Ok) {
+        return status;
+    }
+
     configured_ = true;
     latest_.configured = true;
+    return Status::Ok;
+}
+
+ICM42688P::Status ICM42688P::ConfigureFifoWatermark(const uint16_t watermark_bytes)
+{
+    constexpr uint16_t maximum_watermark{0x0FFFu};
+
+    if (watermark_bytes == 0u || watermark_bytes > maximum_watermark) {
+        return Status::InvalidArgument;
+    }
+
+    const register_bank0_config_t watermark_low{
+        BANK0::FIFO_CONFIG2,
+        static_cast<uint8_t>(watermark_bytes & 0x00FFu),
+        static_cast<uint8_t>(ICM42688P_Regs::FIFO_CONFIG2_BITS::FIFO_WM_7_0_MASK)
+    };
+    const register_bank0_config_t watermark_high{
+        BANK0::FIFO_CONFIG3,
+        static_cast<uint8_t>((watermark_bytes >> 8u) & 0x0Fu),
+        static_cast<uint8_t>(ICM42688P_Regs::FIFO_CONFIG3_BITS::FIFO_WM_11_8_MASK)
+    };
+
+    Status status = RegisterSetAndClearBits(watermark_low);
+
+    if (status != Status::Ok) {
+        return status;
+    }
+
+    status = RegisterSetAndClearBits(watermark_high);
+
+    if (status != Status::Ok) {
+        return status;
+    }
+
+    status = RegisterCheck(watermark_low);
+
+    if (status != Status::Ok) {
+        return status;
+    }
+
+    return RegisterCheck(watermark_high);
+}
+
+ICM42688P::Status ICM42688P::FifoReset()
+{
+    const Status status = RegisterWrite(
+        BANK0::SIGNAL_PATH_RESET,
+        static_cast<uint8_t>(ICM42688P_Regs::SIGNAL_PATH_RESET_BITS::FIFO_FLUSH));
+
+    if (status != Status::Ok) {
+        return status;
+    }
+
+    HAL_Delay(1u);
+    last_fifo_count_bytes_ = 0u;
+    last_fifo_valid_packets_ = 0u;
+    return Status::Ok;
+}
+
+ICM42688P::Status ICM42688P::FifoReadCount(uint16_t& count_bytes)
+{
+    uint8_t count_buffer[2]{};
+    const Status status = ReadBuffer(BANK0::FIFO_COUNTH, count_buffer, sizeof(count_buffer));
+
+    if (status != Status::Ok) {
+        return status;
+    }
+
+    count_bytes = static_cast<uint16_t>(
+        (static_cast<uint16_t>(count_buffer[0]) << 8u) | count_buffer[1]);
+    last_fifo_count_bytes_ = count_bytes;
+
+    if (count_bytes >= ICM42688P_Regs::FIFO::SIZE) {
+        const Status reset_status = FifoReset();
+        return reset_status == Status::Ok ? Status::FifoOverflow : reset_status;
+    }
+
+    return count_bytes < FIFO_PACKET_SIZE ? Status::NoData : Status::Ok;
+}
+
+ICM42688P::Status ICM42688P::FifoReadBatch(const uint16_t requested_packets,
+                                            uint16_t& valid_packets)
+{
+    valid_packets = 0u;
+
+    if (requested_packets == 0u) {
+        return Status::NoData;
+    }
+
+    if (requested_packets > FIFO_MAX_PACKETS_PER_UPDATE) {
+        const Status reset_status = FifoReset();
+        return reset_status == Status::Ok ? Status::FifoOverflow : reset_status;
+    }
+
+    const uint16_t data_bytes = static_cast<uint16_t>(requested_packets * FIFO_PACKET_SIZE);
+    const uint16_t transfer_length = static_cast<uint16_t>(
+        ICM42688P_Regs::SPI_COMMAND_LENGTH + FIFO_TRANSFER_PREFIX_BYTES + data_bytes);
+    const Status bank_status = SelectBank(ICM42688P_Regs::REG_BANK_SEL_BITS::BANK_SEL_0);
+
+    if (bank_status != Status::Ok) {
+        return bank_status;
+    }
+
+    fifo_tx_buf_[0] = static_cast<uint8_t>(BANK0::INT_STATUS)
+                    | ICM42688P_Regs::SPI_READ_BIT;
+    memset(&fifo_tx_buf_[ICM42688P_Regs::SPI_COMMAND_LENGTH],
+           ICM42688P_Regs::SPI_DUMMY_BYTE,
+           static_cast<size_t>(transfer_length - ICM42688P_Regs::SPI_COMMAND_LENGTH));
+
+    CS_Low();
+    const HAL_StatusTypeDef hal_status = HAL_SPI_TransmitReceive(
+        hspi_,
+        fifo_tx_buf_,
+        fifo_rx_buf_,
+        transfer_length,
+        ICM42688P_Regs::SPI_TRANSACTION_TIMEOUT_MS);
+    CS_High();
+
+    if (hal_status != HAL_OK) {
+        return Status::SpiError;
+    }
+
+    const uint8_t int_status = fifo_rx_buf_[FIFO_RX_INT_STATUS_INDEX];
+    const uint16_t fifo_count_bytes = static_cast<uint16_t>(
+        (static_cast<uint16_t>(fifo_rx_buf_[FIFO_RX_COUNT_HIGH_INDEX]) << 8u)
+        | fifo_rx_buf_[FIFO_RX_COUNT_LOW_INDEX]);
+    last_fifo_count_bytes_ = fifo_count_bytes;
+
+    if ((int_status & static_cast<uint8_t>(ICM42688P_Regs::INT_STATUS_BITS::FIFO_FULL_INT)) != 0u
+        || fifo_count_bytes >= ICM42688P_Regs::FIFO::SIZE) {
+        const Status reset_status = FifoReset();
+        return reset_status == Status::Ok ? Status::FifoOverflow : reset_status;
+    }
+
+    const uint16_t available_packets = static_cast<uint16_t>(fifo_count_bytes / FIFO_PACKET_SIZE);
+
+    if (available_packets == 0u) {
+        return Status::NoData;
+    }
+
+    if (available_packets > FIFO_MAX_PACKETS_PER_UPDATE) {
+        const Status reset_status = FifoReset();
+        return reset_status == Status::Ok ? Status::FifoOverflow : reset_status;
+    }
+
+    const uint16_t packets_to_process = requested_packets < available_packets
+        ? requested_packets
+        : available_packets;
+
+    for (uint16_t index = 0u; index < packets_to_process; ++index) {
+        ICM42688P_Regs::FIFO::DATA packet{};
+        const size_t packet_offset = static_cast<size_t>(FIFO_RX_DATA_INDEX)
+                                   + static_cast<size_t>(index * FIFO_PACKET_SIZE);
+        memcpy(&packet, &fifo_rx_buf_[packet_offset], sizeof(packet));
+
+        if (!IsValidFifoHeader(packet.FIFO_Header)) {
+            const Status reset_status = FifoReset();
+            return reset_status == Status::Ok ? Status::BadFifoPacket : reset_status;
+        }
+
+        FifoDecodedSample decoded{};
+        const Status decode_status = DecodeFifoPacket(packet, decoded);
+
+        if (decode_status != Status::Ok) {
+            const Status reset_status = FifoReset();
+            return reset_status == Status::Ok ? decode_status : reset_status;
+        }
+
+        fifo_last_decoded_ = decoded;
+        ++valid_packets;
+    }
+
+    last_fifo_valid_packets_ = valid_packets;
+    return valid_packets == 0u ? Status::NoData : Status::Ok;
+}
+
+ICM42688P::Status ICM42688P::DecodeFifoPacket(
+    const ICM42688P_Regs::FIFO::DATA& packet,
+    FifoDecodedSample& decoded) const
+{
+    if (!IsValidFifoHeader(packet.FIFO_Header)) {
+        return Status::BadFifoPacket;
+    }
+
+    const uint8_t accel_extension[3]{
+        static_cast<uint8_t>((packet.ACCEL_X_3_0_GYRO_X_3_0 & 0xF0u) >> 4u),
+        static_cast<uint8_t>((packet.ACCEL_Y_3_0_GYRO_Y_3_0 & 0xF0u) >> 4u),
+        static_cast<uint8_t>((packet.ACCEL_Z_3_0_GYRO_Z_3_0 & 0xF0u) >> 4u),
+    };
+    const uint8_t gyro_extension[3]{
+        static_cast<uint8_t>(packet.ACCEL_X_3_0_GYRO_X_3_0 & 0x0Fu),
+        static_cast<uint8_t>(packet.ACCEL_Y_3_0_GYRO_Y_3_0 & 0x0Fu),
+        static_cast<uint8_t>(packet.ACCEL_Z_3_0_GYRO_Z_3_0 & 0x0Fu),
+    };
+    const uint8_t accel_high[3]{
+        packet.ACCEL_X_19_12,
+        packet.ACCEL_Y_19_12,
+        packet.ACCEL_Z_19_12,
+    };
+    const uint8_t accel_low[3]{
+        packet.ACCEL_X_11_4,
+        packet.ACCEL_Y_11_4,
+        packet.ACCEL_Z_11_4,
+    };
+    const uint8_t gyro_high[3]{
+        packet.GYRO_X_19_12,
+        packet.GYRO_Y_19_12,
+        packet.GYRO_Z_19_12,
+    };
+    const uint8_t gyro_low[3]{
+        packet.GYRO_X_11_4,
+        packet.GYRO_Y_11_4,
+        packet.GYRO_Z_11_4,
+    };
+
+    constexpr float accel_scale = STANDARD_GRAVITY_M_S2 / 8192.0F;
+    constexpr float gyro_scale = (1.0F / 131.0F) * DEG_TO_RAD;
+
+    for (uint8_t axis = 0u; axis < 3u; ++axis) {
+        decoded.accel_raw20[axis] = Reassemble20Bit(
+            accel_high[axis], accel_low[axis], accel_extension[axis]);
+        decoded.gyro_raw20[axis] = Reassemble20Bit(
+            gyro_high[axis], gyro_low[axis], gyro_extension[axis]);
+        decoded.accel_effective[axis] = decoded.accel_raw20[axis] / 4;
+        decoded.gyro_effective[axis] = decoded.gyro_raw20[axis] / 2;
+        decoded.accel_raw16[axis] = SaturateToInt16(decoded.accel_effective[axis]);
+        decoded.gyro_raw16[axis] = SaturateToInt16(decoded.gyro_effective[axis]);
+        decoded.accel_m_s2[axis] = static_cast<float>(decoded.accel_effective[axis])
+                                  * accel_scale;
+        decoded.gyro_rad_s[axis] = static_cast<float>(decoded.gyro_effective[axis])
+                                  * gyro_scale;
+    }
+
+    decoded.temp_raw = CombineBigEndian(packet.TEMPERATURE_15_8, packet.TEMPERATURE_7_0);
+    decoded.temperature_deg_c = static_cast<float>(decoded.temp_raw)
+                                / TEMPERATURE_SENSITIVITY_LSB_PER_DEG_C
+                                + TEMPERATURE_OFFSET_DEG_C;
+    decoded.timestamp_fifo = static_cast<uint16_t>(
+        (static_cast<uint16_t>(packet.TIME_STAMP_15_8) << 8u)
+        | packet.TIME_STAMP_7_0);
+    decoded.header = packet.FIFO_Header;
     return Status::Ok;
 }
 
@@ -449,6 +714,77 @@ ICM42688P::Status ICM42688P::Update()
         return Status::InvalidArgument;
     }
 
+    uint16_t fifo_count_bytes{};
+    Status status = FifoReadCount(fifo_count_bytes);
+
+    if (status == Status::NoData) {
+        latest_.configured = configured_;
+        latest_.error_counter = error_count_;
+        return status;
+    }
+
+    if (status != Status::Ok) {
+        ++error_count_;
+        latest_.error_counter = error_count_;
+        latest_.data_valid = false;
+        return status;
+    }
+
+    const uint16_t requested_packets = static_cast<uint16_t>(fifo_count_bytes / FIFO_PACKET_SIZE);
+    uint16_t valid_packets{};
+    status = FifoReadBatch(requested_packets, valid_packets);
+
+    if (status == Status::NoData) {
+        latest_.configured = configured_;
+        latest_.error_counter = error_count_;
+        return status;
+    }
+
+    if (status != Status::Ok) {
+        ++error_count_;
+        latest_.error_counter = error_count_;
+        latest_.data_valid = false;
+        return status;
+    }
+
+    Sample sample{};
+
+    for (uint8_t axis = 0u; axis < 3u; ++axis) {
+        sample.accel_raw[axis] = fifo_last_decoded_.accel_raw16[axis];
+        sample.gyro_raw[axis] = fifo_last_decoded_.gyro_raw16[axis];
+        sample.accel_raw20[axis] = fifo_last_decoded_.accel_raw20[axis];
+        sample.gyro_raw20[axis] = fifo_last_decoded_.gyro_raw20[axis];
+        sample.accel_effective[axis] = fifo_last_decoded_.accel_effective[axis];
+        sample.gyro_effective[axis] = fifo_last_decoded_.gyro_effective[axis];
+        sample.accel_m_s2[axis] = fifo_last_decoded_.accel_m_s2[axis];
+        sample.gyro_rad_s[axis] = fifo_last_decoded_.gyro_rad_s[axis];
+    }
+
+    sample.temp_raw = fifo_last_decoded_.temp_raw;
+    sample.temperature_deg_c = fifo_last_decoded_.temperature_deg_c;
+    sample.timestamp_ms = HAL_GetTick();
+    sample.sample_counter = sample_count_ + valid_packets;
+    sample.error_counter = error_count_;
+    sample.configured = configured_;
+    sample.data_valid = true;
+    sample.fifo_count_bytes = last_fifo_count_bytes_;
+    sample.fifo_valid_packets = valid_packets;
+    sample.fifo_timestamp = fifo_last_decoded_.timestamp_fifo;
+    sample.fifo_header = fifo_last_decoded_.header;
+    sample.data_source = DATA_SOURCE_FIFO;
+
+    sample_count_ = sample.sample_counter;
+    last_update_ms_ = sample.timestamp_ms;
+    latest_ = sample;
+    return Status::Ok;
+}
+
+ICM42688P::Status ICM42688P::UpdateFromUiRegisters()
+{
+    if (!initialized_ || !configured_) {
+        return Status::InvalidArgument;
+    }
+
     uint8_t buffer[SENSOR_DATA_BURST_LENGTH]{};
     const Status status = ReadBuffer(BANK0::TEMP_DATA1, buffer, SENSOR_DATA_BURST_LENGTH);
 
@@ -496,6 +832,7 @@ ICM42688P::Status ICM42688P::Update()
     sample.error_counter = error_count_;
     sample.configured = configured_;
     sample.data_valid = true;
+    sample.data_source = DATA_SOURCE_UI_REGISTERS;
 
     last_update_ms_ = sample.timestamp_ms;
     latest_ = sample;

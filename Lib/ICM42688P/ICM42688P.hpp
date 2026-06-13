@@ -55,6 +55,9 @@ public:
         ResetTimeout = -4,
         Unsupported = -5,
         ConfigMismatch = -6,
+        NoData = -7,
+        FifoOverflow = -8,
+        BadFifoPacket = -9,
     };
 
     struct RawVector
@@ -77,13 +80,22 @@ public:
         uint32_t error_counter{0};
         bool configured{false};
         bool data_valid{false};
+        int32_t accel_raw20[3]{};
+        int32_t gyro_raw20[3]{};
+        int32_t accel_effective[3]{};
+        int32_t gyro_effective[3]{};
+        uint16_t fifo_count_bytes{0};
+        uint16_t fifo_valid_packets{0};
+        uint16_t fifo_timestamp{0};
+        uint8_t fifo_header{0};
+        uint8_t data_source{0};
     };
 
     ICM42688P(SPI_HandleTypeDef* hspi,
               GPIO_TypeDef* cs_port, uint16_t cs_pin);
 
-    // Minimal hardware bring-up: probe, soft reset, probe again, then enable
-    // accel and gyro in low-noise mode at 1 kHz using their default ranges.
+    // Bare-metal initialization: probe, soft reset, configure the FIFO polling
+    // path, verify the applied register subset, then enter running state.
     [[nodiscard]] Status Init();
     [[nodiscard]] Status Probe();
     [[nodiscard]] Status Reset();
@@ -111,7 +123,30 @@ private:
         Error,
     };
 
+    struct FifoDecodedSample
+    {
+        int32_t accel_raw20[3]{};
+        int32_t gyro_raw20[3]{};
+        int32_t accel_effective[3]{};
+        int32_t gyro_effective[3]{};
+        int16_t accel_raw16[3]{};
+        int16_t gyro_raw16[3]{};
+        int16_t temp_raw{0};
+        uint16_t timestamp_fifo{0};
+        uint8_t header{0};
+        float accel_m_s2[3]{};
+        float gyro_rad_s[3]{};
+        float temperature_deg_c{0.0F};
+    };
+
     [[nodiscard]] Status Configure();
+    [[nodiscard]] Status ConfigureFifoWatermark(uint16_t watermark_bytes);
+    [[nodiscard]] Status FifoReset();
+    [[nodiscard]] Status FifoReadCount(uint16_t& count_bytes);
+    [[nodiscard]] Status FifoReadBatch(uint16_t requested_packets, uint16_t& valid_packets);
+    [[nodiscard]] Status DecodeFifoPacket(const ICM42688P_Regs::FIFO::DATA& packet,
+                                          FifoDecodedSample& decoded) const;
+    [[nodiscard]] Status UpdateFromUiRegisters();
     [[nodiscard]] Status VerifyRegister(ICM42688P_Regs::RegsAdd::BANK0 reg,
                                         uint8_t expected_value);
     [[nodiscard]] Status RegisterSetAndClearBits(const register_bank0_config_t& config);
@@ -146,23 +181,62 @@ private:
     {
         return (value & mask) == (set_bits & mask);
     }
-    [[nodiscard]] static constexpr bool ShouldApplyPollingConfig(
+    [[nodiscard]] static constexpr bool ShouldApplyFifoPollingConfig(
         ICM42688P_Regs::RegsAdd::BANK0 reg)
     {
-        using PollingBank0 = ICM42688P_Regs::RegsAdd::BANK0;
+        using FifoPollingBank0 = ICM42688P_Regs::RegsAdd::BANK0;
 
         switch (reg) {
-        case PollingBank0::INT_CONFIG:
-        case PollingBank0::FIFO_CONFIG:
-        case PollingBank0::FIFO_CONFIG1:
-        case PollingBank0::INT_CONFIG0:
-        case PollingBank0::INT_CONFIG1:
-        case PollingBank0::INT_SOURCE0:
+        case FifoPollingBank0::INT_CONFIG:
+        case FifoPollingBank0::INT_CONFIG0:
+        case FifoPollingBank0::INT_CONFIG1:
+        case FifoPollingBank0::INT_SOURCE0:
             return false;
 
         default:
             return true;
         }
+    }
+    [[nodiscard]] static constexpr bool IsValidFifoHeader(uint8_t header)
+    {
+        const uint8_t message = static_cast<uint8_t>(ICM42688P_Regs::FIFO::FIFO_HEADER_BIT::HEADER_MSG);
+        const uint8_t accel = static_cast<uint8_t>(ICM42688P_Regs::FIFO::FIFO_HEADER_BIT::HEADER_ACCEL);
+        const uint8_t gyro = static_cast<uint8_t>(ICM42688P_Regs::FIFO::FIFO_HEADER_BIT::HEADER_GYRO);
+        const uint8_t high_resolution = static_cast<uint8_t>(ICM42688P_Regs::FIFO::FIFO_HEADER_BIT::HEADER_20);
+        const uint8_t timestamp_mask = static_cast<uint8_t>(
+            ICM42688P_Regs::FIFO::FIFO_HEADER_BIT::HEADER_TIMESTAMP_FSYNC);
+        const uint8_t accel_odr_change = static_cast<uint8_t>(
+            ICM42688P_Regs::FIFO::FIFO_HEADER_BIT::HEADER_ODR_ACCEL);
+        const uint8_t gyro_odr_change = static_cast<uint8_t>(
+            ICM42688P_Regs::FIFO::FIFO_HEADER_BIT::HEADER_ODR_GYRO);
+
+        return (header & message) == 0u
+            && (header & accel) != 0u
+            && (header & gyro) != 0u
+            && (header & high_resolution) != 0u
+            && (header & timestamp_mask) == ICM42688P_Regs::Bit3
+            && (header & accel_odr_change) == 0u
+            && (header & gyro_odr_change) == 0u;
+    }
+    [[nodiscard]] static constexpr int32_t Reassemble20Bit(uint8_t high,
+                                                            uint8_t low,
+                                                            uint8_t extension_low_nibble)
+    {
+        uint32_t value = (static_cast<uint32_t>(high) << 12u)
+                       | (static_cast<uint32_t>(low) << 4u)
+                       | (static_cast<uint32_t>(extension_low_nibble) & 0x0Fu);
+
+        if ((high & ICM42688P_Regs::Bit7) != 0u) {
+            value |= 0xFFF00000u;
+        }
+
+        return static_cast<int32_t>(value);
+    }
+    [[nodiscard]] static constexpr int16_t SaturateToInt16(int32_t value)
+    {
+        return value > 32767 ? static_cast<int16_t>(32767)
+             : value < -32768 ? static_cast<int16_t>(-32768)
+             : static_cast<int16_t>(value);
     }
 
     void CS_Low() const;
@@ -174,6 +248,29 @@ private:
 
     uint8_t tx_buf_[ICM42688P_Regs::MAX_READ_LENGTH + ICM42688P_Regs::SPI_COMMAND_LENGTH]{};
     uint8_t rx_buf_[ICM42688P_Regs::MAX_READ_LENGTH + ICM42688P_Regs::SPI_COMMAND_LENGTH]{};
+
+    static constexpr uint16_t FIFO_PACKET_SIZE{sizeof(ICM42688P_Regs::FIFO::DATA)};
+    static constexpr uint16_t FIFO_ODR_HZ{8000u};
+    static constexpr uint16_t FIFO_UPDATE_HZ{100u};
+    static constexpr uint16_t FIFO_EXPECTED_PACKETS_PER_UPDATE{FIFO_ODR_HZ / FIFO_UPDATE_HZ};
+    static constexpr uint16_t FIFO_MAX_PACKETS_PER_UPDATE{96u};
+    static constexpr uint16_t FIFO_WATERMARK_BYTES{1600u};
+    static constexpr uint16_t FIFO_TRANSFER_PREFIX_BYTES{3u};
+    static constexpr uint16_t FIFO_TRANSFER_DATA_BYTES{
+        FIFO_MAX_PACKETS_PER_UPDATE * FIFO_PACKET_SIZE};
+    static constexpr uint16_t FIFO_TRANSFER_BUFFER_SIZE{
+        ICM42688P_Regs::SPI_COMMAND_LENGTH + FIFO_TRANSFER_PREFIX_BYTES
+        + FIFO_TRANSFER_DATA_BYTES};
+    static constexpr uint16_t FIFO_RX_INT_STATUS_INDEX{1u};
+    static constexpr uint16_t FIFO_RX_COUNT_HIGH_INDEX{2u};
+    static constexpr uint16_t FIFO_RX_COUNT_LOW_INDEX{3u};
+    static constexpr uint16_t FIFO_RX_DATA_INDEX{4u};
+    static constexpr uint8_t DATA_SOURCE_UI_REGISTERS{1u};
+    static constexpr uint8_t DATA_SOURCE_FIFO{2u};
+    static_assert(FIFO_PACKET_SIZE == 20u, "ICM42688P high-resolution FIFO packet must be 20 bytes");
+
+    uint8_t fifo_tx_buf_[FIFO_TRANSFER_BUFFER_SIZE]{};
+    uint8_t fifo_rx_buf_[FIFO_TRANSFER_BUFFER_SIZE]{};
 
 	using BANK0 = ICM42688P_Regs::RegsAdd::BANK0;
 	using BANK1 = ICM42688P_Regs::RegsAdd::BANK1;
@@ -305,6 +402,9 @@ private:
     uint32_t error_count_{0};
     uint32_t last_update_ms_{0};
     Sample latest_{};
+    FifoDecodedSample fifo_last_decoded_{};
+    uint16_t last_fifo_count_bytes_{0};
+    uint16_t last_fifo_valid_packets_{0};
     bool bank_selected_valid_{false};
     ICM42688P_Regs::REG_BANK_SEL_BITS current_bank_{ICM42688P_Regs::REG_BANK_SEL_BITS::BANK_SEL_0};
 };

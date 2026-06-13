@@ -85,7 +85,8 @@ static void ICM42688P_UpdateTask(void)
 
     icm42688p_last_status = ICM42688_Update();
 
-    if (icm42688p_last_status == ICM42688_STATUS_OK) {
+    if (icm42688p_last_status == ICM42688_STATUS_OK
+        || icm42688p_last_status == ICM42688_STATUS_NO_DATA) {
         ICM42688P_SetLed(GPIO_PIN_RESET, GPIO_PIN_SET, GPIO_PIN_RESET);
 
     } else {
@@ -103,39 +104,27 @@ static void ICM42688P_PrintLatest(void)
     const ICM42688_Status status = ICM42688_GetLatest(&sample);
 
     if (status != ICM42688_STATUS_OK || sample.data_valid == 0u) {
-        printf("[ICM42688P] sample unavailable status=%ld update_status=%ld errors=%lu\r\n",
+        printf("[ICM42688P] unavailable get=%ld st=%ld e=%lu\r\n",
                (long)status,
                (long)icm42688p_last_status,
                (unsigned long)sample.error_counter);
         return;
     }
 
-    const long accel_x_milli = (long)(sample.accel_m_s2[0] * 1000.0f);
-    const long accel_y_milli = (long)(sample.accel_m_s2[1] * 1000.0f);
     const long accel_z_milli = (long)(sample.accel_m_s2[2] * 1000.0f);
-    const long gyro_x_milli = (long)(sample.gyro_rad_s[0] * 1000.0f);
-    const long gyro_y_milli = (long)(sample.gyro_rad_s[1] * 1000.0f);
     const long gyro_z_milli = (long)(sample.gyro_rad_s[2] * 1000.0f);
-    const long temperature_centi = (long)(sample.temperature_deg_c * 100.0f);
 
-    printf("[ICM42688P] raw acc=(%d,%d,%d) gyro=(%d,%d,%d) "
-           "acc_m_s2_x1000=(%ld,%ld,%ld) gyro_rad_s_x1000=(%ld,%ld,%ld) "
-           "temp_c_x100=%ld samples=%lu errors=%lu\r\n",
-           (int)sample.accel_raw[0],
-           (int)sample.accel_raw[1],
-           (int)sample.accel_raw[2],
-           (int)sample.gyro_raw[0],
-           (int)sample.gyro_raw[1],
-           (int)sample.gyro_raw[2],
-           accel_x_milli,
-           accel_y_milli,
-           accel_z_milli,
-           gyro_x_milli,
-           gyro_y_milli,
-           gyro_z_milli,
-           temperature_centi,
+    printf("[ICM42688P] st=%ld src=%u cnt=%u n=%u hdr=0x%02X "
+           "s=%lu e=%lu az=%ld gz=%ld\r\n",
+           (long)icm42688p_last_status,
+           (unsigned int)sample.data_source,
+           (unsigned int)sample.fifo_count_bytes,
+           (unsigned int)sample.fifo_valid_packets,
+           (unsigned int)sample.fifo_header,
            (unsigned long)sample.sample_counter,
-           (unsigned long)sample.error_counter);
+           (unsigned long)sample.error_counter,
+           accel_z_milli,
+           gyro_z_milli);
 }
 static void Loop_1000Hz(void) //1ms执行一次
 {

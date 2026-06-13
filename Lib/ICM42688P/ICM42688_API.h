@@ -17,6 +17,9 @@ typedef enum
     ICM42688_STATUS_RESET_TIMEOUT = -4,
     ICM42688_STATUS_UNSUPPORTED = -5,
     ICM42688_STATUS_CONFIG_MISMATCH = -6,
+    ICM42688_STATUS_NO_DATA = -7,
+    ICM42688_STATUS_FIFO_OVERFLOW = -8,
+    ICM42688_STATUS_BAD_FIFO_PACKET = -9,
 } ICM42688_Status;
 
 typedef struct
@@ -39,6 +42,15 @@ typedef struct
     uint32_t error_counter;
     uint8_t configured;
     uint8_t data_valid;
+    int32_t accel_raw20[3];
+    int32_t gyro_raw20[3];
+    int32_t accel_effective[3];
+    int32_t gyro_effective[3];
+    uint16_t fifo_count_bytes;
+    uint16_t fifo_valid_packets;
+    uint16_t fifo_timestamp;
+    uint8_t fifo_header;
+    uint8_t data_source;
 } ICM42688_Sample;
 
 ICM42688_Status ICM42688_Bind(SPI_HandleTypeDef *hspi, GPIO_TypeDef *cs_port, uint16_t cs_pin);
