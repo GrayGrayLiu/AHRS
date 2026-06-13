@@ -131,7 +131,7 @@ private:
 	using BANK1 = ICM42688P_Regs::RegsAdd::BANK1;
 	using BANK2 = ICM42688P_Regs::RegsAdd::BANK2;
     uint8_t checked_register_bank0_{0};
-	static constexpr uint8_t size_register_bank0_cfg{16};
+	static constexpr uint8_t size_register_bank0_cfg{13};
 	register_bank0_config_t register_bank0_cfg_[size_register_bank0_cfg]
 	{
 		// Register                              | Set bits, Clear bits
@@ -144,8 +144,6 @@ private:
 		{ BANK0::FIFO_CONFIG,
 			static_cast<uint8_t>(FIFO_CONFIG_BITS::FIFO_MODE_STOP_ON_FULL),
 			static_cast<uint8_t>(FIFO_CONFIG_BITS::FIFO_MODE_MASK) },
-
-		// { BANK0::INTF_CONFIG1,         0, 0}, // RTC_MODE[2] set at runtime
 
 		//设置温度数据启用（默认）。设置RC振荡器在陀螺和加计空闲时不启用（默认）。设置陀螺为低噪声模式。设置加计为低噪声模式。
 		{ BANK0::PWR_MGMT0,
@@ -177,23 +175,22 @@ private:
 			static_cast<uint8_t>(ACCEL_CONFIG1_BITS::ACCEL_UI_FILT_ORD_1),
 			static_cast<uint8_t>(ACCEL_CONFIG1_BITS::ACCEL_UI_FILT_ORD_MASK)},
 
-		//设置
-		// { BANK0::TMST_CONFIG,TMST_CONFIG_BIT::TMST_EN | TMST_CONFIG_BIT::TMST_DELTA_EN | TMST_CONFIG_BIT::TMST_TO_REGS_EN | TMST_CONFIG_BIT::TMST_RES,TMST_CONFIG_BIT::TMST_FSYNC_EN },
+		//设置TMST_VALUE寄存器可被读取时间戳。设置时间戳精度为16us。设置时间戳为增量形式输出。设置时间戳不记录FSYNC。设置启用时间戳寄存器（默认）。
+		{ BANK0::TMST_CONFIG,
+			static_cast<uint8_t>(TMST_CONFIG_BITS::TMST_TO_REGS_EN | TMST_CONFIG_BITS::TMST_RES | TMST_CONFIG_BITS::TMST_DELTA_EN),
+			static_cast<uint8_t>(TMST_CONFIG_BITS::TMST_TO_REGS_EN | TMST_CONFIG_BITS::TMST_RES | TMST_CONFIG_BITS::TMST_DELTA_EN | TMST_CONFIG_BITS::TMST_FSYNC_EN)},
 
 		//设置禁止部分读取FIFO（默认）。设置启用FIFO watermark中断。设置陀螺、加计、温度采用最高位数精度数据。设置在FIFO禁用帧同步数据。设置启用温度数据。设置启用陀螺数据。设置启用加计数据。
 		{ BANK0::FIFO_CONFIG1,
 			static_cast<uint8_t>(FIFO_CONFIG1_BITS::FIFO_WM_GT_TH | FIFO_CONFIG1_BITS::FIFO_HIRES_EN | FIFO_CONFIG1_BITS::FIFO_TEMP_EN | FIFO_CONFIG1_BITS::FIFO_GYRO_EN | FIFO_CONFIG1_BITS::FIFO_ACCEL_EN),
 			static_cast<uint8_t>(FIFO_CONFIG1_BITS::FIFO_WM_GT_TH | FIFO_CONFIG1_BITS::FIFO_HIRES_EN | FIFO_CONFIG1_BITS::FIFO_TMST_FSYNC_EN | FIFO_CONFIG1_BITS::FIFO_TEMP_EN | FIFO_CONFIG1_BITS::FIFO_GYRO_EN | FIFO_CONFIG1_BITS::FIFO_ACCEL_EN)},
 
-		// { BANK0::FIFO_CONFIG2,         0, 0 }, // FIFO_WM[7:0] set at runtime
-		// { BANK0::FIFO_CONFIG3,         0, 0 }, // FIFO_WM[11:8] set at runtime
-
 		//设置Data Ready中断清除时机（默认）。设置FIFO Threshold中断清除时机为FIFO数据被读取1字节之后。设置FIFO Full中断清除时机（默认）。
 		{ BANK0::INT_CONFIG0,
 			static_cast<uint8_t>(INT_CONFIG0_BITS::FIFO_THS_INT_CLEAR_FIFO_READ),
 			static_cast<uint8_t>(INT_CONFIG0_BITS::FIFO_THS_INT_CLEAR_MASK)},
 
-		//设置
+		//设置INT_ASYNC_RESET: User should change setting to 0 from default setting of 1, for proper INT1 and INT2 pin operation
 		{ BANK0::INT_CONFIG1,
 			static_cast<uint8_t>(0),
 			static_cast<uint8_t>(INT_CONFIG1_BITS::INT_ASYNC_RESET)},
@@ -205,7 +202,7 @@ private:
 	};
 
 	uint8_t checked_register_bank1_{0};
-	static constexpr uint8_t size_register_bank1_cfg{5};
+	static constexpr uint8_t size_register_bank1_cfg{4};
 	register_bank1_config_t register_bank1_cfg_[size_register_bank1_cfg]
 	{
 		// Register                              | Set bits, Clear bits
@@ -228,11 +225,6 @@ private:
 		{ BANK1::GYRO_CONFIG_STATIC5,
 			static_cast<uint8_t>(GYRO_CONFIG_STATIC5_BITS::GYRO_AAF_BITSHIFT_585HZ | GYRO_CONFIG_STATIC5_BITS::GYRO_AAF_DELTSQR_11_8_585HZ),
 			static_cast<uint8_t>(GYRO_CONFIG_STATIC5_BITS::GYRO_AAF_BITSHIFT_MASK | GYRO_CONFIG_STATIC5_BITS::GYRO_AAF_DELTSQR_11_8_MASK)},
-
-		//运行时设置PIN9的功能为CLKIN
-		// { BANK1::INTF_CONFIG5,
-		// 	static_cast<uint8_t>(0),
-		// 	static_cast<uint8_t>(0)},
 	};
 
 	uint8_t checked_register_bank2_{0};
