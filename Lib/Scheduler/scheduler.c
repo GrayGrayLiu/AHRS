@@ -3,156 +3,11 @@
 //
 
 #include "scheduler.h"
-#include <stdio.h>
+#include "ICM42688_Service.h"
 
-#include "ICM42688_API.h"
-#include "main.h"
-
-#define ICM42688P_RUNTIME_SAMPLE_PRINT_ENABLE 0
-
-enum
-{
-    ICM42688P_INIT_RETRY_INTERVAL_MS = 1000u,
-    ICM42688P_PRINT_INTERVAL_MS = 10000u,
-};
-
-static uint8_t icm42688p_bound = 0u;
-static uint8_t icm42688p_initialized = 0u;
-static uint32_t icm42688p_next_init_tick = 0u;
-static uint32_t icm42688p_last_print_tick = 0u;
-static ICM42688_Status icm42688p_last_status = ICM42688_STATUS_OK;
-
-static uint8_t ICM42688P_TickReached(const uint32_t now, const uint32_t target)
-{
-    return (uint8_t)((int32_t)(now - target) >= 0);
-}
-
-static void ICM42688P_SetLed(const GPIO_PinState red,
-                             const GPIO_PinState green,
-                             const GPIO_PinState blue)
-{
-    HAL_GPIO_WritePin(RGB_R_GPIO_Port, RGB_R_Pin, red);
-    HAL_GPIO_WritePin(RGB_G_GPIO_Port, RGB_G_Pin, green);
-    HAL_GPIO_WritePin(RGB_B_GPIO_Port, RGB_B_Pin, blue);
-}
-
-static void ICM42688P_ServiceInit(void)
-{
-    const uint32_t now = HAL_GetTick();
-
-    if (icm42688p_initialized != 0u
-        || !ICM42688P_TickReached(now, icm42688p_next_init_tick)) {
-        return;
-    }
-
-    ICM42688P_SetLed(GPIO_PIN_RESET, GPIO_PIN_RESET, GPIO_PIN_SET);
-
-    if (icm42688p_bound == 0u) {
-        printf("[ICM42688P] bind...\r\n");
-        icm42688p_last_status = ICM42688_Bind(&hspi1,
-                                               IMU_SPI_CS_GPIO_Port,
-                                               IMU_SPI_CS_Pin);
-
-        if (icm42688p_last_status != ICM42688_STATUS_OK) {
-            ICM42688P_SetLed(GPIO_PIN_SET, GPIO_PIN_RESET, GPIO_PIN_RESET);
-            printf("[ICM42688P] bind failed status=%ld\r\n",
-                   (long)icm42688p_last_status);
-            icm42688p_next_init_tick = now + ICM42688P_INIT_RETRY_INTERVAL_MS;
-            return;
-        }
-
-        icm42688p_bound = 1u;
-        printf("[ICM42688P] bind ok\r\n");
-    }
-
-    printf("[ICM42688P] init...\r\n");
-    icm42688p_last_status = ICM42688_Init();
-
-    if (icm42688p_last_status != ICM42688_STATUS_OK) {
-        ICM42688P_SetLed(GPIO_PIN_SET, GPIO_PIN_RESET, GPIO_PIN_RESET);
-        printf("[ICM42688P] init failed status=%ld\r\n",
-               (long)icm42688p_last_status);
-        icm42688p_next_init_tick = now + ICM42688P_INIT_RETRY_INTERVAL_MS;
-        return;
-    }
-
-    icm42688p_initialized = 1u;
-    ICM42688P_SetLed(GPIO_PIN_RESET, GPIO_PIN_SET, GPIO_PIN_RESET);
-    printf("[ICM42688P] init ok, interrupt FIFO update started\r\n");
-}
-
-static void ICM42688P_UpdateTask(void)
-{
-    if (icm42688p_initialized == 0u) {
-        return;
-    }
-
-    icm42688p_last_status = ICM42688_Update();
-
-    if (icm42688p_last_status == ICM42688_STATUS_OK
-        || icm42688p_last_status == ICM42688_STATUS_NO_DATA) {
-        ICM42688P_SetLed(GPIO_PIN_RESET, GPIO_PIN_SET, GPIO_PIN_RESET);
-
-    } else {
-        ICM42688P_SetLed(GPIO_PIN_SET, GPIO_PIN_RESET, GPIO_PIN_RESET);
-    }
-}
-
-static void ICM42688P_PrintLatest(void)
-{
-#if ICM42688P_RUNTIME_SAMPLE_PRINT_ENABLE == 0
-    return;
-#endif
-
-    if (icm42688p_initialized == 0u) {
-        return;
-    }
-
-    ICM42688_Sample sample = {0};
-    const ICM42688_Status status = ICM42688_GetLatest(&sample);
-    const uint32_t now = HAL_GetTick();
-    const uint8_t periodic_print = ICM42688P_TickReached(
-        now, icm42688p_last_print_tick + ICM42688P_PRINT_INTERVAL_MS);
-
-    if (periodic_print == 0u) {
-        return;
-    }
-
-    icm42688p_last_print_tick = now;
-
-    if (status != ICM42688_STATUS_OK || sample.data_valid == 0u) {
-        printf("[ICM42688P] unavailable get=%ld st=%ld e=%lu\r\n",
-               (long)status,
-               (long)icm42688p_last_status,
-               (unsigned long)sample.error_counter);
-        return;
-    }
-
-    const long accel_z_milli = (long)(sample.accel_m_s2[2] * 1000.0f);
-    const long gyro_z_milli = (long)(sample.gyro_rad_s[2] * 1000.0f);
-    const long delta_time_ms = (long)(sample.delta_time_s * 1000.0f);
-    const long delta_angle_z_micro = (long)(sample.delta_angle_rad[2] * 1000000.0f);
-    const long delta_velocity_z_micro = (long)(sample.delta_velocity_m_s[2] * 1000000.0f);
-
-    printf("[ICM42688P] st=%ld src=%u cnt=%u n=%u hdr=0x%02X s=%lu e=%lu "
-           "irq=%lu dt=%ld dthz=%ld dvz=%ld az=%ld gz=%ld\r\n",
-           (long)icm42688p_last_status,
-           (unsigned int)sample.data_source,
-           (unsigned int)sample.fifo_count_bytes,
-           (unsigned int)sample.fifo_valid_packets,
-           (unsigned int)sample.fifo_header,
-           (unsigned long)sample.sample_counter,
-           (unsigned long)sample.error_counter,
-           (unsigned long)sample.interrupt_counter,
-           delta_time_ms,
-           delta_angle_z_micro,
-           delta_velocity_z_micro,
-           accel_z_milli,
-           gyro_z_milli);
-}
 static void Loop_1000Hz(void) //1ms执行一次
 {
-    ICM42688P_UpdateTask();
+    ICM42688_Service1kHz();
 }
 
 static void Loop_500Hz(void) //2ms执行一次
@@ -181,7 +36,6 @@ static void Loop_20Hz(void) //50ms执行一次
 
 static void Loop_10Hz(void) //100ms执行一次
 {
-    ICM42688P_ServiceInit();
 }
 
 static void Loop_5Hz(void) //200ms执行一次
@@ -198,7 +52,6 @@ static void Loop_2Hz(void) //500ms执行一次
 
 static void Loop_1Hz(void) //1000ms执行一次
 {
-    ICM42688P_PrintLatest();
 }
 
 static void Loop_0_5Hz(void) //2s执行一次

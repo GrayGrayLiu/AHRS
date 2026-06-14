@@ -162,7 +162,7 @@ extern "C" ICM42688_Status ICM42688_Update(void)
 extern "C" void ICM42688_OnDataReadyInterrupt(const uint32_t timestamp_ms)
 {
     if (IsBound()) {
-        g_icm->OnDataReadyInterrupt(timestamp_ms);
+        g_icm->DataReady(timestamp_ms);
     }
 }
 
@@ -210,13 +210,4 @@ extern "C" ICM42688_Status ICM42688_GetLatest(ICM42688_Sample *sample)
     sample->interrupt_counter = latest.interrupt_counter;
     sample->last_interrupt_timestamp_ms = latest.last_interrupt_timestamp_ms;
     return ICM42688_STATUS_OK;
-}
-
-extern "C" ICM42688_Status ICM42688_Read(int16_t accel[3], int16_t gyro[3], int16_t *temp)
-{
-    if (!IsBound() || !g_initialized || accel == nullptr || gyro == nullptr || temp == nullptr) {
-        return ICM42688_STATUS_INVALID_ARGUMENT;
-    }
-
-    return ICM42688_STATUS_UNSUPPORTED;
 }

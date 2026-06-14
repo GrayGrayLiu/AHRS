@@ -105,7 +105,11 @@ public:
     [[nodiscard]] Status Init();
     [[nodiscard]] Status Probe();
     [[nodiscard]] Status Reset();
+    [[nodiscard]] Status Update();
+    [[nodiscard]] Status GetLatest(Sample& sample) const;
+    void DataReady(uint32_t timestamp_ms);
 
+    // Debug/bring-up register and direct UI data access.
     [[nodiscard]] Status RegisterRead(ICM42688P_Regs::RegsAdd::BANK0 reg, uint8_t& value);
     [[nodiscard]] Status RegisterWrite(ICM42688P_Regs::RegsAdd::BANK0 reg, uint8_t value);
     [[nodiscard]] Status ReadBuffer(ICM42688P_Regs::RegsAdd::BANK0 start_reg,
@@ -113,10 +117,6 @@ public:
                                     uint16_t length);
     [[nodiscard]] Status ReadRawAccel(RawVector& data);
     [[nodiscard]] Status ReadRawGyro(RawVector& data);
-
-    [[nodiscard]] Status Update();
-    [[nodiscard]] Status GetLatest(Sample& sample) const;
-    void OnDataReadyInterrupt(uint32_t timestamp_ms);
 
 private:
     enum class DriverState : uint8_t
@@ -126,8 +126,8 @@ private:
         Resetting,
         WaitingForReset,
         Configuring,
-        FifoReset,
-        FifoRead,
+        FIFO_RESET,
+        FIFO_READ,
         Running,
         Reconfiguring,
         Error,
@@ -149,31 +149,29 @@ private:
         float temperature_deg_c{0.0F};
     };
 
-    [[nodiscard]] Status Configure();
     [[nodiscard]] Status WaitForReset();
-    [[nodiscard]] Status ConfigureFifoWatermark(uint16_t watermark_bytes);
+    [[nodiscard]] Status Configure();
+    [[nodiscard]] Status ConfigureFIFOWatermark(uint16_t watermark_bytes);
     [[nodiscard]] Status ConfigureInterrupt();
-    [[nodiscard]] Status FifoReset();
-    [[nodiscard]] Status FifoReadCount(uint16_t& count_bytes);
-    [[nodiscard]] Status FifoReadBatch(uint16_t requested_packets, uint16_t& valid_packets);
-    [[nodiscard]] Status RunFifoRead(uint32_t timestamp_sample_ms);
-    [[nodiscard]] Status ProcessTemperatureBatch(const FifoDecodedSample samples[],
-                                                  uint16_t sample_count,
-                                                  Sample& output) const;
-    [[nodiscard]] Status IntegrateGyroBatch(const FifoDecodedSample samples[],
+    [[nodiscard]] Status FIFOReset();
+    [[nodiscard]] Status RunImpl();
+    [[nodiscard]] Status FIFORead(uint32_t timestamp_sample_ms);
+    [[nodiscard]] Status FIFOReadCount(uint16_t& count_bytes);
+    [[nodiscard]] Status FIFOReadData(uint16_t requested_packets, uint16_t& valid_packets);
+    [[nodiscard]] Status ProcessTemperature(const FifoDecodedSample samples[],
                                             uint16_t sample_count,
-                                            float sample_dt_s,
-                                            Sample& output);
-    [[nodiscard]] Status IntegrateAccelBatch(const FifoDecodedSample samples[],
-                                             uint16_t sample_count,
-                                             float sample_dt_s,
-                                             Sample& output);
+                                            Sample& output) const;
+    [[nodiscard]] Status ProcessGyro(const FifoDecodedSample samples[],
+                                     uint16_t sample_count,
+                                     float sample_dt_s,
+                                     Sample& output);
+    [[nodiscard]] Status ProcessAccel(const FifoDecodedSample samples[],
+                                      uint16_t sample_count,
+                                      float sample_dt_s,
+                                      Sample& output);
     [[nodiscard]] bool ConsumeDataReady(uint32_t& timestamp_sample_ms);
     [[nodiscard]] Status DecodeFifoPacket(const ICM42688P_Regs::FIFO::DATA& packet,
                                           FifoDecodedSample& decoded) const;
-    [[nodiscard]] Status UpdateFromUiRegisters();
-    [[nodiscard]] Status VerifyRegister(ICM42688P_Regs::RegsAdd::BANK0 reg,
-                                        uint8_t expected_value);
     [[nodiscard]] Status RegisterSetAndClearBits(const register_bank0_config_t& config);
     [[nodiscard]] Status RegisterSetAndClearBits(const register_bank1_config_t& config);
     [[nodiscard]] Status RegisterSetAndClearBits(const register_bank2_config_t& config);
@@ -297,7 +295,6 @@ private:
     static constexpr uint16_t FIFO_RX_COUNT_HIGH_INDEX{2u};
     static constexpr uint16_t FIFO_RX_COUNT_LOW_INDEX{3u};
     static constexpr uint16_t FIFO_RX_DATA_INDEX{4u};
-    static constexpr uint8_t DATA_SOURCE_UI_REGISTERS{1u};
     static constexpr uint8_t DATA_SOURCE_FIFO{2u};
     static_assert(FIFO_PACKET_SIZE == 20u, "ICM42688P high-resolution FIFO packet must be 20 bytes");
 
@@ -307,7 +304,6 @@ private:
 	using BANK0 = ICM42688P_Regs::RegsAdd::BANK0;
 	using BANK1 = ICM42688P_Regs::RegsAdd::BANK1;
 	using BANK2 = ICM42688P_Regs::RegsAdd::BANK2;
-    uint8_t checked_register_bank0_{0};
 	static constexpr uint8_t size_register_bank0_cfg{13};
 	register_bank0_config_t register_bank0_cfg_[size_register_bank0_cfg]
 	{
@@ -378,7 +374,6 @@ private:
 			static_cast<uint8_t>(INT_SOURCE0_BITS::FIFO_THS_INT1_EN)},
 	};
 
-	uint8_t checked_register_bank1_{0};
 	static constexpr uint8_t size_register_bank1_cfg{4};
 	register_bank1_config_t register_bank1_cfg_[size_register_bank1_cfg]
 	{
@@ -404,7 +399,6 @@ private:
 			static_cast<uint8_t>(GYRO_CONFIG_STATIC5_BITS::GYRO_AAF_BITSHIFT_MASK | GYRO_CONFIG_STATIC5_BITS::GYRO_AAF_DELTSQR_11_8_MASK)},
 	};
 
-	uint8_t checked_register_bank2_{0};
 	static constexpr uint8_t size_register_bank2_cfg{3};
 	register_bank2_config_t register_bank2_cfg_[size_register_bank2_cfg]
 	{
@@ -432,7 +426,6 @@ private:
     uint32_t failure_count_{0};
     uint32_t sample_count_{0};
     uint32_t error_count_{0};
-    uint32_t last_update_ms_{0};
     Sample latest_{};
     FifoDecodedSample fifo_last_decoded_{};
     FifoDecodedSample fifo_decoded_batch_[FIFO_MAX_PACKETS_PER_UPDATE]{};
@@ -449,13 +442,3 @@ private:
     bool bank_selected_valid_{false};
     ICM42688P_Regs::REG_BANK_SEL_BITS current_bank_{ICM42688P_Regs::REG_BANK_SEL_BITS::BANK_SEL_0};
 };
-
-    // void WriteBits(uint8_t reg, uint8_t set_bits, uint8_t clear_bits)
-    // {
-    //     uint8_t val = ReadReg(reg);
-    //     val |= set_bits;
-    //     val &= ~clear_bits;
-    //     WriteReg(reg, val);
-    // }
-
-

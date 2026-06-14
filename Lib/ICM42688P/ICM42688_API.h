@@ -73,7 +73,6 @@ ICM42688_Status ICM42688_ReadRawGyro(ICM42688_RawVector *data);
 ICM42688_Status ICM42688_Update(void);
 ICM42688_Status ICM42688_GetLatest(ICM42688_Sample *sample);
 void ICM42688_OnDataReadyInterrupt(uint32_t timestamp_ms);
-ICM42688_Status ICM42688_Read(int16_t accel[3], int16_t gyro[3], int16_t *temp);
 
 #ifdef __cplusplus
 }
