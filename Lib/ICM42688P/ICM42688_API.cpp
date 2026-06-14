@@ -160,10 +160,10 @@ extern "C" ICM42688_Status ICM42688_Update(void)
     return ToApiStatus(g_icm->Update());
 }
 
-extern "C" void ICM42688_OnDataReadyInterrupt(const uint32_t timestamp_ms)
+extern "C" void ICM42688_OnDataReadyInterrupt(const uint64_t timestamp_us)
 {
     if (IsBound()) {
-        g_icm->DataReady(timestamp_ms);
+        g_icm->DataReady(timestamp_us);
     }
 }
 
@@ -210,5 +210,38 @@ extern "C" ICM42688_Status ICM42688_GetLatest(ICM42688_Sample *sample)
     sample->delta_samples = latest.delta_samples;
     sample->interrupt_counter = latest.interrupt_counter;
     sample->last_interrupt_timestamp_ms = latest.last_interrupt_timestamp_ms;
+    sample->timestamp_us = latest.timestamp_us;
+    sample->last_interrupt_timestamp_us = latest.last_interrupt_timestamp_us;
+    return ICM42688_STATUS_OK;
+}
+
+extern "C" ICM42688_Status ICM42688_GetDeltaLatest(ICM42688_DeltaSample *sample)
+{
+    if (!IsBound() || !g_started || sample == nullptr) {
+        return ICM42688_STATUS_INVALID_ARGUMENT;
+    }
+
+    ICM42688P::Sample latest{};
+    const ICM42688P::Status status = g_icm->GetLatest(latest);
+
+    if (status != ICM42688P::Status::Ok) {
+        return ToApiStatus(status);
+    }
+
+    if (!latest.configured || !latest.data_valid) {
+        return ICM42688_STATUS_NO_DATA;
+    }
+
+    sample->timestamp_us = latest.timestamp_us;
+
+    for (uint8_t axis = 0u; axis < 3u; ++axis) {
+        sample->delta_angle_rad[axis] = latest.delta_angle_rad[axis];
+        sample->delta_velocity_m_s[axis] = latest.delta_velocity_m_s[axis];
+    }
+
+    sample->delta_time_s = latest.delta_time_s;
+    sample->delta_samples = latest.delta_samples;
+    sample->sample_counter = latest.sample_counter;
+    sample->temperature_deg_c = latest.temperature_deg_c;
     return ICM42688_STATUS_OK;
 }

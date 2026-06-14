@@ -57,7 +57,20 @@ typedef struct
     uint16_t delta_samples;
     uint32_t interrupt_counter;
     uint32_t last_interrupt_timestamp_ms;
+    uint64_t timestamp_us;
+    uint64_t last_interrupt_timestamp_us;
 } ICM42688_Sample;
+
+typedef struct
+{
+    uint64_t timestamp_us;
+    float delta_angle_rad[3];
+    float delta_velocity_m_s[3];
+    float delta_time_s;
+    uint16_t delta_samples;
+    uint32_t sample_counter;
+    float temperature_deg_c;
+} ICM42688_DeltaSample;
 
 ICM42688_Status ICM42688_Bind(SPI_HandleTypeDef *hspi, GPIO_TypeDef *cs_port, uint16_t cs_pin);
 /* Starts the internal PX4-style state machine; hardware configuration completes asynchronously. */
@@ -74,7 +87,8 @@ ICM42688_Status ICM42688_ReadRawGyro(ICM42688_RawVector *data);
 
 ICM42688_Status ICM42688_Update(void);
 ICM42688_Status ICM42688_GetLatest(ICM42688_Sample *sample);
-void ICM42688_OnDataReadyInterrupt(uint32_t timestamp_ms);
+ICM42688_Status ICM42688_GetDeltaLatest(ICM42688_DeltaSample *sample);
+void ICM42688_OnDataReadyInterrupt(uint64_t timestamp_us);
 
 #ifdef __cplusplus
 }

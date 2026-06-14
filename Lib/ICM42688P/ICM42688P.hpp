@@ -95,6 +95,8 @@ public:
         uint16_t delta_samples{0};
         uint32_t interrupt_counter{0};
         uint32_t last_interrupt_timestamp_ms{0};
+        uint64_t timestamp_us{0};
+        uint64_t last_interrupt_timestamp_us{0};
     };
 
     ICM42688P(SPI_HandleTypeDef* hspi,
@@ -108,7 +110,7 @@ public:
     [[nodiscard]] Status Reset();
     [[nodiscard]] Status Update();
     [[nodiscard]] Status GetLatest(Sample& sample) const;
-    void DataReady(uint32_t timestamp_ms);
+    void DataReady(uint64_t timestamp_us);
 
     // Debug/bring-up accessors. These are not part of the primary FIFO run path.
     [[nodiscard]] Status RegisterRead(ICM42688P_Regs::RegsAdd::BANK0 reg, uint8_t& value);
@@ -153,7 +155,7 @@ private:
     [[nodiscard]] Status ConfigureInterrupt();
     [[nodiscard]] Status FIFOReset();
     [[nodiscard]] Status RunImpl();
-    [[nodiscard]] Status FIFORead(uint32_t timestamp_sample_ms);
+    [[nodiscard]] Status FIFORead(uint64_t timestamp_sample_us);
     [[nodiscard]] Status FIFOReadCount(uint16_t& count_bytes);
     [[nodiscard]] Status FIFOReadData(uint16_t requested_packets, uint16_t& valid_packets);
     [[nodiscard]] Status ProcessTemperature(const FifoDecodedSample samples[],
@@ -167,7 +169,7 @@ private:
                                       uint16_t sample_count,
                                       float sample_dt_s,
                                       Sample& output);
-    [[nodiscard]] bool ConsumeDataReady(uint32_t& timestamp_sample_ms);
+    [[nodiscard]] bool ConsumeDataReady(uint64_t& timestamp_sample_us);
     [[nodiscard]] Status DecodeFifoPacket(const ICM42688P_Regs::FIFO::DATA& packet,
                                           FifoDecodedSample& decoded) const;
     [[nodiscard]] Status RegisterSetAndClearBits(const register_bank0_config_t& config);
@@ -453,7 +455,7 @@ private:
     uint16_t last_fifo_valid_packets_{0};
     volatile uint8_t data_ready_pending_{0u};
     volatile uint32_t data_ready_interrupt_count_{0u};
-    volatile uint32_t last_data_ready_timestamp_ms_{0u};
+    volatile uint64_t last_data_ready_timestamp_us_{0u};
     bool bank_selected_valid_{false};
     ICM42688P_Regs::REG_BANK_SEL_BITS current_bank_{ICM42688P_Regs::REG_BANK_SEL_BITS::BANK_SEL_0};
 };

@@ -5,13 +5,14 @@
 #include "EXIT.h"
 
 #include "ICM42688_API.h"
+#include "TimeBase.h"
 #include "main.h"
 
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
     if (GPIO_Pin == IMU_INT1_Pin)
     {
-        ICM42688_OnDataReadyInterrupt(HAL_GetTick());
+        ICM42688_OnDataReadyInterrupt(TimeBase_Micros());
     }
 
     // if(GPIO_Pin == TILT_ORIGIN_POINT_Pin)

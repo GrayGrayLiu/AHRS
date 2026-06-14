@@ -58,7 +58,7 @@ ICM42688P::Status ICM42688P::Init()
     gyro_last_effective_valid_ = false;
     data_ready_pending_ = 0u;
     data_ready_interrupt_count_ = 0u;
-    last_data_ready_timestamp_ms_ = 0u;
+    last_data_ready_timestamp_us_ = 0u;
     bank_selected_valid_ = false;
     failure_count_ = 0u;
     reset_timestamp_ms_ = 0u;
@@ -311,7 +311,7 @@ ICM42688P::Status ICM42688P::ConfigureInterrupt()
     __disable_irq();
     data_ready_pending_ = 0u;
     data_ready_interrupt_count_ = 0u;
-    last_data_ready_timestamp_ms_ = 0u;
+    last_data_ready_timestamp_us_ = 0u;
 
     if (primask == 0u) {
         __enable_irq();
@@ -483,17 +483,17 @@ ICM42688P::Status ICM42688P::RunImpl()
     }
 
     case DriverState::FIFO_READ: {
-        uint32_t timestamp_sample_ms{};
+        uint64_t timestamp_sample_us{};
 
         // INT1 only records a timestamp/pending flag. SPI FIFO access remains
         // in normal context and is skipped when no data-ready event is pending.
-        if (!ConsumeDataReady(timestamp_sample_ms)) {
+        if (!ConsumeDataReady(timestamp_sample_us)) {
             ScheduleDelayed(now, FIFO_WATCHDOG_INTERVAL_MS);
             return Status::NoData;
         }
 
         ScheduleDelayed(now, FIFO_WATCHDOG_INTERVAL_MS);
-        const Status status = FIFORead(timestamp_sample_ms);
+        const Status status = FIFORead(timestamp_sample_us);
 
         if (status == Status::Ok) {
             if (failure_count_ > 0u) {
@@ -518,8 +518,10 @@ ICM42688P::Status ICM42688P::RunImpl()
     return Status::InvalidArgument;
 }
 
-ICM42688P::Status ICM42688P::FIFORead(const uint32_t timestamp_sample_ms)
+ICM42688P::Status ICM42688P::FIFORead(const uint64_t timestamp_sample_us)
 {
+    const uint32_t timestamp_sample_ms =
+        static_cast<uint32_t>(timestamp_sample_us / 1000u);
     uint16_t fifo_count_bytes{};
     Status status = FIFOReadCount(fifo_count_bytes);
 
@@ -527,6 +529,7 @@ ICM42688P::Status ICM42688P::FIFORead(const uint32_t timestamp_sample_ms)
         latest_.configured = configured_;
         latest_.error_counter = error_count_;
         latest_.interrupt_counter = data_ready_interrupt_count_;
+        latest_.last_interrupt_timestamp_us = timestamp_sample_us;
         latest_.last_interrupt_timestamp_ms = timestamp_sample_ms;
         last_status_ = status;
         return status;
@@ -548,6 +551,7 @@ ICM42688P::Status ICM42688P::FIFORead(const uint32_t timestamp_sample_ms)
         latest_.configured = configured_;
         latest_.error_counter = error_count_;
         latest_.interrupt_counter = data_ready_interrupt_count_;
+        latest_.last_interrupt_timestamp_us = timestamp_sample_us;
         latest_.last_interrupt_timestamp_ms = timestamp_sample_ms;
         last_status_ = status;
         return status;
@@ -593,6 +597,7 @@ ICM42688P::Status ICM42688P::FIFORead(const uint32_t timestamp_sample_ms)
         return status;
     }
 
+    sample.timestamp_us = timestamp_sample_us;
     sample.timestamp_ms = timestamp_sample_ms;
     sample.sample_counter = sample_count_ + valid_packets;
     sample.error_counter = error_count_;
@@ -604,6 +609,7 @@ ICM42688P::Status ICM42688P::FIFORead(const uint32_t timestamp_sample_ms)
     sample.fifo_header = fifo_last_decoded_.header;
     sample.data_source = DATA_SOURCE_FIFO;
     sample.interrupt_counter = data_ready_interrupt_count_;
+    sample.last_interrupt_timestamp_us = timestamp_sample_us;
     sample.last_interrupt_timestamp_ms = timestamp_sample_ms;
 
     sample_count_ = sample.sample_counter;
@@ -1069,23 +1075,23 @@ ICM42688P::Status ICM42688P::ReadRawGyro(RawVector& data)
     return Status::Ok;
 }
 
-void ICM42688P::DataReady(const uint32_t timestamp_ms)
+void ICM42688P::DataReady(const uint64_t timestamp_us)
 {
     // EXTI context only records timing and pending state. SPI access is deferred
     // to RunImpl() in normal scheduler context, matching PX4 DataReady().
-    last_data_ready_timestamp_ms_ = timestamp_ms;
+    last_data_ready_timestamp_us_ = timestamp_us;
     ++data_ready_interrupt_count_;
     data_ready_pending_ = 1u;
 }
 
-bool ICM42688P::ConsumeDataReady(uint32_t& timestamp_sample_ms)
+bool ICM42688P::ConsumeDataReady(uint64_t& timestamp_sample_us)
 {
     const uint32_t primask = __get_PRIMASK();
     __disable_irq();
     const bool pending = data_ready_pending_ != 0u;
 
     if (pending) {
-        timestamp_sample_ms = last_data_ready_timestamp_ms_;
+        timestamp_sample_us = last_data_ready_timestamp_us_;
         data_ready_pending_ = 0u;
     }
 
