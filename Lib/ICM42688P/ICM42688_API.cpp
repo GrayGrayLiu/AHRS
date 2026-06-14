@@ -9,7 +9,7 @@ namespace
 alignas(ICM42688P) unsigned char g_icm_storage[sizeof(ICM42688P)]{};
 ICM42688P *g_icm = nullptr;
 bool g_bound = false;
-bool g_initialized = false;
+bool g_started = false;
 
 bool IsBound()
 {
@@ -47,7 +47,7 @@ extern "C" ICM42688_Status ICM42688_Bind(SPI_HandleTypeDef *hspi,
 
     g_icm = ::new (static_cast<void*>(g_icm_storage)) ICM42688P(hspi, cs_port, cs_pin);
     g_bound = true;
-    g_initialized = false;
+    g_started = false;
     return ICM42688_STATUS_OK;
 }
 
@@ -58,7 +58,7 @@ extern "C" ICM42688_Status ICM42688_Init(void)
     }
 
     const ICM42688P::Status status = g_icm->Init();
-    g_initialized = status == ICM42688P::Status::Ok;
+    g_started = status == ICM42688P::Status::Ok;
     return ToApiStatus(status);
 }
 
@@ -77,8 +77,9 @@ extern "C" ICM42688_Status ICM42688_Reset(void)
         return ICM42688_STATUS_INVALID_ARGUMENT;
     }
 
-    g_initialized = false;
-    return ToApiStatus(g_icm->Reset());
+    const ICM42688P::Status status = g_icm->Reset();
+    g_started = status == ICM42688P::Status::Ok;
+    return ToApiStatus(status);
 }
 
 extern "C" ICM42688_Status ICM42688_RegisterRead(const uint8_t reg, uint8_t *value)
@@ -114,7 +115,7 @@ extern "C" ICM42688_Status ICM42688_ReadBuffer(const uint8_t start_reg,
 
 extern "C" ICM42688_Status ICM42688_ReadRawAccel(ICM42688_RawVector *data)
 {
-    if (!IsBound() || !g_initialized || data == nullptr) {
+    if (!IsBound() || !g_started || data == nullptr) {
         return ICM42688_STATUS_INVALID_ARGUMENT;
     }
 
@@ -133,7 +134,7 @@ extern "C" ICM42688_Status ICM42688_ReadRawAccel(ICM42688_RawVector *data)
 
 extern "C" ICM42688_Status ICM42688_ReadRawGyro(ICM42688_RawVector *data)
 {
-    if (!IsBound() || !g_initialized || data == nullptr) {
+    if (!IsBound() || !g_started || data == nullptr) {
         return ICM42688_STATUS_INVALID_ARGUMENT;
     }
 
@@ -152,7 +153,7 @@ extern "C" ICM42688_Status ICM42688_ReadRawGyro(ICM42688_RawVector *data)
 
 extern "C" ICM42688_Status ICM42688_Update(void)
 {
-    if (!IsBound() || !g_initialized) {
+    if (!IsBound() || !g_started) {
         return ICM42688_STATUS_INVALID_ARGUMENT;
     }
 
@@ -168,7 +169,7 @@ extern "C" void ICM42688_OnDataReadyInterrupt(const uint32_t timestamp_ms)
 
 extern "C" ICM42688_Status ICM42688_GetLatest(ICM42688_Sample *sample)
 {
-    if (!IsBound() || !g_initialized || sample == nullptr) {
+    if (!IsBound() || !g_started || sample == nullptr) {
         return ICM42688_STATUS_INVALID_ARGUMENT;
     }
 

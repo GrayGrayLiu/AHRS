@@ -60,10 +60,12 @@ typedef struct
 } ICM42688_Sample;
 
 ICM42688_Status ICM42688_Bind(SPI_HandleTypeDef *hspi, GPIO_TypeDef *cs_port, uint16_t cs_pin);
+/* Starts the internal PX4-style state machine; hardware configuration completes asynchronously. */
 ICM42688_Status ICM42688_Init(void);
 ICM42688_Status ICM42688_Probe(void);
 ICM42688_Status ICM42688_Reset(void);
 
+/* Debug/bring-up accessors retained outside the normal FIFO lifecycle. */
 ICM42688_Status ICM42688_RegisterRead(uint8_t reg, uint8_t *value);
 ICM42688_Status ICM42688_RegisterWrite(uint8_t reg, uint8_t value);
 ICM42688_Status ICM42688_ReadBuffer(uint8_t start_reg, uint8_t *buffer, uint16_t length);

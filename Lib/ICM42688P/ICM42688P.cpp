@@ -28,6 +28,12 @@ constexpr float STANDARD_GRAVITY_M_S2{9.80665F};
 constexpr float DEG_TO_RAD{0.01745329251994329577F};
 constexpr float TEMPERATURE_SENSITIVITY_LSB_PER_DEG_C{132.48F};
 constexpr float TEMPERATURE_OFFSET_DEG_C{25.0F};
+constexpr uint32_t RESET_CHECK_INTERVAL_MS{10u};
+constexpr uint32_t RESET_RETRY_DELAY_MS{100u};
+constexpr uint32_t CONFIGURE_RETRY_DELAY_MS{100u};
+constexpr uint32_t DRIVER_RESET_TIMEOUT_MS{1000u};
+constexpr uint32_t FIFO_WATCHDOG_INTERVAL_MS{100u};
+constexpr uint32_t FAILURE_RESET_THRESHOLD{10u};
 }
 
 ICM42688P::ICM42688P(SPI_HandleTypeDef* hspi,
@@ -38,102 +44,30 @@ ICM42688P::ICM42688P(SPI_HandleTypeDef* hspi,
 
 ICM42688P::Status ICM42688P::Init()
 {
-    initialized_ = false;
-    configured_ = false;
-    state_ = DriverState::Uninitialized;
-    last_status_ = Status::Ok;
-    latest_.configured = false;
-    latest_.data_valid = false;
+    if (!HasValidBus()) {
+        ++error_count_;
+        last_status_ = Status::InvalidArgument;
+        return Status::InvalidArgument;
+    }
+
+    CS_High();
+    latest_ = Sample{};
+    fifo_last_decoded_ = FifoDecodedSample{};
     fifo_decoded_count_ = 0u;
     accel_last_effective_valid_ = false;
     gyro_last_effective_valid_ = false;
     data_ready_pending_ = 0u;
     data_ready_interrupt_count_ = 0u;
     last_data_ready_timestamp_ms_ = 0u;
-
-    if (!HasValidBus()) {
-        ++error_count_;
-        ++failure_count_;
-        last_status_ = Status::InvalidArgument;
-        state_ = DriverState::Error;
-        return Status::InvalidArgument;
-    }
-
-    CS_High();
-    HAL_Delay(ICM42688P_Regs::POWER_ON_WAIT_MS);
-
-    state_ = DriverState::Probing;
-    Status status = Probe();
-
-    if (status != Status::Ok) {
-        ++error_count_;
-        ++failure_count_;
-        last_status_ = status;
-        state_ = DriverState::Error;
-        return status;
-    }
-
-    state_ = DriverState::Resetting;
-    status = Reset();
-
-    if (status != Status::Ok) {
-        ++error_count_;
-        ++failure_count_;
-        last_status_ = status;
-        state_ = DriverState::Error;
-        return status;
-    }
-
-    state_ = DriverState::WaitingForReset;
-    status = WaitForReset();
-
-    if (status != Status::Ok) {
-        ++error_count_;
-        ++failure_count_;
-        last_status_ = status;
-        state_ = DriverState::Error;
-        return status;
-    }
-
-    state_ = DriverState::Configuring;
-    status = Configure();
-
-    if (status != Status::Ok) {
-        ++error_count_;
-        ++failure_count_;
-        last_status_ = status;
-        state_ = DriverState::Error;
-        return status;
-    }
-
-    status = ConfigureInterrupt();
-
-    if (status != Status::Ok) {
-        ++error_count_;
-        ++failure_count_;
-        last_status_ = status;
-        state_ = DriverState::Error;
-        return status;
-    }
-
-    state_ = DriverState::FIFO_RESET;
-    status = FIFOReset();
-
-    if (status != Status::Ok) {
-        ++error_count_;
-        ++failure_count_;
-        last_status_ = status;
-        state_ = DriverState::Error;
-        return status;
-    }
-
-    initialized_ = true;
-    configured_ = true;
-    state_ = DriverState::FIFO_READ;
-    last_status_ = Status::Ok;
+    bank_selected_valid_ = false;
     failure_count_ = 0u;
-    latest_.configured = true;
+    reset_timestamp_ms_ = 0u;
+    initialized_ = true;
+    configured_ = false;
+    state_ = DriverState::RESET;
+    last_status_ = Status::Ok;
     latest_.error_counter = error_count_;
+    ScheduleNow(HAL_GetTick());
     return Status::Ok;
 }
 
@@ -167,68 +101,52 @@ ICM42688P::Status ICM42688P::Reset()
         return Status::InvalidArgument;
     }
 
-    initialized_ = false;
     configured_ = false;
     latest_.configured = false;
     latest_.data_valid = false;
-    Status status = RegisterWrite(BANK0::DEVICE_CONFIG,
-                                  static_cast<uint8_t>(ICM42688P_Regs::DEVICE_CONFIG_BITS::SOFT_RESET_CONFIG));
-
-    if (status != Status::Ok) {
-        return status;
-    }
-
-    HAL_Delay(ICM42688P_Regs::SOFT_RESET_WAIT_MS);
-    bank_selected_valid_ = false;
+    initialized_ = true;
+    state_ = DriverState::RESET;
+    ScheduleNow(HAL_GetTick());
     return Status::Ok;
 }
 
 ICM42688P::Status ICM42688P::WaitForReset()
 {
-    const uint32_t reset_start = HAL_GetTick();
-    uint8_t last_who_am_i{0u};
+    uint8_t who_am_i{};
+    uint8_t device_config{};
+    uint8_t int_status{};
+    Status status = RegisterRead(BANK0::WHO_AM_I, who_am_i);
 
-    while ((HAL_GetTick() - reset_start) <= ICM42688P_Regs::SOFT_RESET_TIMEOUT_MS) {
-        uint8_t device_config{};
-        uint8_t int_status{};
-        Status status = RegisterRead(BANK0::WHO_AM_I, last_who_am_i);
-
-        if (status != Status::Ok) {
-            return status;
-        }
-
-        status = RegisterRead(BANK0::DEVICE_CONFIG, device_config);
-
-        if (status != Status::Ok) {
-            return status;
-        }
-
-        status = RegisterRead(BANK0::INT_STATUS, int_status);
-
-        if (status != Status::Ok) {
-            return status;
-        }
-
-        const bool who_am_i_ready = last_who_am_i == ICM42688P_Regs::WHO_AM_I_EXPECTED;
-        const bool reset_bit_clear =
-            (device_config
-             & static_cast<uint8_t>(ICM42688P_Regs::DEVICE_CONFIG_BITS::SOFT_RESET_CONFIG))
-            == ICM42688P_Regs::BitNone;
-        const bool reset_done =
-            (int_status
-             & static_cast<uint8_t>(ICM42688P_Regs::INT_STATUS_BITS::RESET_DONE_INT))
-            != ICM42688P_Regs::BitNone;
-
-        if (who_am_i_ready && reset_bit_clear && reset_done) {
-            return Status::Ok;
-        }
-
-        HAL_Delay(ICM42688P_Regs::RESET_POLL_INTERVAL_MS);
+    if (status != Status::Ok) {
+        return status;
     }
 
-    return last_who_am_i == ICM42688P_Regs::WHO_AM_I_EXPECTED
-        ? Status::ResetTimeout
-        : Status::WrongDeviceId;
+    status = RegisterRead(BANK0::DEVICE_CONFIG, device_config);
+
+    if (status != Status::Ok) {
+        return status;
+    }
+
+    status = RegisterRead(BANK0::INT_STATUS, int_status);
+
+    if (status != Status::Ok) {
+        return status;
+    }
+
+    if (who_am_i != ICM42688P_Regs::WHO_AM_I_EXPECTED) {
+        return Status::WrongDeviceId;
+    }
+
+    const bool reset_bit_clear =
+        (device_config
+         & static_cast<uint8_t>(ICM42688P_Regs::DEVICE_CONFIG_BITS::SOFT_RESET_CONFIG))
+        == ICM42688P_Regs::BitNone;
+    const bool reset_done =
+        (int_status
+         & static_cast<uint8_t>(ICM42688P_Regs::INT_STATUS_BITS::RESET_DONE_INT))
+        != ICM42688P_Regs::BitNone;
+
+    return reset_bit_clear && reset_done ? Status::Ok : Status::NoData;
 }
 
 ICM42688P::Status ICM42688P::Configure()
@@ -330,8 +248,6 @@ ICM42688P::Status ICM42688P::Configure()
         }
     }
 
-    configured_ = true;
-    latest_.configured = true;
     return Status::Ok;
 }
 
@@ -377,6 +293,8 @@ ICM42688P::Status ICM42688P::ConfigureFIFOWatermark(const uint16_t watermark_byt
 
 ICM42688P::Status ICM42688P::ConfigureInterrupt()
 {
+    // CubeMX/HAL owns the EXTI edge configuration. This verifies the sensor-side
+    // INT register configuration and resets the software event latch.
     for (const auto& config : register_bank0_cfg_) {
         if (!IsInterruptConfigRegister(config.reg)) {
             continue;
@@ -418,6 +336,15 @@ ICM42688P::Status ICM42688P::FIFOReset()
     fifo_decoded_count_ = 0u;
     accel_last_effective_valid_ = false;
     gyro_last_effective_valid_ = false;
+
+    const uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    data_ready_pending_ = 0u;
+
+    if (primask == 0u) {
+        __enable_irq();
+    }
+
     return Status::Ok;
 }
 
@@ -428,18 +355,167 @@ ICM42688P::Status ICM42688P::Update()
 
 ICM42688P::Status ICM42688P::RunImpl()
 {
-    if (!initialized_ || !configured_) {
+    if (!initialized_) {
         return Status::InvalidArgument;
     }
 
-    uint32_t timestamp_sample_ms{};
+    const uint32_t now = HAL_GetTick();
+    const bool data_ready_scheduled =
+        state_ == DriverState::FIFO_READ && data_ready_pending_ != 0u;
 
-    if (!ConsumeDataReady(timestamp_sample_ms)) {
+    // A pending INT1 event is the bare-metal ScheduleNow equivalent. The ISR
+    // only records the event; RunImpl remains responsible for scheduling work.
+    if (!data_ready_scheduled && !TickReached(now, next_run_ms_)) {
         return Status::NoData;
     }
 
-    state_ = DriverState::FIFO_READ;
-    return FIFORead(timestamp_sample_ms);
+    // Bare-metal equivalent of PX4 RunImpl(): next_run_ms_ replaces the work
+    // queue's ScheduleNow/ScheduleDelayed timing while Service calls us at 1 kHz.
+    switch (state_) {
+    case DriverState::RESET: {
+        configured_ = false;
+        latest_.configured = false;
+        latest_.data_valid = false;
+        failure_count_ = 0u;
+
+        const Status status = RegisterWrite(
+            BANK0::DEVICE_CONFIG,
+            static_cast<uint8_t>(ICM42688P_Regs::DEVICE_CONFIG_BITS::SOFT_RESET_CONFIG));
+
+        if (status != Status::Ok) {
+            ++error_count_;
+            ++failure_count_;
+            last_status_ = status;
+            ScheduleDelayed(now, RESET_RETRY_DELAY_MS);
+            return status;
+        }
+
+        bank_selected_valid_ = false;
+        reset_timestamp_ms_ = now;
+        state_ = DriverState::WAIT_FOR_RESET;
+        last_status_ = Status::NoData;
+        ScheduleDelayed(now, ICM42688P_Regs::SOFT_RESET_WAIT_MS);
+        return Status::NoData;
+    }
+
+    case DriverState::WAIT_FOR_RESET: {
+        const Status status = WaitForReset();
+
+        if (status == Status::Ok) {
+            state_ = DriverState::CONFIGURE;
+            last_status_ = Status::NoData;
+            ScheduleNow(now);
+            return Status::NoData;
+        }
+
+        if ((now - reset_timestamp_ms_) > DRIVER_RESET_TIMEOUT_MS) {
+            ++error_count_;
+            ++failure_count_;
+            last_status_ = status == Status::WrongDeviceId
+                ? Status::WrongDeviceId
+                : Status::ResetTimeout;
+            state_ = DriverState::RESET;
+            ScheduleDelayed(now, RESET_RETRY_DELAY_MS);
+            return last_status_;
+        }
+
+        if (status != Status::NoData && status != Status::WrongDeviceId) {
+            ++error_count_;
+        }
+
+        last_status_ = status;
+        ScheduleDelayed(now, RESET_CHECK_INTERVAL_MS);
+        return Status::NoData;
+    }
+
+    case DriverState::CONFIGURE: {
+        Status status = Configure();
+
+        if (status == Status::Ok) {
+            status = ConfigureInterrupt();
+        }
+
+        if (status == Status::Ok) {
+            state_ = DriverState::FIFO_RESET;
+            last_status_ = Status::NoData;
+            ScheduleDelayed(now, ICM42688P_Regs::SOFT_RESET_WAIT_MS);
+            return Status::NoData;
+        }
+
+        ++error_count_;
+        ++failure_count_;
+        configured_ = false;
+        latest_.configured = false;
+        last_status_ = status;
+
+        if ((now - reset_timestamp_ms_) > DRIVER_RESET_TIMEOUT_MS
+            || failure_count_ > FAILURE_RESET_THRESHOLD) {
+            state_ = DriverState::RESET;
+        }
+
+        ScheduleDelayed(now, CONFIGURE_RETRY_DELAY_MS);
+        return status;
+    }
+
+    case DriverState::FIFO_RESET: {
+        const Status status = FIFOReset();
+
+        if (status != Status::Ok) {
+            ++error_count_;
+            ++failure_count_;
+            last_status_ = status;
+
+            if (failure_count_ > FAILURE_RESET_THRESHOLD) {
+                state_ = DriverState::RESET;
+            }
+
+            ScheduleDelayed(now, RESET_RETRY_DELAY_MS);
+            return status;
+        }
+
+        configured_ = true;
+        latest_.configured = true;
+        failure_count_ = 0u;
+        state_ = DriverState::FIFO_READ;
+        last_status_ = Status::NoData;
+        ScheduleDelayed(now, FIFO_WATCHDOG_INTERVAL_MS);
+        return Status::NoData;
+    }
+
+    case DriverState::FIFO_READ: {
+        uint32_t timestamp_sample_ms{};
+
+        // INT1 only records a timestamp/pending flag. SPI FIFO access remains
+        // in normal context and is skipped when no data-ready event is pending.
+        if (!ConsumeDataReady(timestamp_sample_ms)) {
+            ScheduleDelayed(now, FIFO_WATCHDOG_INTERVAL_MS);
+            return Status::NoData;
+        }
+
+        ScheduleDelayed(now, FIFO_WATCHDOG_INTERVAL_MS);
+        const Status status = FIFORead(timestamp_sample_ms);
+
+        if (status == Status::Ok) {
+            if (failure_count_ > 0u) {
+                --failure_count_;
+            }
+
+        } else {
+            ++failure_count_;
+
+            if (failure_count_ > FAILURE_RESET_THRESHOLD) {
+                (void)Reset();
+            }
+        }
+
+        // TODO: add PX4-style periodic configuration checking without moving
+        // register recovery policy into the Service or scheduler layers.
+        last_status_ = status;
+        return status;
+    }
+    }
+
+    return Status::InvalidArgument;
 }
 
 ICM42688P::Status ICM42688P::FIFORead(const uint32_t timestamp_sample_ms)
@@ -533,7 +609,6 @@ ICM42688P::Status ICM42688P::FIFORead(const uint32_t timestamp_sample_ms)
     sample_count_ = sample.sample_counter;
     latest_ = sample;
     last_status_ = Status::Ok;
-    failure_count_ = 0u;
     return Status::Ok;
 }
 
@@ -996,6 +1071,8 @@ ICM42688P::Status ICM42688P::ReadRawGyro(RawVector& data)
 
 void ICM42688P::DataReady(const uint32_t timestamp_ms)
 {
+    // EXTI context only records timing and pending state. SPI access is deferred
+    // to RunImpl() in normal scheduler context, matching PX4 DataReady().
     last_data_ready_timestamp_ms_ = timestamp_ms;
     ++data_ready_interrupt_count_;
     data_ready_pending_ = 1u;

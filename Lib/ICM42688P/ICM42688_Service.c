@@ -17,7 +17,8 @@ enum
 };
 
 static uint8_t icm42688_bound = 0u;
-static uint8_t icm42688_initialized = 0u;
+static uint8_t icm42688_started = 0u;
+static uint8_t icm42688_running = 0u;
 static uint32_t icm42688_last_init_service_tick = 0u;
 static uint32_t icm42688_next_init_tick = 0u;
 static uint32_t icm42688_last_debug_service_tick = 0u;
@@ -40,7 +41,7 @@ static void SetLed(const GPIO_PinState red,
 
 static void ServiceInit(const uint32_t now)
 {
-    if (icm42688_initialized != 0u
+    if (icm42688_started != 0u
         || !TickReached(now, icm42688_next_init_tick)) {
         return;
     }
@@ -76,18 +77,40 @@ static void ServiceInit(const uint32_t now)
         return;
     }
 
-    icm42688_initialized = 1u;
-    SetLed(GPIO_PIN_RESET, GPIO_PIN_SET, GPIO_PIN_RESET);
-    printf("[ICM42688P] init ok, interrupt FIFO update started\r\n");
+    icm42688_started = 1u;
+    SetLed(GPIO_PIN_RESET, GPIO_PIN_RESET, GPIO_PIN_SET);
 }
 
 static void Update(void)
 {
-    if (icm42688_initialized == 0u) {
+    if (icm42688_started == 0u) {
         return;
     }
 
     icm42688_last_status = ICM42688_Update();
+    ICM42688_Sample sample = {0};
+    const ICM42688_Status sample_status = ICM42688_GetLatest(&sample);
+    const uint8_t configured = (uint8_t)(
+        sample_status == ICM42688_STATUS_OK && sample.configured != 0u);
+
+    if (configured == 0u) {
+        icm42688_running = 0u;
+
+        if (icm42688_last_status == ICM42688_STATUS_OK
+            || icm42688_last_status == ICM42688_STATUS_NO_DATA) {
+            SetLed(GPIO_PIN_RESET, GPIO_PIN_RESET, GPIO_PIN_SET);
+
+        } else {
+            SetLed(GPIO_PIN_SET, GPIO_PIN_RESET, GPIO_PIN_RESET);
+        }
+
+        return;
+    }
+
+    if (icm42688_running == 0u) {
+        icm42688_running = 1u;
+        printf("[ICM42688P] init ok, interrupt FIFO update started\r\n");
+    }
 
     if (icm42688_last_status == ICM42688_STATUS_OK
         || icm42688_last_status == ICM42688_STATUS_NO_DATA) {
@@ -104,7 +127,7 @@ static void PrintLatest(void)
     return;
 #endif
 
-    if (icm42688_initialized == 0u) {
+    if (icm42688_running == 0u) {
         return;
     }
 
@@ -153,7 +176,9 @@ void ICM42688_Service1kHz(void)
 {
     const uint32_t now = HAL_GetTick();
 
-    if (icm42688_initialized == 0u) {
+    // Bare-metal scheduler adapter only: binding, startup indication and the
+    // periodic call live here; the hardware lifecycle stays in RunImpl().
+    if (icm42688_started == 0u) {
         if (TickReached(now,
                         icm42688_last_init_service_tick
                         + ICM42688_INIT_SERVICE_INTERVAL_MS)) {

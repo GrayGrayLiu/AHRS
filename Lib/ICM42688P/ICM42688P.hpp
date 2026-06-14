@@ -100,16 +100,17 @@ public:
     ICM42688P(SPI_HandleTypeDef* hspi,
               GPIO_TypeDef* cs_port, uint16_t cs_pin);
 
-    // Bare-metal initialization: probe, soft reset, configure the FIFO polling
-    // path, verify the applied register subset, then enter running state.
+    // Start the bare-metal driver state machine. Hardware reset and configuration
+    // are advanced by Update(), matching the lifecycle of the PX4 driver.
     [[nodiscard]] Status Init();
     [[nodiscard]] Status Probe();
+    // Restart the asynchronous lifecycle at RESET; RunImpl performs the SPI reset.
     [[nodiscard]] Status Reset();
     [[nodiscard]] Status Update();
     [[nodiscard]] Status GetLatest(Sample& sample) const;
     void DataReady(uint32_t timestamp_ms);
 
-    // Debug/bring-up register and direct UI data access.
+    // Debug/bring-up accessors. These are not part of the primary FIFO run path.
     [[nodiscard]] Status RegisterRead(ICM42688P_Regs::RegsAdd::BANK0 reg, uint8_t& value);
     [[nodiscard]] Status RegisterWrite(ICM42688P_Regs::RegsAdd::BANK0 reg, uint8_t value);
     [[nodiscard]] Status ReadBuffer(ICM42688P_Regs::RegsAdd::BANK0 start_reg,
@@ -119,18 +120,15 @@ public:
     [[nodiscard]] Status ReadRawGyro(RawVector& data);
 
 private:
+    // Bare-metal equivalents of the PX4 RESET, WAIT_FOR_RESET, CONFIGURE,
+    // FIFO_RESET and FIFO_READ work-queue states.
     enum class DriverState : uint8_t
     {
-        Uninitialized,
-        Probing,
-        Resetting,
-        WaitingForReset,
-        Configuring,
+        RESET,
+        WAIT_FOR_RESET,
+        CONFIGURE,
         FIFO_RESET,
         FIFO_READ,
-        Running,
-        Reconfiguring,
-        Error,
     };
 
     struct FifoDecodedSample
@@ -191,6 +189,18 @@ private:
     [[nodiscard]] Status ReadBufferRaw(uint8_t start_reg, uint8_t* buffer, uint16_t length);
     [[nodiscard]] bool HasValidBus() const;
     [[nodiscard]] static int16_t CombineBigEndian(uint8_t high, uint8_t low);
+    [[nodiscard]] static constexpr bool TickReached(uint32_t now, uint32_t target)
+    {
+        return static_cast<int32_t>(now - target) >= 0;
+    }
+    void ScheduleNow(uint32_t now)
+    {
+        next_run_ms_ = now;
+    }
+    void ScheduleDelayed(uint32_t now, uint32_t delay_ms)
+    {
+        next_run_ms_ = now + delay_ms;
+    }
     [[nodiscard]] static constexpr uint8_t ComposeRegisterValue(uint8_t old_value,
                                                                  uint8_t set_bits,
                                                                  uint8_t mask)
@@ -419,11 +429,16 @@ private:
 			static_cast<uint8_t>(ACCEL_CONFIG_STATIC4_BITS::ACCEL_AAF_BITSHIFT_MASK | ACCEL_CONFIG_STATIC4_BITS::ACCEL_AAF_DELTSQR_11_8_MASK)},
 	};
 
+    // initialized_ means the driver lifecycle has started. configured_ becomes
+    // true only after CONFIGURE and FIFO_RESET complete successfully.
     bool initialized_{false};
     bool configured_{false};
-    DriverState state_{DriverState::Uninitialized};
+    volatile DriverState state_{DriverState::RESET};
     Status last_status_{Status::Ok};
     uint32_t failure_count_{0};
+    uint32_t reset_timestamp_ms_{0};
+    // Bare-metal replacement for PX4 ScheduleDelayed()/ScheduleNow().
+    volatile uint32_t next_run_ms_{0};
     uint32_t sample_count_{0};
     uint32_t error_count_{0};
     Sample latest_{};
