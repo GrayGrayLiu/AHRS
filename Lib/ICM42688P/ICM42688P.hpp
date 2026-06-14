@@ -89,6 +89,12 @@ public:
         uint16_t fifo_timestamp{0};
         uint8_t fifo_header{0};
         uint8_t data_source{0};
+        float delta_angle_rad[3]{};
+        float delta_velocity_m_s[3]{};
+        float delta_time_s{0.0F};
+        uint16_t delta_samples{0};
+        uint32_t interrupt_counter{0};
+        uint32_t last_interrupt_timestamp_ms{0};
     };
 
     ICM42688P(SPI_HandleTypeDef* hspi,
@@ -110,6 +116,7 @@ public:
 
     [[nodiscard]] Status Update();
     [[nodiscard]] Status GetLatest(Sample& sample) const;
+    void OnDataReadyInterrupt(uint32_t timestamp_ms);
 
 private:
     enum class DriverState : uint8_t
@@ -117,7 +124,10 @@ private:
         Uninitialized,
         Probing,
         Resetting,
+        WaitingForReset,
         Configuring,
+        FifoReset,
+        FifoRead,
         Running,
         Reconfiguring,
         Error,
@@ -140,10 +150,25 @@ private:
     };
 
     [[nodiscard]] Status Configure();
+    [[nodiscard]] Status WaitForReset();
     [[nodiscard]] Status ConfigureFifoWatermark(uint16_t watermark_bytes);
+    [[nodiscard]] Status ConfigureInterrupt();
     [[nodiscard]] Status FifoReset();
     [[nodiscard]] Status FifoReadCount(uint16_t& count_bytes);
     [[nodiscard]] Status FifoReadBatch(uint16_t requested_packets, uint16_t& valid_packets);
+    [[nodiscard]] Status RunFifoRead(uint32_t timestamp_sample_ms);
+    [[nodiscard]] Status ProcessTemperatureBatch(const FifoDecodedSample samples[],
+                                                  uint16_t sample_count,
+                                                  Sample& output) const;
+    [[nodiscard]] Status IntegrateGyroBatch(const FifoDecodedSample samples[],
+                                            uint16_t sample_count,
+                                            float sample_dt_s,
+                                            Sample& output);
+    [[nodiscard]] Status IntegrateAccelBatch(const FifoDecodedSample samples[],
+                                             uint16_t sample_count,
+                                             float sample_dt_s,
+                                             Sample& output);
+    [[nodiscard]] bool ConsumeDataReady(uint32_t& timestamp_sample_ms);
     [[nodiscard]] Status DecodeFifoPacket(const ICM42688P_Regs::FIFO::DATA& packet,
                                           FifoDecodedSample& decoded) const;
     [[nodiscard]] Status UpdateFromUiRegisters();
@@ -181,20 +206,26 @@ private:
     {
         return (value & mask) == (set_bits & mask);
     }
-    [[nodiscard]] static constexpr bool ShouldApplyFifoPollingConfig(
+    [[nodiscard]] static constexpr bool ShouldApplyFifoInterruptConfig(
         ICM42688P_Regs::RegsAdd::BANK0 reg)
     {
-        using FifoPollingBank0 = ICM42688P_Regs::RegsAdd::BANK0;
+        (void)reg;
+        return true;
+    }
+    [[nodiscard]] static constexpr bool IsInterruptConfigRegister(
+        ICM42688P_Regs::RegsAdd::BANK0 reg)
+    {
+        using InterruptBank0 = ICM42688P_Regs::RegsAdd::BANK0;
 
         switch (reg) {
-        case FifoPollingBank0::INT_CONFIG:
-        case FifoPollingBank0::INT_CONFIG0:
-        case FifoPollingBank0::INT_CONFIG1:
-        case FifoPollingBank0::INT_SOURCE0:
-            return false;
+        case InterruptBank0::INT_CONFIG:
+        case InterruptBank0::INT_CONFIG0:
+        case InterruptBank0::INT_CONFIG1:
+        case InterruptBank0::INT_SOURCE0:
+            return true;
 
         default:
-            return true;
+            return false;
         }
     }
     [[nodiscard]] static constexpr bool IsValidFifoHeader(uint8_t header)
@@ -251,6 +282,7 @@ private:
 
     static constexpr uint16_t FIFO_PACKET_SIZE{sizeof(ICM42688P_Regs::FIFO::DATA)};
     static constexpr uint16_t FIFO_ODR_HZ{8000u};
+    static constexpr float FIFO_SAMPLE_DT_S{1.0F / static_cast<float>(FIFO_ODR_HZ)};
     static constexpr uint16_t FIFO_UPDATE_HZ{100u};
     static constexpr uint16_t FIFO_EXPECTED_PACKETS_PER_UPDATE{FIFO_ODR_HZ / FIFO_UPDATE_HZ};
     static constexpr uint16_t FIFO_MAX_PACKETS_PER_UPDATE{96u};
@@ -403,8 +435,17 @@ private:
     uint32_t last_update_ms_{0};
     Sample latest_{};
     FifoDecodedSample fifo_last_decoded_{};
+    FifoDecodedSample fifo_decoded_batch_[FIFO_MAX_PACKETS_PER_UPDATE]{};
+    uint16_t fifo_decoded_count_{0u};
+    bool accel_last_effective_valid_{false};
+    bool gyro_last_effective_valid_{false};
+    int32_t accel_last_effective_[3]{};
+    int32_t gyro_last_effective_[3]{};
     uint16_t last_fifo_count_bytes_{0};
     uint16_t last_fifo_valid_packets_{0};
+    volatile uint8_t data_ready_pending_{0u};
+    volatile uint32_t data_ready_interrupt_count_{0u};
+    volatile uint32_t last_data_ready_timestamp_ms_{0u};
     bool bank_selected_valid_{false};
     ICM42688P_Regs::REG_BANK_SEL_BITS current_bank_{ICM42688P_Regs::REG_BANK_SEL_BITS::BANK_SEL_0};
 };

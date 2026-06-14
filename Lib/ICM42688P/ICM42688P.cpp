@@ -63,6 +63,12 @@ ICM42688P::Status ICM42688P::Init()
     last_status_ = Status::Ok;
     latest_.configured = false;
     latest_.data_valid = false;
+    fifo_decoded_count_ = 0u;
+    accel_last_effective_valid_ = false;
+    gyro_last_effective_valid_ = false;
+    data_ready_pending_ = 0u;
+    data_ready_interrupt_count_ = 0u;
+    last_data_ready_timestamp_ms_ = 0u;
 
     if (!HasValidBus()) {
         ++error_count_;
@@ -97,8 +103,8 @@ ICM42688P::Status ICM42688P::Init()
         return status;
     }
 
-    state_ = DriverState::Probing;
-    status = Probe();
+    state_ = DriverState::WaitingForReset;
+    status = WaitForReset();
 
     if (status != Status::Ok) {
         ++error_count_;
@@ -119,14 +125,83 @@ ICM42688P::Status ICM42688P::Init()
         return status;
     }
 
+    status = ConfigureInterrupt();
+
+    if (status != Status::Ok) {
+        ++error_count_;
+        ++failure_count_;
+        last_status_ = status;
+        state_ = DriverState::Error;
+        return status;
+    }
+
+    state_ = DriverState::FifoReset;
+    status = FifoReset();
+
+    if (status != Status::Ok) {
+        ++error_count_;
+        ++failure_count_;
+        last_status_ = status;
+        state_ = DriverState::Error;
+        return status;
+    }
+
     initialized_ = true;
     configured_ = true;
-    state_ = DriverState::Running;
+    state_ = DriverState::FifoRead;
     last_status_ = Status::Ok;
     failure_count_ = 0u;
     latest_.configured = true;
     latest_.error_counter = error_count_;
     return Status::Ok;
+}
+
+ICM42688P::Status ICM42688P::WaitForReset()
+{
+    const uint32_t reset_start = HAL_GetTick();
+    uint8_t last_who_am_i{0u};
+
+    while ((HAL_GetTick() - reset_start) <= ICM42688P_Regs::SOFT_RESET_TIMEOUT_MS) {
+        uint8_t device_config{};
+        uint8_t int_status{};
+        Status status = RegisterRead(BANK0::WHO_AM_I, last_who_am_i);
+
+        if (status != Status::Ok) {
+            return status;
+        }
+
+        status = RegisterRead(BANK0::DEVICE_CONFIG, device_config);
+
+        if (status != Status::Ok) {
+            return status;
+        }
+
+        status = RegisterRead(BANK0::INT_STATUS, int_status);
+
+        if (status != Status::Ok) {
+            return status;
+        }
+
+        const bool who_am_i_ready = last_who_am_i == ICM42688P_Regs::WHO_AM_I_EXPECTED;
+        const bool reset_bit_clear =
+            (device_config
+             & static_cast<uint8_t>(ICM42688P_Regs::DEVICE_CONFIG_BITS::SOFT_RESET_CONFIG))
+            == ICM42688P_Regs::BitNone;
+        const bool reset_done =
+            (int_status
+             & static_cast<uint8_t>(ICM42688P_Regs::INT_STATUS_BITS::RESET_DONE_INT))
+            != ICM42688P_Regs::BitNone;
+
+        if (who_am_i_ready && reset_bit_clear && reset_done) {
+            return Status::Ok;
+        }
+
+        HAL_Delay(ICM42688P_Regs::RESET_POLL_INTERVAL_MS);
+    }
+
+    return last_who_am_i == ICM42688P_Regs::WHO_AM_I_EXPECTED
+        ? Status::ResetTimeout
+        : Status::WrongDeviceId;
 }
 
 ICM42688P::Status ICM42688P::Configure()
@@ -164,7 +239,7 @@ ICM42688P::Status ICM42688P::Configure()
             continue;
         }
 
-        if (!ShouldApplyFifoPollingConfig(config.reg)) {
+        if (!ShouldApplyFifoInterruptConfig(config.reg)) {
             continue;
         }
 
@@ -217,7 +292,7 @@ ICM42688P::Status ICM42688P::Configure()
     }
 
     for (const auto& config : register_bank0_cfg_) {
-        if (!ShouldApplyFifoPollingConfig(config.reg)) {
+        if (!ShouldApplyFifoInterruptConfig(config.reg)) {
             continue;
         }
 
@@ -228,14 +303,35 @@ ICM42688P::Status ICM42688P::Configure()
         }
     }
 
-    status = FifoReset();
-
-    if (status != Status::Ok) {
-        return status;
-    }
-
     configured_ = true;
     latest_.configured = true;
+    return Status::Ok;
+}
+
+ICM42688P::Status ICM42688P::ConfigureInterrupt()
+{
+    for (const auto& config : register_bank0_cfg_) {
+        if (!IsInterruptConfigRegister(config.reg)) {
+            continue;
+        }
+
+        const Status status = RegisterCheck(config);
+
+        if (status != Status::Ok) {
+            return status;
+        }
+    }
+
+    const uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    data_ready_pending_ = 0u;
+    data_ready_interrupt_count_ = 0u;
+    last_data_ready_timestamp_ms_ = 0u;
+
+    if (primask == 0u) {
+        __enable_irq();
+    }
+
     return Status::Ok;
 }
 
@@ -292,6 +388,9 @@ ICM42688P::Status ICM42688P::FifoReset()
     HAL_Delay(1u);
     last_fifo_count_bytes_ = 0u;
     last_fifo_valid_packets_ = 0u;
+    fifo_decoded_count_ = 0u;
+    accel_last_effective_valid_ = false;
+    gyro_last_effective_valid_ = false;
     return Status::Ok;
 }
 
@@ -320,6 +419,7 @@ ICM42688P::Status ICM42688P::FifoReadBatch(const uint16_t requested_packets,
                                             uint16_t& valid_packets)
 {
     valid_packets = 0u;
+    fifo_decoded_count_ = 0u;
 
     if (requested_packets == 0u) {
         return Status::NoData;
@@ -404,10 +504,12 @@ ICM42688P::Status ICM42688P::FifoReadBatch(const uint16_t requested_packets,
             return reset_status == Status::Ok ? decode_status : reset_status;
         }
 
+        fifo_decoded_batch_[valid_packets] = decoded;
         fifo_last_decoded_ = decoded;
         ++valid_packets;
     }
 
+    fifo_decoded_count_ = valid_packets;
     last_fifo_valid_packets_ = valid_packets;
     return valid_packets == 0u ? Status::NoData : Status::Ok;
 }
@@ -477,6 +579,122 @@ ICM42688P::Status ICM42688P::DecodeFifoPacket(
         (static_cast<uint16_t>(packet.TIME_STAMP_15_8) << 8u)
         | packet.TIME_STAMP_7_0);
     decoded.header = packet.FIFO_Header;
+    return Status::Ok;
+}
+
+ICM42688P::Status ICM42688P::ProcessTemperatureBatch(
+    const FifoDecodedSample samples[],
+    const uint16_t sample_count,
+    Sample& output) const
+{
+    if (samples == nullptr || sample_count == 0u
+        || sample_count > FIFO_MAX_PACKETS_PER_UPDATE) {
+        return Status::InvalidArgument;
+    }
+
+    int32_t temperature_sum{0};
+
+    for (uint16_t index = 0u; index < sample_count; ++index) {
+        temperature_sum += samples[index].temp_raw;
+    }
+
+    const int32_t temperature_average = temperature_sum / static_cast<int32_t>(sample_count);
+    output.temp_raw = SaturateToInt16(temperature_average);
+    output.temperature_deg_c = static_cast<float>(output.temp_raw)
+                               / TEMPERATURE_SENSITIVITY_LSB_PER_DEG_C
+                               + TEMPERATURE_OFFSET_DEG_C;
+    return Status::Ok;
+}
+
+ICM42688P::Status ICM42688P::IntegrateGyroBatch(
+    const FifoDecodedSample samples[],
+    const uint16_t sample_count,
+    const float sample_dt_s,
+    Sample& output)
+{
+    if (samples == nullptr || sample_count == 0u
+        || sample_count > FIFO_MAX_PACKETS_PER_UPDATE
+        || sample_dt_s <= 0.0F) {
+        return Status::InvalidArgument;
+    }
+
+    constexpr float gyro_scale = (1.0F / 131.0F) * DEG_TO_RAD;
+    output.delta_time_s = static_cast<float>(sample_count) * sample_dt_s;
+
+    for (uint8_t axis = 0u; axis < 3u; ++axis) {
+        float integral_raw{0.0F};
+
+        if (gyro_last_effective_valid_) {
+            integral_raw = 0.5F * static_cast<float>(gyro_last_effective_[axis])
+                         + 0.5F * static_cast<float>(
+                               samples[sample_count - 1u].gyro_effective[axis]);
+
+            for (uint16_t index = 0u; index + 1u < sample_count; ++index) {
+                integral_raw += static_cast<float>(samples[index].gyro_effective[axis]);
+            }
+
+        } else {
+            for (uint16_t index = 0u; index < sample_count; ++index) {
+                integral_raw += static_cast<float>(samples[index].gyro_effective[axis]);
+            }
+        }
+
+        output.delta_angle_rad[axis] = integral_raw * gyro_scale * sample_dt_s;
+        output.gyro_rad_s[axis] = output.delta_angle_rad[axis] / output.delta_time_s;
+        output.gyro_effective[axis] = static_cast<int32_t>(
+            integral_raw / static_cast<float>(sample_count));
+        output.gyro_raw[axis] = SaturateToInt16(output.gyro_effective[axis]);
+        output.gyro_raw20[axis] = samples[sample_count - 1u].gyro_raw20[axis];
+        gyro_last_effective_[axis] = samples[sample_count - 1u].gyro_effective[axis];
+    }
+
+    gyro_last_effective_valid_ = true;
+    return Status::Ok;
+}
+
+ICM42688P::Status ICM42688P::IntegrateAccelBatch(
+    const FifoDecodedSample samples[],
+    const uint16_t sample_count,
+    const float sample_dt_s,
+    Sample& output)
+{
+    if (samples == nullptr || sample_count == 0u
+        || sample_count > FIFO_MAX_PACKETS_PER_UPDATE
+        || sample_dt_s <= 0.0F) {
+        return Status::InvalidArgument;
+    }
+
+    constexpr float accel_scale = STANDARD_GRAVITY_M_S2 / 8192.0F;
+    output.delta_time_s = static_cast<float>(sample_count) * sample_dt_s;
+
+    for (uint8_t axis = 0u; axis < 3u; ++axis) {
+        float integral_raw{0.0F};
+
+        if (accel_last_effective_valid_) {
+            integral_raw = 0.5F * static_cast<float>(accel_last_effective_[axis])
+                         + 0.5F * static_cast<float>(
+                               samples[sample_count - 1u].accel_effective[axis]);
+
+            for (uint16_t index = 0u; index + 1u < sample_count; ++index) {
+                integral_raw += static_cast<float>(samples[index].accel_effective[axis]);
+            }
+
+        } else {
+            for (uint16_t index = 0u; index < sample_count; ++index) {
+                integral_raw += static_cast<float>(samples[index].accel_effective[axis]);
+            }
+        }
+
+        output.delta_velocity_m_s[axis] = integral_raw * accel_scale * sample_dt_s;
+        output.accel_m_s2[axis] = output.delta_velocity_m_s[axis] / output.delta_time_s;
+        output.accel_effective[axis] = static_cast<int32_t>(
+            integral_raw / static_cast<float>(sample_count));
+        output.accel_raw[axis] = SaturateToInt16(output.accel_effective[axis]);
+        output.accel_raw20[axis] = samples[sample_count - 1u].accel_raw20[axis];
+        accel_last_effective_[axis] = samples[sample_count - 1u].accel_effective[axis];
+    }
+
+    accel_last_effective_valid_ = true;
     return Status::Ok;
 }
 
@@ -616,26 +834,7 @@ ICM42688P::Status ICM42688P::Reset()
 
     HAL_Delay(ICM42688P_Regs::SOFT_RESET_WAIT_MS);
     bank_selected_valid_ = false;
-
-    const uint32_t reset_start = HAL_GetTick();
-
-    while ((HAL_GetTick() - reset_start) <= ICM42688P_Regs::SOFT_RESET_TIMEOUT_MS) {
-        uint8_t device_config{};
-        status = RegisterRead(BANK0::DEVICE_CONFIG, device_config);
-
-        if (status != Status::Ok) {
-            return status;
-        }
-
-        if ((device_config & static_cast<uint8_t>(ICM42688P_Regs::DEVICE_CONFIG_BITS::SOFT_RESET_CONFIG))
-            == ICM42688P_Regs::BitNone) {
-            return Status::Ok;
-        }
-
-        HAL_Delay(ICM42688P_Regs::RESET_POLL_INTERVAL_MS);
-    }
-
-    return Status::ResetTimeout;
+    return Status::Ok;
 }
 
 ICM42688P::Status ICM42688P::RegisterRead(const BANK0 reg, uint8_t& value)
@@ -708,18 +907,42 @@ ICM42688P::Status ICM42688P::ReadRawGyro(RawVector& data)
     return Status::Ok;
 }
 
-ICM42688P::Status ICM42688P::Update()
+void ICM42688P::OnDataReadyInterrupt(const uint32_t timestamp_ms)
 {
-    if (!initialized_ || !configured_) {
-        return Status::InvalidArgument;
+    last_data_ready_timestamp_ms_ = timestamp_ms;
+    ++data_ready_interrupt_count_;
+    data_ready_pending_ = 1u;
+}
+
+bool ICM42688P::ConsumeDataReady(uint32_t& timestamp_sample_ms)
+{
+    const uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    const bool pending = data_ready_pending_ != 0u;
+
+    if (pending) {
+        timestamp_sample_ms = last_data_ready_timestamp_ms_;
+        data_ready_pending_ = 0u;
     }
 
+    if (primask == 0u) {
+        __enable_irq();
+    }
+
+    return pending;
+}
+
+ICM42688P::Status ICM42688P::RunFifoRead(const uint32_t timestamp_sample_ms)
+{
     uint16_t fifo_count_bytes{};
     Status status = FifoReadCount(fifo_count_bytes);
 
     if (status == Status::NoData) {
         latest_.configured = configured_;
         latest_.error_counter = error_count_;
+        latest_.interrupt_counter = data_ready_interrupt_count_;
+        latest_.last_interrupt_timestamp_ms = timestamp_sample_ms;
+        last_status_ = status;
         return status;
     }
 
@@ -727,6 +950,7 @@ ICM42688P::Status ICM42688P::Update()
         ++error_count_;
         latest_.error_counter = error_count_;
         latest_.data_valid = false;
+        last_status_ = status;
         return status;
     }
 
@@ -737,6 +961,9 @@ ICM42688P::Status ICM42688P::Update()
     if (status == Status::NoData) {
         latest_.configured = configured_;
         latest_.error_counter = error_count_;
+        latest_.interrupt_counter = data_ready_interrupt_count_;
+        latest_.last_interrupt_timestamp_ms = timestamp_sample_ms;
+        last_status_ = status;
         return status;
     }
 
@@ -744,25 +971,43 @@ ICM42688P::Status ICM42688P::Update()
         ++error_count_;
         latest_.error_counter = error_count_;
         latest_.data_valid = false;
+        last_status_ = status;
         return status;
     }
 
-    Sample sample{};
-
-    for (uint8_t axis = 0u; axis < 3u; ++axis) {
-        sample.accel_raw[axis] = fifo_last_decoded_.accel_raw16[axis];
-        sample.gyro_raw[axis] = fifo_last_decoded_.gyro_raw16[axis];
-        sample.accel_raw20[axis] = fifo_last_decoded_.accel_raw20[axis];
-        sample.gyro_raw20[axis] = fifo_last_decoded_.gyro_raw20[axis];
-        sample.accel_effective[axis] = fifo_last_decoded_.accel_effective[axis];
-        sample.gyro_effective[axis] = fifo_last_decoded_.gyro_effective[axis];
-        sample.accel_m_s2[axis] = fifo_last_decoded_.accel_m_s2[axis];
-        sample.gyro_rad_s[axis] = fifo_last_decoded_.gyro_rad_s[axis];
+    if (valid_packets == 0u || valid_packets != fifo_decoded_count_) {
+        ++error_count_;
+        latest_.error_counter = error_count_;
+        latest_.data_valid = false;
+        last_status_ = Status::BadFifoPacket;
+        return Status::BadFifoPacket;
     }
 
-    sample.temp_raw = fifo_last_decoded_.temp_raw;
-    sample.temperature_deg_c = fifo_last_decoded_.temperature_deg_c;
-    sample.timestamp_ms = HAL_GetTick();
+    Sample sample{};
+    sample.delta_samples = valid_packets;
+    sample.delta_time_s = static_cast<float>(valid_packets) * FIFO_SAMPLE_DT_S;
+
+    status = ProcessTemperatureBatch(fifo_decoded_batch_, valid_packets, sample);
+
+    if (status == Status::Ok) {
+        status = IntegrateGyroBatch(
+            fifo_decoded_batch_, valid_packets, FIFO_SAMPLE_DT_S, sample);
+    }
+
+    if (status == Status::Ok) {
+        status = IntegrateAccelBatch(
+            fifo_decoded_batch_, valid_packets, FIFO_SAMPLE_DT_S, sample);
+    }
+
+    if (status != Status::Ok) {
+        ++error_count_;
+        latest_.error_counter = error_count_;
+        latest_.data_valid = false;
+        last_status_ = status;
+        return status;
+    }
+
+    sample.timestamp_ms = timestamp_sample_ms;
     sample.sample_counter = sample_count_ + valid_packets;
     sample.error_counter = error_count_;
     sample.configured = configured_;
@@ -772,11 +1017,31 @@ ICM42688P::Status ICM42688P::Update()
     sample.fifo_timestamp = fifo_last_decoded_.timestamp_fifo;
     sample.fifo_header = fifo_last_decoded_.header;
     sample.data_source = DATA_SOURCE_FIFO;
+    sample.interrupt_counter = data_ready_interrupt_count_;
+    sample.last_interrupt_timestamp_ms = timestamp_sample_ms;
 
     sample_count_ = sample.sample_counter;
     last_update_ms_ = sample.timestamp_ms;
     latest_ = sample;
+    last_status_ = Status::Ok;
+    failure_count_ = 0u;
     return Status::Ok;
+}
+
+ICM42688P::Status ICM42688P::Update()
+{
+    if (!initialized_ || !configured_) {
+        return Status::InvalidArgument;
+    }
+
+    uint32_t timestamp_sample_ms{};
+
+    if (!ConsumeDataReady(timestamp_sample_ms)) {
+        return Status::NoData;
+    }
+
+    state_ = DriverState::FifoRead;
+    return RunFifoRead(timestamp_sample_ms);
 }
 
 ICM42688P::Status ICM42688P::UpdateFromUiRegisters()

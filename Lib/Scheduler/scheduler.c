@@ -8,14 +8,18 @@
 #include "ICM42688_API.h"
 #include "main.h"
 
+#define ICM42688P_RUNTIME_SAMPLE_PRINT_ENABLE 0
+
 enum
 {
     ICM42688P_INIT_RETRY_INTERVAL_MS = 1000u,
+    ICM42688P_PRINT_INTERVAL_MS = 10000u,
 };
 
 static uint8_t icm42688p_bound = 0u;
 static uint8_t icm42688p_initialized = 0u;
 static uint32_t icm42688p_next_init_tick = 0u;
+static uint32_t icm42688p_last_print_tick = 0u;
 static ICM42688_Status icm42688p_last_status = ICM42688_STATUS_OK;
 
 static uint8_t ICM42688P_TickReached(const uint32_t now, const uint32_t target)
@@ -74,7 +78,7 @@ static void ICM42688P_ServiceInit(void)
 
     icm42688p_initialized = 1u;
     ICM42688P_SetLed(GPIO_PIN_RESET, GPIO_PIN_SET, GPIO_PIN_RESET);
-    printf("[ICM42688P] init ok, polling update started\r\n");
+    printf("[ICM42688P] init ok, interrupt FIFO update started\r\n");
 }
 
 static void ICM42688P_UpdateTask(void)
@@ -96,12 +100,25 @@ static void ICM42688P_UpdateTask(void)
 
 static void ICM42688P_PrintLatest(void)
 {
+#if ICM42688P_RUNTIME_SAMPLE_PRINT_ENABLE == 0
+    return;
+#endif
+
     if (icm42688p_initialized == 0u) {
         return;
     }
 
     ICM42688_Sample sample = {0};
     const ICM42688_Status status = ICM42688_GetLatest(&sample);
+    const uint32_t now = HAL_GetTick();
+    const uint8_t periodic_print = ICM42688P_TickReached(
+        now, icm42688p_last_print_tick + ICM42688P_PRINT_INTERVAL_MS);
+
+    if (periodic_print == 0u) {
+        return;
+    }
+
+    icm42688p_last_print_tick = now;
 
     if (status != ICM42688_STATUS_OK || sample.data_valid == 0u) {
         printf("[ICM42688P] unavailable get=%ld st=%ld e=%lu\r\n",
@@ -113,9 +130,12 @@ static void ICM42688P_PrintLatest(void)
 
     const long accel_z_milli = (long)(sample.accel_m_s2[2] * 1000.0f);
     const long gyro_z_milli = (long)(sample.gyro_rad_s[2] * 1000.0f);
+    const long delta_time_ms = (long)(sample.delta_time_s * 1000.0f);
+    const long delta_angle_z_micro = (long)(sample.delta_angle_rad[2] * 1000000.0f);
+    const long delta_velocity_z_micro = (long)(sample.delta_velocity_m_s[2] * 1000000.0f);
 
-    printf("[ICM42688P] st=%ld src=%u cnt=%u n=%u hdr=0x%02X "
-           "s=%lu e=%lu az=%ld gz=%ld\r\n",
+    printf("[ICM42688P] st=%ld src=%u cnt=%u n=%u hdr=0x%02X s=%lu e=%lu "
+           "irq=%lu dt=%ld dthz=%ld dvz=%ld az=%ld gz=%ld\r\n",
            (long)icm42688p_last_status,
            (unsigned int)sample.data_source,
            (unsigned int)sample.fifo_count_bytes,
@@ -123,12 +143,16 @@ static void ICM42688P_PrintLatest(void)
            (unsigned int)sample.fifo_header,
            (unsigned long)sample.sample_counter,
            (unsigned long)sample.error_counter,
+           (unsigned long)sample.interrupt_counter,
+           delta_time_ms,
+           delta_angle_z_micro,
+           delta_velocity_z_micro,
            accel_z_milli,
            gyro_z_milli);
 }
 static void Loop_1000Hz(void) //1ms执行一次
 {
-
+    ICM42688P_UpdateTask();
 }
 
 static void Loop_500Hz(void) //2ms执行一次
@@ -145,7 +169,6 @@ static void Loop_200Hz(void) //5ms执行一次
 
 static void Loop_100Hz(void) //10ms执行一次
 {
-    ICM42688P_UpdateTask();
 }
 
 static void Loop_50Hz(void) //20ms执行一次

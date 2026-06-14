@@ -159,6 +159,13 @@ extern "C" ICM42688_Status ICM42688_Update(void)
     return ToApiStatus(g_icm->Update());
 }
 
+extern "C" void ICM42688_OnDataReadyInterrupt(const uint32_t timestamp_ms)
+{
+    if (IsBound()) {
+        g_icm->OnDataReadyInterrupt(timestamp_ms);
+    }
+}
+
 extern "C" ICM42688_Status ICM42688_GetLatest(ICM42688_Sample *sample)
 {
     if (!IsBound() || !g_initialized || sample == nullptr) {
@@ -183,6 +190,8 @@ extern "C" ICM42688_Status ICM42688_GetLatest(ICM42688_Sample *sample)
         sample->gyro_raw20[axis] = latest.gyro_raw20[axis];
         sample->accel_effective[axis] = latest.accel_effective[axis];
         sample->gyro_effective[axis] = latest.gyro_effective[axis];
+        sample->delta_angle_rad[axis] = latest.delta_angle_rad[axis];
+        sample->delta_velocity_m_s[axis] = latest.delta_velocity_m_s[axis];
     }
 
     sample->temp_raw = latest.temp_raw;
@@ -196,6 +205,10 @@ extern "C" ICM42688_Status ICM42688_GetLatest(ICM42688_Sample *sample)
     sample->fifo_timestamp = latest.fifo_timestamp;
     sample->fifo_header = latest.fifo_header;
     sample->data_source = latest.data_source;
+    sample->delta_time_s = latest.delta_time_s;
+    sample->delta_samples = latest.delta_samples;
+    sample->interrupt_counter = latest.interrupt_counter;
+    sample->last_interrupt_timestamp_ms = latest.last_interrupt_timestamp_ms;
     return ICM42688_STATUS_OK;
 }
 

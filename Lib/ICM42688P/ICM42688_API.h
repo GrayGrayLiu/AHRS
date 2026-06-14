@@ -51,6 +51,12 @@ typedef struct
     uint16_t fifo_timestamp;
     uint8_t fifo_header;
     uint8_t data_source;
+    float delta_angle_rad[3];
+    float delta_velocity_m_s[3];
+    float delta_time_s;
+    uint16_t delta_samples;
+    uint32_t interrupt_counter;
+    uint32_t last_interrupt_timestamp_ms;
 } ICM42688_Sample;
 
 ICM42688_Status ICM42688_Bind(SPI_HandleTypeDef *hspi, GPIO_TypeDef *cs_port, uint16_t cs_pin);
@@ -66,6 +72,7 @@ ICM42688_Status ICM42688_ReadRawGyro(ICM42688_RawVector *data);
 
 ICM42688_Status ICM42688_Update(void);
 ICM42688_Status ICM42688_GetLatest(ICM42688_Sample *sample);
+void ICM42688_OnDataReadyInterrupt(uint32_t timestamp_ms);
 ICM42688_Status ICM42688_Read(int16_t accel[3], int16_t gyro[3], int16_t *temp);
 
 #ifdef __cplusplus
