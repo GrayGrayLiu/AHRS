@@ -4,6 +4,7 @@
 
 #include "scheduler.h"
 #include "ICM42688_Service.h"
+#include "TimeBase.h"
 
 static void Loop_1000Hz(void) //1ms执行一次
 {
@@ -113,7 +114,7 @@ void Scheduler_Run(void)
 
     for (index = 0; index < TASK_NUM; index++) {
         //获取系统当前时间，单位MS
-        uint32_t tnow = HAL_GetTick();
+        uint32_t tnow = TimeBase_Millis();
         //进行判断，如果当前时间减去上一次执行的时间，大于等于该线程的执行周期，则执行线程
         if (tnow - sched_tasks[index].last_run >= sched_tasks[index].interval_ticks) {
 
