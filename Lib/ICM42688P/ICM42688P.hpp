@@ -177,6 +177,11 @@ private:
                                       uint16_t sample_count,
                                       float sample_dt_s,
                                       Sample& output);
+    // 只负责填充一次成功 FIFO batch 对应 Sample 的元信息字段，不参与积分计算。
+    void PopulateFifoSampleMetadata(Sample& sample,
+                                    uint64_t timestamp_sample_us,
+                                    uint32_t timestamp_sample_ms,
+                                    uint16_t valid_packets) const;
     [[nodiscard]] Status DecodeFifoPacket(const ICM42688P_Regs::FIFO::DATA& packet,
                                           FifoDecodedSample& decoded) const;
     [[nodiscard]] Status RegisterSetAndClearBits(const register_bank0_config_t& config);

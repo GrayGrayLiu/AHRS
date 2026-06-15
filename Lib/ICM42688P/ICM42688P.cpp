@@ -655,6 +655,30 @@ ICM42688P::Status ICM42688P::FIFORead(const uint64_t timestamp_sample_us)
         return status;
     }
 
+    // 填充本次成功 FIFO batch 的元信息，并在最后统一推进 driver 状态。
+    PopulateFifoSampleMetadata(sample, timestamp_sample_us, timestamp_sample_ms, valid_packets);
+
+    sample_count_ = sample.sample_counter;
+    last_fifo_timestamp_sample_us_ = timestamp_sample_us;
+    last_fifo_timestamp_sample_valid_ = true;
+    latest_ = sample;
+    last_status_ = Status::Ok;
+    return Status::Ok;
+}
+
+/**
+ * @brief  填充一次成功 FIFO batch 对应的 Sample 元信息
+ * @param  sample 已完成温度、陀螺、加计处理的输出样本
+ * @param  timestamp_sample_us 当前 FIFO batch 对应的 data-ready 时间戳，单位 us
+ * @param  timestamp_sample_ms 当前 FIFO batch 对应的 data-ready 时间戳，单位 ms
+ * @param  valid_packets 本次 FIFO batch 中有效 packet 数
+ * @retval 无
+ */
+void ICM42688P::PopulateFifoSampleMetadata(Sample& sample,
+                                           const uint64_t timestamp_sample_us,
+                                           const uint32_t timestamp_sample_ms,
+                                           const uint16_t valid_packets) const
+{
     sample.timestamp_us = timestamp_sample_us;
     sample.timestamp_ms = timestamp_sample_ms;
     sample.sample_counter = sample_count_ + valid_packets;
@@ -669,13 +693,6 @@ ICM42688P::Status ICM42688P::FIFORead(const uint64_t timestamp_sample_us)
     sample.interrupt_counter = data_ready_interrupt_count_;
     sample.last_interrupt_timestamp_us = timestamp_sample_us;
     sample.last_interrupt_timestamp_ms = timestamp_sample_ms;
-
-    sample_count_ = sample.sample_counter;
-    last_fifo_timestamp_sample_us_ = timestamp_sample_us;
-    last_fifo_timestamp_sample_valid_ = true;
-    latest_ = sample;
-    last_status_ = Status::Ok;
-    return Status::Ok;
 }
 
 ICM42688P::Status ICM42688P::FIFOReadCount(uint16_t& count_bytes)
