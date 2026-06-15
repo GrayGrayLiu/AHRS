@@ -565,15 +565,23 @@ ICM42688P::Status ICM42688P::RunImpl()
     return Status::InvalidArgument;
 }
 
+/**
+ * @brief  读取并处理一次完整 FIFO batch
+ * @param  timestamp_sample_us 当前 FIFO batch 对应的 data-ready MCU 时间戳，单位 us
+ * @retval Status::Ok          成功更新 latest_ 样本
+ * @retval Status::NoData      FIFO 中暂无可处理数据
+ * @retval Status::BadFifoPacket 有效 packet 数校验失败
+ * @retval 其他状态表示 FIFO 读取、packet 解码或数据处理失败
+ */
 ICM42688P::Status ICM42688P::FIFORead(const uint64_t timestamp_sample_us)
 {
-    // 一次 FIFORead 读取并解码完整 batch，处理温度、角增量和速度增量，最后
-    // 更新 latest_。任何失败路径都不会推进成功 batch 的 dt 基准时间戳。
+    // 1. 将 data-ready 时间戳转换为毫秒时间戳，并读取 FIFO count。
     const uint32_t timestamp_sample_ms =
         static_cast<uint32_t>(timestamp_sample_us / 1000u);
     uint16_t fifo_count_bytes{};
     Status status = FIFOReadCount(fifo_count_bytes);
 
+    // 2. 处理 FIFO count 阶段的无数据和错误返回。
     if (status == Status::NoData) {
         latest_.configured = configured_;
         latest_.error_counter = error_count_;
@@ -592,10 +600,12 @@ ICM42688P::Status ICM42688P::FIFORead(const uint64_t timestamp_sample_us)
         return status;
     }
 
+    // 3. 根据 FIFO count 计算期望读取的 packet 数，并读取完整 FIFO batch。
     const uint16_t requested_packets = static_cast<uint16_t>(fifo_count_bytes / FIFO_PACKET_SIZE);
     uint16_t valid_packets{};
     status = FIFOReadData(requested_packets, valid_packets);
 
+    // 4. 处理 FIFO 数据读取阶段的无数据和错误返回。
     if (status == Status::NoData) {
         latest_.configured = configured_;
         latest_.error_counter = error_count_;
@@ -614,6 +624,7 @@ ICM42688P::Status ICM42688P::FIFORead(const uint64_t timestamp_sample_us)
         return status;
     }
 
+    // 5. 校验本次 batch 的有效 packet 数。
     if (valid_packets == 0u || valid_packets != fifo_decoded_count_) {
         ++error_count_;
         latest_.error_counter = error_count_;
@@ -622,6 +633,7 @@ ICM42688P::Status ICM42688P::FIFORead(const uint64_t timestamp_sample_us)
         return Status::BadFifoPacket;
     }
 
+    // 6. 初始化输出 Sample，并计算本次 batch 的积分时间。
     Sample sample{};
     sample.delta_samples = valid_packets;
 
@@ -636,6 +648,7 @@ ICM42688P::Status ICM42688P::FIFORead(const uint64_t timestamp_sample_us)
         last_fifo_timestamp_sample_us_);
     const float sample_dt_s = batch_dt_s / static_cast<float>(valid_packets);
 
+    // 7. 依次处理温度、陀螺仪和加速度计数据。
     status = ProcessTemperature(fifo_decoded_batch_, valid_packets, sample);
 
     if (status == Status::Ok) {
@@ -648,6 +661,7 @@ ICM42688P::Status ICM42688P::FIFORead(const uint64_t timestamp_sample_us)
             fifo_decoded_batch_, valid_packets, sample_dt_s, sample);
     }
 
+    // 8. 处理数据转换失败路径。
     if (status != Status::Ok) {
         ++error_count_;
         latest_.error_counter = error_count_;
@@ -656,7 +670,8 @@ ICM42688P::Status ICM42688P::FIFORead(const uint64_t timestamp_sample_us)
         return status;
     }
 
-    // 填充本次成功 FIFO batch 的元信息，并在最后统一推进 driver 状态。
+    // 任何失败路径都不会推进成功 batch 的 sample 计数和 dt 基准时间戳。
+    // 9. 填充 Sample 元信息，并统一推进 driver 成功状态。
     PopulateFifoSampleMetadata(sample, timestamp_sample_us, timestamp_sample_ms, valid_packets);
 
     sample_count_ = sample.sample_counter;
