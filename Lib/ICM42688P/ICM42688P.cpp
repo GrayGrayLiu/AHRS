@@ -42,6 +42,40 @@ constexpr uint32_t FAILURE_RESET_THRESHOLD{10u};
 constexpr float MICROSECONDS_TO_SECONDS{1.0e-6F};
 constexpr float MEASURED_BATCH_DT_MIN_RATIO{0.5F};
 constexpr float MEASURED_BATCH_DT_MAX_RATIO{2.0F};
+
+/**
+ * @brief  根据名义 batch 时间和相邻 data-ready 时间戳选择本批次积分时间
+ * @param  nominal_batch_dt_s 名义 batch 时间，单位 s
+ * @param  timestamp_sample_us 当前成功 FIFO batch 对应的 data-ready 时间戳，单位 us
+ * @param  last_timestamp_valid 上一批成功时间戳是否有效
+ * @param  last_timestamp_us 上一批成功 FIFO batch 对应的 data-ready 时间戳，单位 us
+ * @retval 本批次采用的 batch delta time，单位 s
+ */
+float ComputeBatchDeltaTimeSeconds(const float nominal_batch_dt_s,
+                                   const uint64_t timestamp_sample_us,
+                                   const bool last_timestamp_valid,
+                                   const uint64_t last_timestamp_us)
+{
+    // 首个成功 batch 无历史时间戳，直接使用名义 dt。
+    if (!last_timestamp_valid) {
+        return nominal_batch_dt_s;
+    }
+
+    // 相邻成功 data-ready 的 MCU 时间差作为实测 batch 时间。
+    const uint64_t measured_batch_dt_us =
+        timestamp_sample_us - last_timestamp_us;
+    const float measured_batch_dt_s =
+        static_cast<float>(measured_batch_dt_us) * MICROSECONDS_TO_SECONDS;
+
+    // 实测值必须在名义值的 0.5~2.0 倍范围内，否则回退名义 dt 以避免异常
+    // 中断间隔污染积分。FIFO 内部 timestamp 不参与这里的主时间计算。
+    if (measured_batch_dt_s >= nominal_batch_dt_s * MEASURED_BATCH_DT_MIN_RATIO
+        && measured_batch_dt_s <= nominal_batch_dt_s * MEASURED_BATCH_DT_MAX_RATIO) {
+        return measured_batch_dt_s;
+    }
+
+    return nominal_batch_dt_s;
+}
 }
 
 // ============================================================================
@@ -589,24 +623,16 @@ ICM42688P::Status ICM42688P::FIFORead(const uint64_t timestamp_sample_us)
 
     Sample sample{};
     sample.delta_samples = valid_packets;
-    // 首个成功 batch 使用名义 ODR。后续优先使用相邻成功 data-ready 的 MCU
-    // 时间差；如果实测值超出名义值 0.5~2.0 倍，则回退名义 dt，避免异常中断
-    // 间隔污染积分。FIFO 内部 timestamp 不参与这里的主时间计算。
+
+    // 本段只选择 batch 积分时间：优先使用相邻成功 data-ready 的 MCU 时间差；
+    // 如果实测值超出名义值 0.5~2.0 倍，则回退名义 dt。FIFO 内部 timestamp
+    // 不参与主积分时间计算。
     const float nominal_batch_dt_s = static_cast<float>(valid_packets) * FIFO_SAMPLE_DT_S;
-    float batch_dt_s = nominal_batch_dt_s;
-
-    if (last_fifo_timestamp_sample_valid_) {
-        const uint64_t measured_batch_dt_us =
-            timestamp_sample_us - last_fifo_timestamp_sample_us_;
-        const float measured_batch_dt_s =
-            static_cast<float>(measured_batch_dt_us) * MICROSECONDS_TO_SECONDS;
-
-        if (measured_batch_dt_s >= nominal_batch_dt_s * MEASURED_BATCH_DT_MIN_RATIO
-            && measured_batch_dt_s <= nominal_batch_dt_s * MEASURED_BATCH_DT_MAX_RATIO) {
-            batch_dt_s = measured_batch_dt_s;
-        }
-    }
-
+    const float batch_dt_s = ComputeBatchDeltaTimeSeconds(
+        nominal_batch_dt_s,
+        timestamp_sample_us,
+        last_fifo_timestamp_sample_valid_,
+        last_fifo_timestamp_sample_us_);
     const float sample_dt_s = batch_dt_s / static_cast<float>(valid_packets);
 
     status = ProcessTemperature(fifo_decoded_batch_, valid_packets, sample);
