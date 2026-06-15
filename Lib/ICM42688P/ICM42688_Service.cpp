@@ -8,6 +8,11 @@
 #include "main.h"
 #include "scheduler.h"
 
+// ============================================================================
+// 编译开关和 Service 参数
+// ============================================================================
+
+// 驱动运行期完整 sample 输出默认关闭，避免阻塞式串口输出影响 FIFO 消费。
 #define ICM42688_RUNTIME_SAMPLE_PRINT_ENABLE 0
 
 enum
@@ -20,33 +25,53 @@ enum
 
 namespace
 {
+// ============================================================================
+// 唯一 ICM42688P 实例与 Service 状态
+// ============================================================================
+
+// ICM42688P 需要在构造时绑定 SPI 和 CS，不能默认构造。裸机环境不使用动态
+// 内存，因此在静态存储上通过 placement new 构造全工程唯一的驱动实例。
 alignas(ICM42688P) uint8_t icm42688_storage[sizeof(ICM42688P)]{};
 ICM42688P *icm42688 = nullptr;
+
+// bound 表示 C++ 对象已经构造并绑定 SPI/CS；started 表示 Init() 已成功，
+// 驱动生命周期状态机已经启动，可以由 Update() 继续推进。
 bool icm42688_bound = false;
 bool icm42688_started = false;
-static uint8_t icm42688_running = 0u;
-static uint32_t icm42688_last_init_service_tick = 0u;
-static uint32_t icm42688_next_init_tick = 0u;
-static uint32_t icm42688_last_debug_service_tick = 0u;
-static uint32_t icm42688_last_print_tick = 0u;
+uint8_t icm42688_running = 0u;
+uint32_t icm42688_last_init_service_tick = 0u;
+uint32_t icm42688_next_init_tick = 0u;
+uint32_t icm42688_last_debug_service_tick = 0u;
+uint32_t icm42688_last_print_tick = 0u;
 ICM42688P::Status icm42688_last_status = ICM42688P::Status::Ok;
-static uint8_t icm42688_service_polling = 0u;
+uint8_t icm42688_service_polling = 0u;
 
-static uint8_t TickReached(const uint32_t now, const uint32_t target)
+// ============================================================================
+// 通用小工具函数
+// ============================================================================
+
+// 使用有符号差值处理 uint32_t 毫秒计数回绕。
+uint8_t TickReached(const uint32_t now, const uint32_t target)
 {
     return (uint8_t)((int32_t)(now - target) >= 0);
 }
 
-static void SetLed(const GPIO_PinState red,
-                   const GPIO_PinState green,
-                   const GPIO_PinState blue)
+void SetLed(const GPIO_PinState red,
+            const GPIO_PinState green,
+            const GPIO_PinState blue)
 {
     HAL_GPIO_WritePin(RGB_R_GPIO_Port, RGB_R_Pin, red);
     HAL_GPIO_WritePin(RGB_G_GPIO_Port, RGB_G_Pin, green);
     HAL_GPIO_WritePin(RGB_B_GPIO_Port, RGB_B_Pin, blue);
 }
 
-static void ServiceInit(const uint32_t now)
+// ============================================================================
+// 初始化流程
+// ============================================================================
+
+// 只负责唯一对象的构造和 Init() 启动流程。底层 RESET、CONFIGURE、FIFO_READ
+// 等硬件生命周期仍由 ICM42688P::RunImpl() 在后续 Update() 调用中推进。
+void ServiceInit(const uint32_t now)
 {
     if (icm42688_started
         || !TickReached(now, icm42688_next_init_tick)) {
@@ -78,7 +103,13 @@ static void ServiceInit(const uint32_t now)
     SetLed(GPIO_PIN_RESET, GPIO_PIN_RESET, GPIO_PIN_SET);
 }
 
-static void Update(void)
+// ============================================================================
+// 周期更新与状态指示
+// ============================================================================
+
+// 推进底层驱动状态机，并根据最新 sample 的 configured 状态和调用结果更新
+// running 标志与 RGB LED。该函数不实现任何寄存器或 FIFO 处理逻辑。
+void Update()
 {
     if (!icm42688_started || icm42688 == nullptr) {
         return;
@@ -118,7 +149,12 @@ static void Update(void)
     }
 }
 
-static void PrintLatest(void)
+// ============================================================================
+// 可选调试输出
+// ============================================================================
+
+// 输出完整 sample 摘要。编译开关默认关闭，以免阻塞式 printf 影响高频 FIFO。
+void PrintLatest()
 {
 #if ICM42688_RUNTIME_SAMPLE_PRINT_ENABLE == 0
     return;
@@ -171,6 +207,12 @@ static void PrintLatest(void)
 
 } // namespace
 
+// ============================================================================
+// 对外 Service 接口
+// ============================================================================
+
+// ISR 路径只把 MCU 微秒时间戳交给驱动，并向 scheduler 投递事件。这里不读
+// SPI、不打印、不延时；实际 FIFO 处理发生在普通上下文中的 Run() 调用内。
 void icm42688_service::NotifyDataReadyFromISR(const uint64_t timestamp_us)
 {
     if (icm42688 != nullptr) {
@@ -180,6 +222,8 @@ void icm42688_service::NotifyDataReadyFromISR(const uint64_t timestamp_us)
     Scheduler_PostHighPriorityEventFromISR(SCHED_HP_EVENT_IMU_DRDY);
 }
 
+// Service 的统一执行入口。驱动尚未启动时按固定节拍尝试构造和 Init；启动后
+// 调用 Update() 推进 RunImpl，并按既有节拍进入默认关闭的调试输出路径。
 void icm42688_service::Run()
 {
     if (icm42688_service_polling != 0u) {
@@ -189,8 +233,6 @@ void icm42688_service::Run()
     icm42688_service_polling = 1u;
     const uint32_t now = TimeBase_Millis();
 
-    // Bare-metal scheduler adapter only: binding, startup indication and the
-    // periodic call live here; the hardware lifecycle stays in RunImpl().
     if (!icm42688_started) {
         if (TickReached(now,
                         icm42688_last_init_service_tick
@@ -215,6 +257,7 @@ void icm42688_service::Run()
     icm42688_service_polling = 0u;
 }
 
+// 返回底层完整 Sample 缓存，供需要完整状态和原始/物理量数据的调用者使用。
 ICM42688P::Status icm42688_service::GetLatest(ICM42688P::Sample *sample)
 {
     if (!icm42688_bound || !icm42688_started || icm42688 == nullptr || sample == nullptr) {
@@ -224,6 +267,8 @@ ICM42688P::Status icm42688_service::GetLatest(ICM42688P::Sample *sample)
     return icm42688->GetLatest(*sample);
 }
 
+// 从完整 Sample 中提取积分增量和调试所需字段。与 GetLatest() 一样只读取
+// 已有缓存，不触发 SPI，也不在驱动内部维护“已消费”状态。
 ICM42688P::Status icm42688_service::GetDeltaLatest(DeltaSample *sample)
 {
     if (sample == nullptr) {
