@@ -204,6 +204,7 @@ ICM42688P::Status ICM42688P::Configure()
     configured_ = false;
     latest_.configured = false;
 
+    // 1. 先配置 Bank1 中的陀螺仪 AAF / notch 等高级滤波参数。
     for (const auto& config : register_bank1_cfg_) {
         const Status status = RegisterSetAndClearBits(config);
 
@@ -212,6 +213,7 @@ ICM42688P::Status ICM42688P::Configure()
         }
     }
 
+    // 2. 再配置 Bank2 中的加速度计 AAF 参数。
     for (const auto& config : register_bank2_cfg_) {
         const Status status = RegisterSetAndClearBits(config);
 
@@ -220,6 +222,8 @@ ICM42688P::Status ICM42688P::Configure()
         }
     }
 
+    // 3. 配置 Bank0 中除 FIFO_CONFIG1 和 PWR_MGMT0 以外的控制寄存器。
+    //    FIFO_CONFIG1 需要在 watermark 配置完成后写入，PWR_MGMT0 需要最后写入以启动传感器。
     const register_bank0_config_t* fifo_config1 = nullptr;
     const register_bank0_config_t* power_config = nullptr;
 
@@ -249,27 +253,32 @@ ICM42688P::Status ICM42688P::Configure()
         return Status::ConfigMismatch;
     }
 
+    // 4. 单独配置 FIFO watermark。当前 watermark 已通过实板验证。
     Status status = ConfigureFIFOWatermark(FIFO_WATERMARK_BYTES);
 
     if (status != Status::Ok) {
         return status;
     }
 
+    // 5. 启用 FIFO 数据包类型。在 watermark 之后写入，避免 FIFO 先启动而 watermark 尚未就绪。
     status = RegisterSetAndClearBits(*fifo_config1);
 
     if (status != Status::Ok) {
         return status;
     }
 
+    // 6. 最后写入 PWR_MGMT0，使能 gyro/accel 工作模式；这是传感器真正启动的边界。
     status = RegisterSetAndClearBits(*power_config);
 
     if (status != Status::Ok) {
         return status;
     }
 
+    // 7. 等待传感器完成模式切换和启动。
     HAL_Delay(ICM42688P_Regs::SENSOR_MODE_CHANGE_WAIT_MS);
     HAL_Delay(ICM42688P_Regs::SENSOR_STARTUP_WAIT_MS);
 
+    // 8. 按配置表回读校验寄存器，与 PX4 Configure() 的配置后检查思路一致。
     for (const auto& config : register_bank1_cfg_) {
         status = RegisterCheck(config);
 
