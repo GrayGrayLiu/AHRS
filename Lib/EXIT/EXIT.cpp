@@ -8,7 +8,7 @@
 #include "TimeBase.h"
 #include "main.h"
 
-void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+extern "C" void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
     if (GPIO_Pin == IMU_INT1_Pin)
     {
