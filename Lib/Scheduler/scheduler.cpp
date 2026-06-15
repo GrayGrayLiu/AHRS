@@ -3,11 +3,10 @@
 //
 
 #include "scheduler.h"
-#include "ICM42688_Service.h"
+#include "ICM42688_Service.hpp"
 #include "TimeBase.h"
 
 #include <stdio.h>
-#include "ICM42688_API.h"
 
 namespace
 {
@@ -31,7 +30,7 @@ typedef struct
 
 static const sched_hp_handler_entry_t scheduler_hp_handlers[] =
 {
-    {SCHED_HP_EVENT_IMU_DRDY, ICM42688_ServiceRun},
+    {SCHED_HP_EVENT_IMU_DRDY, icm42688_service::Run},
 };
 
 static const uint8_t SCHED_HP_HANDLER_NUM =
@@ -95,12 +94,12 @@ static void Scheduler_HighPriorityPoll(void)
 static uint32_t imu_last_sample_counter = 0;
 void Print_ICM42688_Delta_Debug(void)
 {
-    ICM42688_DeltaSample imu = {0};
+    icm42688_service::DeltaSample imu{};
 
-    ICM42688_Status status = ICM42688_GetDeltaLatest(&imu);
+    const ICM42688P::Status status = icm42688_service::GetDeltaLatest(&imu);
 
-    if (status != ICM42688_STATUS_OK) {
-        printf("[imu] st=%d\r\n", (int)status);
+    if (status != ICM42688P::Status::Ok) {
+        printf("[imu] st=%d\r\n", static_cast<int>(status));
         return;
     }
 
@@ -142,7 +141,7 @@ void Print_ICM42688_Delta_Debug(void)
 
 static void Loop_1000Hz(void) //1ms执行一次
 {
-    ICM42688_ServiceRun();
+    icm42688_service::Run();
 }
 
 static void Loop_500Hz(void) //2ms执行一次

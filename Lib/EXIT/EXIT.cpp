@@ -4,7 +4,7 @@
 
 #include "EXIT.h"
 
-#include "ICM42688_Service.h"
+#include "ICM42688_Service.hpp"
 #include "TimeBase.h"
 #include "main.h"
 
@@ -12,7 +12,7 @@ extern "C" void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
     if (GPIO_Pin == IMU_INT1_Pin)
     {
-        ICM42688_ServiceNotifyDataReadyFromISR(TimeBase_Micros());
+        icm42688_service::NotifyDataReadyFromISR(TimeBase_Micros());
     }
 
     // if(GPIO_Pin == TILT_ORIGIN_POINT_Pin)
