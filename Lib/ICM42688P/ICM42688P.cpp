@@ -400,14 +400,27 @@ ICM42688P::Status ICM42688P::Update()
     return RunImpl();
 }
 
-// 裸机版 PX4 风格驱动生命周期中心。Service 的高优先级事件路径和 1 kHz
-// 周期兜底路径都只负责提供执行机会，具体状态转换统一在这里完成。
+/**
+ * @brief  执行 ICM42688P driver 内部状态机（PX4 风格 5 态）
+ * @retval Status::Ok          成功读取并处理一次 FIFO batch
+ * @retval Status::NoData      当前状态无需继续处理或暂无 data-ready 事件
+ * @retval Status::InvalidArgument driver 尚未初始化
+ * @retval 其他状态表示 reset、配置、FIFO 或 SPI 访问阶段失败
+ *
+ * @details
+ * Service 层只提供高优先级事件路径和 1 kHz 周期兜底执行机会；
+ * 具体 reset、configure、FIFO reset 和 FIFO read 状态转换均在本函数内完成。
+ * next_run_ms_ 只表达“下一次允许运行的时间”，并不主动唤醒代码；
+ * data-ready pending 可使 FIFO_READ 跳过该毫秒延时门限。
+ */
 ICM42688P::Status ICM42688P::RunImpl()
 {
+    // 1. 检查 driver 是否已初始化。
     if (!initialized_) {
         return Status::InvalidArgument;
     }
 
+    // 2. 判断当前是否由 data-ready 事件触发，或是否到达调度时间。
     const uint32_t now = TimeBase_Millis();
     const bool data_ready_scheduled =
         state_ == DriverState::FIFO_READ && data_ready_pending_ != 0u;
@@ -416,9 +429,11 @@ ICM42688P::Status ICM42688P::RunImpl()
         return Status::NoData;
     }
 
-    // next_run_ms_ 只表达“下一次允许运行的时间”，并不主动唤醒代码；实际调用
-    // 仍来自 Service。data-ready pending 可使 FIFO_READ 跳过该毫秒延时门限。
     switch (state_) {
+
+    // ========================================================================
+    // RESET：清空运行状态并发送 soft reset 命令。
+    // ========================================================================
     case DriverState::RESET: {
         configured_ = false;
         latest_.configured = false;
@@ -429,6 +444,7 @@ ICM42688P::Status ICM42688P::RunImpl()
             BANK0::DEVICE_CONFIG,
             static_cast<uint8_t>(ICM42688P_Regs::DEVICE_CONFIG_BITS::SOFT_RESET_CONFIG));
 
+        // reset 命令发送失败时，延时后重试。
         if (status != Status::Ok) {
             ++error_count_;
             ++failure_count_;
@@ -437,6 +453,7 @@ ICM42688P::Status ICM42688P::RunImpl()
             return status;
         }
 
+        // reset 命令已发出，转入 WAIT_FOR_RESET 等待复位完成。
         bank_selected_valid_ = false;
         reset_timestamp_ms_ = now;
         state_ = DriverState::WAIT_FOR_RESET;
@@ -445,9 +462,13 @@ ICM42688P::Status ICM42688P::RunImpl()
         return Status::NoData;
     }
 
+    // ========================================================================
+    // WAIT_FOR_RESET：轮询 reset done 和 WHO_AM_I 直到复位完成或超时。
+    // ========================================================================
     case DriverState::WAIT_FOR_RESET: {
         const Status status = WaitForReset();
 
+        // reset 完成后进入配置阶段。
         if (status == Status::Ok) {
             state_ = DriverState::CONFIGURE;
             last_status_ = Status::NoData;
@@ -455,6 +476,7 @@ ICM42688P::Status ICM42688P::RunImpl()
             return Status::NoData;
         }
 
+        // reset 超时或 WHO_AM_I 错误时回到 RESET。
         if ((now - reset_timestamp_ms_) > DRIVER_RESET_TIMEOUT_MS) {
             ++error_count_;
             ++failure_count_;
@@ -470,11 +492,15 @@ ICM42688P::Status ICM42688P::RunImpl()
             ++error_count_;
         }
 
+        // 未完成复位，安排下一次检查。
         last_status_ = status;
         ScheduleDelayed(now, RESET_CHECK_INTERVAL_MS);
         return Status::NoData;
     }
 
+    // ========================================================================
+    // CONFIGURE：写入传感器配置并校验中断寄存器。
+    // ========================================================================
     case DriverState::CONFIGURE: {
         Status status = Configure();
 
@@ -482,6 +508,7 @@ ICM42688P::Status ICM42688P::RunImpl()
             status = ConfigureInterrupt();
         }
 
+        // 配置成功后进入 FIFO_RESET，准备清空 FIFO。
         if (status == Status::Ok) {
             state_ = DriverState::FIFO_RESET;
             last_status_ = Status::NoData;
@@ -489,6 +516,7 @@ ICM42688P::Status ICM42688P::RunImpl()
             return Status::NoData;
         }
 
+        // 配置失败时按失败次数或超时策略决定是否重新 reset。
         ++error_count_;
         ++failure_count_;
         configured_ = false;
@@ -504,6 +532,9 @@ ICM42688P::Status ICM42688P::RunImpl()
         return status;
     }
 
+    // ========================================================================
+    // FIFO_RESET：刷新 FIFO 并清空跨 batch 积分状态。
+    // ========================================================================
     case DriverState::FIFO_RESET: {
         const Status status = FIFOReset();
 
@@ -520,6 +551,7 @@ ICM42688P::Status ICM42688P::RunImpl()
             return status;
         }
 
+        // FIFO reset 成功后进入正常 FIFO_READ 状态。
         configured_ = true;
         latest_.configured = true;
         failure_count_ = 0u;
@@ -529,11 +561,15 @@ ICM42688P::Status ICM42688P::RunImpl()
         return Status::NoData;
     }
 
+    // ========================================================================
+    // FIFO_READ：等待 data-ready 事件并处理一次 FIFO batch。
+    // ========================================================================
     case DriverState::FIFO_READ: {
         uint64_t timestamp_sample_us{};
 
         // 中断只锁存事件和时间戳。SPI 访问及 FIFO 处理始终留在普通上下文的
         // FIFO_READ 状态中执行。
+        // 没有 data-ready 事件时，只安排 watchdog 兜底调度。
         if (!ConsumeDataReady(timestamp_sample_us)) {
             ScheduleDelayed(now, FIFO_WATCHDOG_INTERVAL_MS);
             return Status::NoData;
@@ -542,6 +578,7 @@ ICM42688P::Status ICM42688P::RunImpl()
         ScheduleDelayed(now, FIFO_WATCHDOG_INTERVAL_MS);
         const Status status = FIFORead(timestamp_sample_us);
 
+        // 读取成功时降低失败计数，失败过多时触发 Reset()。
         if (status == Status::Ok) {
             if (failure_count_ > 0u) {
                 --failure_count_;
@@ -562,6 +599,7 @@ ICM42688P::Status ICM42688P::RunImpl()
     }
     }
 
+    // 理论上不会到达；保留兜底错误返回。
     return Status::InvalidArgument;
 }
 
