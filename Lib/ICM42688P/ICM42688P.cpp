@@ -717,12 +717,24 @@ ICM42688P::Status ICM42688P::FIFOReadCount(uint16_t& count_bytes)
     return count_bytes < FIFO_PACKET_SIZE ? Status::NoData : Status::Ok;
 }
 
+/**
+ * @brief  读取 FIFO 数据并解码为当前 batch
+ * @param  requested_packets 调用方期望读取的 FIFO packet 数
+ * @param  valid_packets 成功解码的有效 FIFO packet 数（输出参数）
+ * @retval Status::Ok          成功读取并至少解码一个 packet
+ * @retval Status::NoData      FIFO 中无可处理 packet
+ * @retval Status::SpiError    SPI 传输失败
+ * @retval Status::FifoOverflow FIFO 溢出，已执行 FIFOReset
+ * @retval Status::BadFifoPacket FIFO header 校验或解码失败，已执行 FIFOReset
+ */
 ICM42688P::Status ICM42688P::FIFOReadData(const uint16_t requested_packets,
                                           uint16_t& valid_packets)
 {
+    // 1. 清空本次 batch 的输出计数和解码计数。
     valid_packets = 0u;
     fifo_decoded_count_ = 0u;
 
+    // 2. 检查请求 packet 数，过大时刷新 FIFO 并返回溢出状态。
     if (requested_packets == 0u) {
         return Status::NoData;
     }
@@ -732,6 +744,7 @@ ICM42688P::Status ICM42688P::FIFOReadData(const uint16_t requested_packets,
         return reset_status == Status::Ok ? Status::FifoOverflow : reset_status;
     }
 
+    // 3. 计算 SPI burst 传输长度，并确保当前处于 Bank0。
     const uint16_t data_bytes = static_cast<uint16_t>(requested_packets * FIFO_PACKET_SIZE);
     const uint16_t transfer_length = static_cast<uint16_t>(
         ICM42688P_Regs::SPI_COMMAND_LENGTH + FIFO_TRANSFER_PREFIX_BYTES + data_bytes);
@@ -741,12 +754,14 @@ ICM42688P::Status ICM42688P::FIFOReadData(const uint16_t requested_packets,
         return bank_status;
     }
 
+    // 4. 组装 FIFO burst read 传输缓冲区。
     fifo_tx_buf_[0] = static_cast<uint8_t>(BANK0::INT_STATUS)
                     | ICM42688P_Regs::SPI_READ_BIT;
     memset(&fifo_tx_buf_[ICM42688P_Regs::SPI_COMMAND_LENGTH],
            ICM42688P_Regs::SPI_DUMMY_BYTE,
            static_cast<size_t>(transfer_length - ICM42688P_Regs::SPI_COMMAND_LENGTH));
 
+    // 5. 执行一次阻塞式 SPI burst 读，读取 INT_STATUS、FIFO count 和 FIFO data。
     CS_Low();
     const HAL_StatusTypeDef hal_status = HAL_SPI_TransmitReceive(
         hspi_,
@@ -760,6 +775,7 @@ ICM42688P::Status ICM42688P::FIFOReadData(const uint16_t requested_packets,
         return Status::SpiError;
     }
 
+    // 6. 根据 INT_STATUS 和 FIFO count 检查 FIFO 溢出或空数据。
     const uint8_t int_status = fifo_rx_buf_[FIFO_RX_INT_STATUS_INDEX];
     const uint16_t fifo_count_bytes = static_cast<uint16_t>(
         (static_cast<uint16_t>(fifo_rx_buf_[FIFO_RX_COUNT_HIGH_INDEX]) << 8u)
@@ -772,6 +788,7 @@ ICM42688P::Status ICM42688P::FIFOReadData(const uint16_t requested_packets,
         return reset_status == Status::Ok ? Status::FifoOverflow : reset_status;
     }
 
+    // 7. 限制本次实际处理的 packet 数。
     const uint16_t available_packets = static_cast<uint16_t>(fifo_count_bytes / FIFO_PACKET_SIZE);
 
     if (available_packets == 0u) {
@@ -787,6 +804,7 @@ ICM42688P::Status ICM42688P::FIFOReadData(const uint16_t requested_packets,
         ? requested_packets
         : available_packets;
 
+    // 8. 逐 packet 拷贝、校验 header、解码并写入 batch 缓存。
     for (uint16_t index = 0u; index < packets_to_process; ++index) {
         ICM42688P_Regs::FIFO::DATA packet{};
         const size_t packet_offset = static_cast<size_t>(FIFO_RX_DATA_INDEX)
@@ -811,6 +829,7 @@ ICM42688P::Status ICM42688P::FIFOReadData(const uint16_t requested_packets,
         ++valid_packets;
     }
 
+    // 9. 更新本次 batch 的解码统计。
     fifo_decoded_count_ = valid_packets;
     last_fifo_valid_packets_ = valid_packets;
     return valid_packets == 0u ? Status::NoData : Status::Ok;
