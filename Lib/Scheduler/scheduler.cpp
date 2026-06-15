@@ -3,6 +3,7 @@
 //
 
 #include "scheduler.h"
+
 #include "ICM42688_Service.hpp"
 #include "TimeBase.h"
 
@@ -10,65 +11,61 @@
 
 namespace
 {
-// App initialization section.
-static void Scheduler_AppSetup()
+// ============================================================================
+// 应用层初始化区域
+// ============================================================================
+
+// 应用层初始化入口。这里用于组织未来的应用模块初始化，不属于调度器自身
+// 的任务表初始化；Scheduler_Setup() 会在调度器准备完成后调用该入口。
+void Scheduler_AppSetup()
 {
-    // Application-layer initialization hook.
+    // 当前没有需要集中初始化的应用模块。
 }
 
-// High-priority / event-driven scheduler section.
-//全局事件位图，每一位代表一种高优先级事件，事件定义在定义在 scheduler.h
-static volatile uint32_t scheduler_hp_events = 0u;
+// ============================================================================
+// 响应式 / 高优先级事件调度区域
+// ============================================================================
 
-typedef void (*sched_hp_handler_t)(void);
+// 高优先级事件位图。ISR 或 ISR adapter 只负责置位事件，不直接执行驱动、
+// SPI 或其他耗时逻辑；实际处理统一由主循环中的 HighPriorityPoll() 完成。
+volatile uint32_t scheduler_hp_events = 0u;
 
-typedef struct
+using sched_hp_handler_t = void (*)(void);
+
+struct sched_hp_handler_entry_t
 {
     uint32_t event;
     sched_hp_handler_t handler;
-} sched_hp_handler_entry_t;
+};
 
-static const sched_hp_handler_entry_t scheduler_hp_handlers[] =
+// 静态事件处理表用于把事件位映射到普通上下文中的处理函数。后续新增响应式
+// 事件时只需扩展表项，不需要把分发器重新改成多段硬编码判断。
+const sched_hp_handler_entry_t scheduler_hp_handlers[] =
 {
     {SCHED_HP_EVENT_IMU_DRDY, icm42688_service::Run},
 };
 
-static const uint8_t SCHED_HP_HANDLER_NUM =
-    (uint8_t)(sizeof(scheduler_hp_handlers) / sizeof(scheduler_hp_handlers[0]));
-}
+constexpr uint8_t SCHED_HP_HANDLER_NUM =
+    static_cast<uint8_t>(sizeof(scheduler_hp_handlers) / sizeof(scheduler_hp_handlers[0]));
 
-//事件投递函数，通常由 ISR 或 ISR-adapter 调用,把对应事件位设置为 1
-extern "C" void Scheduler_PostHighPriorityEventFromISR(const uint32_t event)
-{
-    const uint32_t primask = __get_PRIMASK();
-    __disable_irq();
-    scheduler_hp_events |= event;
-    __set_PRIMASK(primask);
-}
-
-namespace
-{
-//取出并清空事件位图
-static uint32_t Scheduler_TakeHighPriorityEvents(void)
+// 原子地取出并清空事件位图。临界区保证“读取 + 清零”不可被 ISR 插入，
+// 避免刚到达的事件在主循环清零位图时丢失。
+uint32_t Scheduler_TakeHighPriorityEvents()
 {
     const uint32_t primask = __get_PRIMASK();
     __disable_irq();
 
-    //读取当前有哪些高优先级事件
     const uint32_t events = scheduler_hp_events;
-
-    //把事件位图清零
     scheduler_hp_events = 0u;
 
-    //返回刚刚取出的 events
     __set_PRIMASK(primask);
     return events;
 }
 
-//高优先级事件分发器
-static void Scheduler_HighPriorityPoll(void)
+// 在普通上下文中分发高优先级事件。函数内部的静态 polling 标志用于防止
+// 事件 handler 间接触发调度器时发生嵌套分发；它具有状态保持语义，不能移除。
+void Scheduler_HighPriorityPoll()
 {
-    //通过polling变量防重入
     static uint8_t polling = 0u;
 
     if (polling != 0u) {
@@ -76,11 +73,8 @@ static void Scheduler_HighPriorityPoll(void)
     }
 
     polling = 1u;
-
-    //取出当前所有 high-priority events
     const uint32_t events = Scheduler_TakeHighPriorityEvents();
 
-    //根据静态注册表把事件分发到对应模块的 service run 函数
     for (uint8_t index = 0u; index < SCHED_HP_HANDLER_NUM; ++index) {
         if ((events & scheduler_hp_handlers[index].event) != 0u) {
             scheduler_hp_handlers[index].handler();
@@ -90,9 +84,16 @@ static void Scheduler_HighPriorityPoll(void)
     polling = 0u;
 }
 
-// Periodic polling scheduler section.
-static uint32_t imu_last_sample_counter = 0;
-void Print_ICM42688_Delta_Debug(void)
+// ============================================================================
+// 周期轮询任务调度区域
+// ============================================================================
+
+// 记录最近一次已打印的 IMU sample counter，避免 1 Hz 调试任务重复打印同一批数据。
+uint32_t imu_last_sample_counter = 0u;
+
+// 1 Hz IMU delta 调试输出，用于观察 FIFO batch 的积分结果和实测 delta time。
+// 该函数只读取 Service 缓存，不直接访问 SPI，也不参与驱动运行状态机。
+void Print_ICM42688_Delta_Debug()
 {
     icm42688_service::DeltaSample imu{};
 
@@ -104,7 +105,7 @@ void Print_ICM42688_Delta_Debug(void)
     }
 
     if (imu.sample_counter == imu_last_sample_counter) {
-        return; // 没有新数据，不重复打印
+        return; // 没有新数据时不重复打印。
     }
 
     imu_last_sample_counter = imu.sample_counter;
@@ -139,73 +140,73 @@ void Print_ICM42688_Delta_Debug(void)
            imu.temperature_deg_c);
 }
 
-static void Loop_1000Hz(void) //1ms执行一次
+void Loop_1000Hz() // 每 1 ms 执行一次。
 {
+    // 周期 backup 路径与 EXTI 高优先级事件共用同一个 Service 入口。
+    // 即使事件通知暂时缺失，也能持续推进 IMU 初始化和 watchdog 状态机。
     icm42688_service::Run();
 }
 
-static void Loop_500Hz(void) //2ms执行一次
+void Loop_500Hz() // 每 2 ms 执行一次。
 {
 }
 
-static void Loop_250Hz(void) //4ms执行一次
+void Loop_250Hz() // 每 4 ms 执行一次。
 {
 }
 
-static void Loop_200Hz(void) //5ms执行一次
+void Loop_200Hz() // 每 5 ms 执行一次。
 {
 }
 
-static void Loop_100Hz(void) //10ms执行一次
+void Loop_100Hz() // 每 10 ms 执行一次。
 {
 }
 
-static void Loop_50Hz(void) //20ms执行一次
+void Loop_50Hz() // 每 20 ms 执行一次。
 {
 }
 
-static void Loop_20Hz(void) //50ms执行一次
+void Loop_20Hz() // 每 50 ms 执行一次。
 {
 }
 
-static void Loop_10Hz(void) //100ms执行一次
+void Loop_10Hz() // 每 100 ms 执行一次。
 {
 }
 
-static void Loop_5Hz(void) //200ms执行一次
+void Loop_5Hz() // 每 200 ms 执行一次。
 {
 }
 
-static void Loop_4Hz(void) //250ms执行一次
+void Loop_4Hz() // 每 250 ms 执行一次。
 {
 }
 
-static void Loop_2Hz(void) //500ms执行一次
+void Loop_2Hz() // 每 500 ms 执行一次。
 {
 }
 
-static void Loop_1Hz(void) //1000ms执行一次
+void Loop_1Hz() // 每 1000 ms 执行一次。
 {
     Print_ICM42688_Delta_Debug();
 }
 
-static void Loop_0_5Hz(void) //2s执行一次
+void Loop_0_5Hz() // 每 2 s 执行一次。
 {
 }
 
-static void Loop_0_2Hz(void) //5s执行一次
+void Loop_0_2Hz() // 每 5 s 执行一次。
 {
 }
 
-static void Loop_0_1Hz(void) //10s执行一次
+void Loop_0_1Hz() // 每 10 s 执行一次。
 {
 }
 
-//////////////////////////////////////////////////////////////////////
-//调度器初始化
-//////////////////////////////////////////////////////////////////////
-//系统任务配置，创建不同执行频率的“线程”
-static sched_task_t sched_tasks[] =
+// 周期任务静态配置表。rate_hz 和任务顺序属于当前调度行为，本轮保持不变；
+// Scheduler_Setup() 根据频率计算 interval_ticks。
+sched_task_t sched_tasks[] =
 {
     {Loop_1000Hz, 1000, 0, 0},
     {Loop_500Hz, 500, 0, 0},
@@ -223,18 +224,26 @@ static sched_task_t sched_tasks[] =
     {Loop_0_2Hz, 0.2f, 0, 0},
     {Loop_0_1Hz, 0.1f, 0, 0},
 };
-//根据数组长度，判断线程数量
-#define TASK_NUM (sizeof(sched_tasks) / sizeof(sched_task_t))
+
+constexpr size_t TASK_NUM = sizeof(sched_tasks) / sizeof(sched_tasks[0]);
+} // namespace
+
+// 供 ISR 或 ISR adapter 调用：仅原子置位事件，不在中断上下文执行 handler。
+extern "C" void Scheduler_PostHighPriorityEventFromISR(const uint32_t event)
+{
+    const uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    scheduler_hp_events |= event;
+    __set_PRIMASK(primask);
 }
 
+// 调度器初始化负责计算周期任务的 tick 间隔；Scheduler_AppSetup() 则是独立的
+// 应用层初始化扩展点，两者职责不同。
 extern "C" void Scheduler_Setup(void)
 {
-    uint8_t index = 0;
-    //初始化任务表
-    for (index = 0; index < TASK_NUM; index++) {
-        //计算每个任务的延时周期数
+    for (size_t index = 0u; index < TASK_NUM; ++index) {
         sched_tasks[index].interval_ticks = TICK_PER_SECOND / sched_tasks[index].rate_hz;
-        //最短周期为1，也就是1ms
+
         if (sched_tasks[index].interval_ticks < 1) {
             sched_tasks[index].interval_ticks = 1;
         }
@@ -243,24 +252,20 @@ extern "C" void Scheduler_Setup(void)
     Scheduler_AppSetup();
 }
 
-//这个函数放到main函数的while(1)中，不停判断是否有线程应该执行
+// cooperative 主循环入口：在遍历周期任务前、任务检查前以及任务执行前后插入
+// 高优先级事件服务点，使 ISR 投递的事件尽快在普通上下文得到处理。周期任务仍按
+// TimeBase_Millis() 和 interval_ticks 判断是否到期，原有调度顺序保持不变。
 extern "C" void Scheduler_Run(void)
 {
-    uint8_t index = 0;
     Scheduler_HighPriorityPoll();
-    //循环判断所有线程，是否应该执行
 
-    for (index = 0; index < TASK_NUM; index++) {
+    for (size_t index = 0u; index < TASK_NUM; ++index) {
         Scheduler_HighPriorityPoll();
-        //获取系统当前时间，单位MS
-        uint32_t tnow = TimeBase_Millis();
-        //进行判断，如果当前时间减去上一次执行的时间，大于等于该线程的执行周期，则执行线程
-        if (tnow - sched_tasks[index].last_run >= sched_tasks[index].interval_ticks) {
+        const uint32_t t_now = TimeBase_Millis();
 
-            //更新线程的执行时间，用于下一次判断
-            sched_tasks[index].last_run = tnow;
+        if (t_now - sched_tasks[index].last_run >= sched_tasks[index].interval_ticks) {
+            sched_tasks[index].last_run = t_now;
             Scheduler_HighPriorityPoll();
-            //执行线程函数，使用的是函数指针
             sched_tasks[index].task_func();
             Scheduler_HighPriorityPoll();
         }
