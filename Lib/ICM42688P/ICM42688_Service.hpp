@@ -31,15 +31,29 @@ struct DeltaSample
     float temperature_deg_c{0.0F};
 };
 
-// ISR 通知入口：记录 data-ready 时间戳并投递高优先级调度事件。
+/**
+ * @brief  EXTI ISR 桥接入口：记录 data-ready 时间戳并投递高优先级调度事件
+ * @param  timestamp_us ISR 时刻的 MCU 微秒时间戳
+ *
+ * @note   本函数在 ISR 上下文中调用，仅转发时间戳和投递事件，不执行 SPI 访问。
+ */
 void NotifyDataReadyFromISR(uint64_t timestamp_us);
 
-// 统一 Service 执行入口：负责初始化节流、驱动状态机推进和可选调试输出。
+/**
+ * @brief  统一 Service 执行入口：负责初始化节流、驱动状态机推进和可选调试输出
+ *
+ * @note   由 Scheduler 的高优先级事件路径和 1 kHz 周期兜底路径共用。
+ *         驱动未启动时按固定节拍尝试构造和 Init，启动后调用 Update() 推进 RunImpl。
+ */
 void Run();
 
-// 读取驱动缓存中的完整最新 sample，不访问 SPI。
+/**
+ * @brief  读取驱动缓存中的完整最新 Sample，不访问 SPI
+ */
 [[nodiscard]] ICM42688P::Status GetLatest(ICM42688P::Sample *sample);
 
-// 读取适合低频调试输出的最新 delta 数据，不访问 SPI且不消费 sample。
+/**
+ * @brief  从完整 Sample 中提取积分增量和调试所需字段，不访问 SPI 且不消费缓存
+ */
 [[nodiscard]] ICM42688P::Status GetDeltaLatest(DeltaSample *sample);
 } // namespace icm42688_service

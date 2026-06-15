@@ -31,14 +31,26 @@ typedef struct
 extern "C" {
 #endif
 
-// 初始化调度器自身，包括根据任务频率计算各周期任务的 interval_ticks。
+/**
+ * @brief  初始化调度器，根据各周期任务频率计算 interval_ticks
+ */
 void Scheduler_Setup(void);
 
-// cooperative 调度入口，应在 main 的 while (1) 中反复调用；负责分发
-// 高优先级事件并检查、执行到期的周期轮询任务。
+/**
+ * @brief  cooperative 调度入口，在 main while(1) 中反复调用
+ *
+ * @note   负责分发高优先级事件并遍历周期任务表。
+ *         在每次任务检查前后插入 Scheduler_HighPriorityPoll()，
+ *         使 ISR 投递的事件尽快在普通上下文得到处理。
+ */
 void Scheduler_Run(void);
 
-// 由 ISR 或 ISR adapter 调用，仅向高优先级事件位图置位，不直接执行 handler。
+/**
+ * @brief  ISR 级事件投递入口：原子置位高优先级事件，不直接执行 handler
+ * @param  event 高优先级事件位（如 SCHED_HP_EVENT_IMU_DRDY）
+ *
+ * @note   仅操作位图，不在 ISR 上下文执行 SPI、FIFO 或 printf。
+ */
 void Scheduler_PostHighPriorityEventFromISR(uint32_t event);
 
 #ifdef __cplusplus

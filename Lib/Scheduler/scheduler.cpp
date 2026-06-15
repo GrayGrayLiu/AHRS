@@ -228,7 +228,13 @@ sched_task_t sched_tasks[] =
 constexpr size_t TASK_NUM = sizeof(sched_tasks) / sizeof(sched_tasks[0]);
 } // namespace
 
-// 供 ISR 或 ISR adapter 调用：仅原子置位事件，不在中断上下文执行 handler。
+/**
+ * @brief  ISR 级事件投递入口：原子置位高优先级事件位图
+ * @param  event 高优先级事件位（如 SCHED_HP_EVENT_IMU_DRDY）
+ *
+ * @note   仅操作位图，不在 ISR 上下文执行 SPI、FIFO 或 printf。
+ *         实际处理由 Scheduler_HighPriorityPoll() 在普通上下文中完成。
+ */
 extern "C" void Scheduler_PostHighPriorityEventFromISR(const uint32_t event)
 {
     const uint32_t primask = __get_PRIMASK();
@@ -237,8 +243,11 @@ extern "C" void Scheduler_PostHighPriorityEventFromISR(const uint32_t event)
     __set_PRIMASK(primask);
 }
 
-// 调度器初始化负责计算周期任务的 tick 间隔；Scheduler_AppSetup() 则是独立的
-// 应用层初始化扩展点，两者职责不同。
+/**
+ * @brief  初始化调度器：计算周期任务 tick 间隔，并调用应用层初始化入口
+ *
+ * @note   Scheduler_AppSetup() 是独立的应用层初始化扩展点，与调度器自身设置分离。
+ */
 extern "C" void Scheduler_Setup(void)
 {
     for (size_t index = 0u; index < TASK_NUM; ++index) {
@@ -252,9 +261,13 @@ extern "C" void Scheduler_Setup(void)
     Scheduler_AppSetup();
 }
 
-// cooperative 主循环入口：在遍历周期任务前、任务检查前以及任务执行前后插入
-// 高优先级事件服务点，使 ISR 投递的事件尽快在普通上下文得到处理。周期任务仍按
-// TimeBase_Millis() 和 interval_ticks 判断是否到期，原有调度顺序保持不变。
+/**
+ * @brief  cooperative 主循环入口，在 main while(1) 中反复调用
+ *
+ * @note   在每次任务检查前后插入 Scheduler_HighPriorityPoll()，
+ *         使 ISR 投递的 IMU data-ready 事件尽快在普通上下文得到处理。
+ *         周期任务按 TimeBase_Millis() + interval_ticks 判断是否到期。
+ */
 extern "C" void Scheduler_Run(void)
 {
     Scheduler_HighPriorityPoll();

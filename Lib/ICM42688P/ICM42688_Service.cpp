@@ -211,8 +211,13 @@ void PrintLatest()
 // 对外 Service 接口
 // ============================================================================
 
-// ISR 路径只把 MCU 微秒时间戳交给驱动，并向 scheduler 投递事件。这里不读
-// SPI、不打印、不延时；实际 FIFO 处理发生在普通上下文中的 Run() 调用内。
+/**
+ * @brief  EXTI ISR 桥接入口：将 MCU 时间戳转发到 driver 并投递高优先级事件
+ * @param  timestamp_us ISR 时刻的 MCU 微秒时间戳
+ *
+ * @note   本函数在 ISR 上下文中调用，不读 SPI、不打印、不延时。
+ *         实际 FIFO 处理发生在普通上下文中的 Run() → Update() 链路内。
+ */
 void icm42688_service::NotifyDataReadyFromISR(const uint64_t timestamp_us)
 {
     if (icm42688 != nullptr) {
@@ -222,8 +227,13 @@ void icm42688_service::NotifyDataReadyFromISR(const uint64_t timestamp_us)
     Scheduler_PostHighPriorityEventFromISR(SCHED_HP_EVENT_IMU_DRDY);
 }
 
-// Service 的统一执行入口。驱动尚未启动时按固定节拍尝试构造和 Init；启动后
-// 调用 Update() 推进 RunImpl，并按既有节拍进入默认关闭的调试输出路径。
+/**
+ * @brief  Service 统一执行入口
+ *
+ * @note   由 Scheduler 的高优先级事件路径和 1 kHz 周期兜底路径共用。
+ *         驱动尚未启动时按固定节拍尝试构造和 Init；启动后调用 Update()
+ *         推进 RunImpl，并按既有节拍进入默认关闭的调试输出路径。
+ */
 void icm42688_service::Run()
 {
     if (icm42688_service_polling != 0u) {
@@ -257,7 +267,9 @@ void icm42688_service::Run()
     icm42688_service_polling = 0u;
 }
 
-// 返回底层完整 Sample 缓存，供需要完整状态和原始/物理量数据的调用者使用。
+/**
+ * @brief  只读返回 driver 最新完整 Sample 缓存，不访问 SPI
+ */
 ICM42688P::Status icm42688_service::GetLatest(ICM42688P::Sample *sample)
 {
     if (!icm42688_bound || !icm42688_started || icm42688 == nullptr || sample == nullptr) {
@@ -267,8 +279,9 @@ ICM42688P::Status icm42688_service::GetLatest(ICM42688P::Sample *sample)
     return icm42688->GetLatest(*sample);
 }
 
-// 从完整 Sample 中提取积分增量和调试所需字段。与 GetLatest() 一样只读取
-// 已有缓存，不触发 SPI，也不在驱动内部维护“已消费”状态。
+/**
+ * @brief  从完整 Sample 中提取积分增量和调试字段，只读缓存、不访问 SPI
+ */
 ICM42688P::Status icm42688_service::GetDeltaLatest(DeltaSample *sample)
 {
     if (sample == nullptr) {
