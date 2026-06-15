@@ -296,11 +296,12 @@ private:
     void CS_Low() const;
     void CS_High() const;
 
-    // SPI 总线与片选绑定信息。
+    // ── SPI 总线与片选绑定（构造时初始化，必须保持为前三个非静态成员） ──
     SPI_HandleTypeDef* hspi_;
     GPIO_TypeDef* cs_port_;
     uint16_t cs_pin_;
 
+    // ── 寄存器访问 SPI 收发缓冲区 ──
     uint8_t tx_buf_[ICM42688P_Regs::MAX_READ_LENGTH + ICM42688P_Regs::SPI_COMMAND_LENGTH]{};
     uint8_t rx_buf_[ICM42688P_Regs::MAX_READ_LENGTH + ICM42688P_Regs::SPI_COMMAND_LENGTH]{};
 
@@ -329,6 +330,7 @@ private:
     static_assert(FIFO_WATERMARK_PACKETS == 20u && FIFO_WATERMARK_BYTES == 400u,
                   "400 Hz FIFO output requires a 20-packet, 400-byte watermark");
 
+    // ── FIFO 批量 SPI 读写缓冲区 ──
     uint8_t fifo_tx_buf_[FIFO_TRANSFER_BUFFER_SIZE]{};
     uint8_t fifo_rx_buf_[FIFO_TRANSFER_BUFFER_SIZE]{};
 
@@ -450,37 +452,53 @@ private:
 			static_cast<uint8_t>(ACCEL_CONFIG_STATIC4_BITS::ACCEL_AAF_BITSHIFT_MASK | ACCEL_CONFIG_STATIC4_BITS::ACCEL_AAF_DELTSQR_11_8_MASK)},
 	};
 
-    // 驱动生命周期与调度状态。initialized_ 表示状态机已启动；configured_ 只有
-    // CONFIGURE 和 FIFO_RESET 成功后才为 true。
+    // ── 状态机与生命周期 ──
+    // initialized_ 在 Init() 成功后为 true；configured_ 在 CONFIGURE + FIFO_RESET
+    // 均成功后为 true。
     bool initialized_{false};
     bool configured_{false};
-    volatile DriverState state_{DriverState::RESET};
-    Status last_status_{Status::Ok};
-    uint32_t failure_count_{0};
-    uint32_t reset_timestamp_ms_{0};
-    // 裸机版 ScheduleDelayed()/ScheduleNow() 的目标时间，单位 ms。
+    volatile DriverState state_{DriverState::RESET};  // PX4 风格 5 态
+    Status last_status_{Status::Ok};                  // RunImpl() 最新返回码
+
+    // ── 调度节拍与错误计数 ──
+    // next_run_ms_ 为 ScheduleDelayed() / ScheduleNow() 的目标时间，data-ready
+    // pending 可使其在 FIFO_READ 下被跳过。
     volatile uint32_t next_run_ms_{0};
-    uint32_t sample_count_{0};
-    uint32_t error_count_{0};
-    Sample latest_{};
-    FifoDecodedSample fifo_last_decoded_{};
+    uint32_t failure_count_{0};                        // 连续失败计数，超阈值触发 Reset
+    uint32_t reset_timestamp_ms_{0};                   // RESET 状态起始时间戳
+    uint32_t sample_count_{0};                         // 累计成功输出 FIFO sample 数
+    uint32_t error_count_{0};                          // 驱动层累计错误计数
+
+    // ── 最新输出样本缓存 ──
+    Sample latest_{};  // GetLatest() / GetDeltaLatest() 只读访问
+
+    // ── FIFO 解码 batch 缓存 ──
+    FifoDecodedSample fifo_last_decoded_{};            // 最近解码的单个 sample
     FifoDecodedSample fifo_decoded_batch_[FIFO_MAX_PACKETS_PER_UPDATE]{};
-    uint16_t fifo_decoded_count_{0u};
+    uint16_t fifo_decoded_count_{0u};                  // 当前 batch 成功解码 packet 数
+    uint16_t last_fifo_count_bytes_{0};                // 最近一次 FIFO 计数值（字节）
+    uint16_t last_fifo_valid_packets_{0};              // 最近一次有效 packet 数
+
+    // ── 跨 batch 梯形积分状态 ──
+    // 保存上一批末尾 sample 的 effective 值，当前 batch 到达时构成 0.5 边界权重。
     bool accel_last_effective_valid_{false};
     bool gyro_last_effective_valid_{false};
     int32_t accel_last_effective_[3]{};
     int32_t gyro_last_effective_[3]{};
-    uint16_t last_fifo_count_bytes_{0};
-    uint16_t last_fifo_valid_packets_{0};
-    // 相邻成功 data-ready 的 MCU 时间戳用于计算实测 batch dt。FIFO packet 内部
-    // timestamp 仅保存在 Sample::fifo_timestamp 中用于观察，不参与主积分时间。
+
+    // ── 实测 batch dt 时间戳基准 ──
+    // 相邻成功 data-ready 的 MCU 微秒时间戳，用于 ComputeBatchDeltaTimeSeconds()。
+    // FIFO packet 内部 timestamp 不参与此计算。
     uint64_t last_fifo_timestamp_sample_us_{0u};
     bool last_fifo_timestamp_sample_valid_{false};
-    // ISR 与普通上下文之间的最小事件桥接状态。DataReady() 写入，RunImpl() 的
-    // FIFO_READ 状态通过 ConsumeDataReady() 原子消费。
-    volatile uint8_t data_ready_pending_{0u};
-    volatile uint32_t data_ready_interrupt_count_{0u};
-    volatile uint64_t last_data_ready_timestamp_us_{0u};
+
+    // ── ISR data-ready 事件桥接状态 ──
+    // DataReady() (ISR) 写入，ConsumeDataReady() (普通上下文) 原子消费。
+    volatile uint8_t data_ready_pending_{0u};              // 待处理标志
+    volatile uint32_t data_ready_interrupt_count_{0u};     // 累计中断次数
+    volatile uint64_t last_data_ready_timestamp_us_{0u};   // 最近一次 data-ready 时间戳
+
+    // ── 寄存器 bank 选择缓存 ──
     bool bank_selected_valid_{false};
     ICM42688P_Regs::REG_BANK_SEL_BITS current_bank_{ICM42688P_Regs::REG_BANK_SEL_BITS::BANK_SEL_0};
 };
