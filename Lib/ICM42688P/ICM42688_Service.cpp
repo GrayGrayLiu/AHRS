@@ -175,13 +175,13 @@ static void PrintLatest(void)
            gyro_z_milli);
 }
 
-void ICM42688_ServiceNotifyDataReadyFromISR(const uint64_t timestamp_us)
+extern "C" void ICM42688_ServiceNotifyDataReadyFromISR(const uint64_t timestamp_us)
 {
     ICM42688_OnDataReadyInterrupt(timestamp_us);
     Scheduler_PostHighPriorityEventFromISR(SCHED_HP_EVENT_IMU_DRDY);
 }
 
-void ICM42688_ServiceRun(void)
+extern "C" void ICM42688_ServiceRun(void)
 {
     if (icm42688_service_polling != 0u) {
         return;
