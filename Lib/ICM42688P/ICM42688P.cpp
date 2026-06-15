@@ -238,10 +238,6 @@ ICM42688P::Status ICM42688P::Configure()
             continue;
         }
 
-        if (!ShouldApplyFifoInterruptConfig(config.reg)) {
-            continue;
-        }
-
         const Status status = RegisterSetAndClearBits(config);
 
         if (status != Status::Ok) {
@@ -296,10 +292,6 @@ ICM42688P::Status ICM42688P::Configure()
     }
 
     for (const auto& config : register_bank0_cfg_) {
-        if (!ShouldApplyFifoInterruptConfig(config.reg)) {
-            continue;
-        }
-
         status = RegisterCheck(config);
 
         if (status != Status::Ok) {

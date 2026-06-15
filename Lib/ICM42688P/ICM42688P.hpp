@@ -230,12 +230,6 @@ private:
     {
         return (value & mask) == (set_bits & mask);
     }
-    [[nodiscard]] static constexpr bool ShouldApplyFifoInterruptConfig(
-        ICM42688P_Regs::RegsAdd::BANK0 reg)
-    {
-        (void)reg;
-        return true;
-    }
     [[nodiscard]] static constexpr bool IsInterruptConfigRegister(
         ICM42688P_Regs::RegsAdd::BANK0 reg)
     {
