@@ -427,6 +427,12 @@ ICM42688P::Status ICM42688P::FIFOReset()
     return Status::Ok;
 }
 
+ICM42688P::Status ICM42688P::ResetFifoAndReturn(const Status status_after_successful_reset)
+{
+    const Status reset_status = FIFOReset();
+    return reset_status == Status::Ok ? status_after_successful_reset : reset_status;
+}
+
 ICM42688P::Status ICM42688P::Update()
 {
     return RunImpl();
@@ -832,8 +838,7 @@ ICM42688P::Status ICM42688P::FIFOReadData(const uint16_t requested_packets,
     }
 
     if (requested_packets > FIFO_MAX_PACKETS_PER_UPDATE) {
-        const Status reset_status = FIFOReset();
-        return reset_status == Status::Ok ? Status::FifoOverflow : reset_status;
+        return ResetFifoAndReturn(Status::FifoOverflow);
     }
 
     // 3. 计算 SPI burst 传输长度，并确保当前处于 Bank0。
@@ -876,8 +881,7 @@ ICM42688P::Status ICM42688P::FIFOReadData(const uint16_t requested_packets,
 
     if ((int_status & static_cast<uint8_t>(ICM42688P_Regs::INT_STATUS_BITS::FIFO_FULL_INT)) != 0u
         || fifo_count_bytes >= ICM42688P_Regs::FIFO::SIZE) {
-        const Status reset_status = FIFOReset();
-        return reset_status == Status::Ok ? Status::FifoOverflow : reset_status;
+        return ResetFifoAndReturn(Status::FifoOverflow);
     }
 
     // 7. 限制本次实际处理的 packet 数。
@@ -888,8 +892,7 @@ ICM42688P::Status ICM42688P::FIFOReadData(const uint16_t requested_packets,
     }
 
     if (available_packets > FIFO_MAX_PACKETS_PER_UPDATE) {
-        const Status reset_status = FIFOReset();
-        return reset_status == Status::Ok ? Status::FifoOverflow : reset_status;
+        return ResetFifoAndReturn(Status::FifoOverflow);
     }
 
     const uint16_t packets_to_process = requested_packets < available_packets
@@ -904,16 +907,14 @@ ICM42688P::Status ICM42688P::FIFOReadData(const uint16_t requested_packets,
         memcpy(&packet, &fifo_rx_buf_[packet_offset], sizeof(packet));
 
         if (!IsValidFifoHeader(packet.FIFO_Header)) {
-            const Status reset_status = FIFOReset();
-            return reset_status == Status::Ok ? Status::BadFifoPacket : reset_status;
+            return ResetFifoAndReturn(Status::BadFifoPacket);
         }
 
         FifoDecodedSample decoded{};
         const Status decode_status = DecodeFifoPacket(packet, decoded);
 
         if (decode_status != Status::Ok) {
-            const Status reset_status = FIFOReset();
-            return reset_status == Status::Ok ? decode_status : reset_status;
+            return ResetFifoAndReturn(decode_status);
         }
 
         fifo_decoded_batch_[valid_packets] = decoded;
