@@ -88,6 +88,11 @@ ICM42688P::ICM42688P(SPI_HandleTypeDef* hspi,
 {
 }
 
+/**
+ * @brief  初始化 driver 软件状态，进入 RESET 等待硬件初始化
+ * @retval Status::Ok              driver 已准备好由 RunImpl() 推进状态机
+ * @retval Status::InvalidArgument  SPI 总线无效
+ */
 ICM42688P::Status ICM42688P::Init()
 {
     if (!HasValidBus()) {
@@ -119,6 +124,11 @@ ICM42688P::Status ICM42688P::Init()
     return Status::Ok;
 }
 
+/**
+ * @brief  读取 WHO_AM_I 寄存器验证芯片型号
+ * @retval Status::Ok              芯片型号匹配 ICM42688P
+ * @retval 其他状态表示 SPI、寄存器或设备 ID 错误
+ */
 ICM42688P::Status ICM42688P::Probe()
 {
     if (!HasValidBus()) {
@@ -143,6 +153,11 @@ ICM42688P::Status ICM42688P::Probe()
         : Status::WrongDeviceId;
 }
 
+/**
+ * @brief  将 driver 状态机重新置于 RESET，真正的 SPI soft reset 由 RunImpl() 执行
+ * @retval Status::Ok              状态机已复位，等待下次 RunImpl() 调度
+ * @retval Status::InvalidArgument  SPI 总线无效
+ */
 ICM42688P::Status ICM42688P::Reset()
 {
     if (!HasValidBus()) {
@@ -160,6 +175,12 @@ ICM42688P::Status ICM42688P::Reset()
     return Status::Ok;
 }
 
+/**
+ * @brief  轮询 WHO_AM_I、DEVICE_CONFIG 和 INT_STATUS，确认 soft reset 完成
+ * @retval Status::Ok reset 完成
+ * @retval Status::NoData 仍需等待
+ * @retval 其他状态表示 SPI 访问失败或 WHO_AM_I 不匹配
+ */
 ICM42688P::Status ICM42688P::WaitForReset()
 {
     uint8_t who_am_i{};
@@ -302,6 +323,12 @@ ICM42688P::Status ICM42688P::Configure()
     return Status::Ok;
 }
 
+/**
+ * @brief  配置 FIFO watermark 阈值并回读校验
+ * @param  watermark_bytes FIFO watermark 字节数
+ * @retval Status::Ok  watermark 配置成功
+ * @retval 其他状态表示参数无效或 SPI/配置校验失败
+ */
 ICM42688P::Status ICM42688P::ConfigureFIFOWatermark(const uint16_t watermark_bytes)
 {
     constexpr uint16_t maximum_watermark{0x0FFFu};
@@ -368,6 +395,11 @@ ICM42688P::Status ICM42688P::ConfigureInterrupt()
     return Status::Ok;
 }
 
+/**
+ * @brief  发送 FIFO FLUSH 指令并清空软件侧 FIFO 相关缓存和积分状态
+ * @retval Status::Ok  FIFO 已刷新
+ * @retval 其他状态表示 SPI 写入失败
+ */
 ICM42688P::Status ICM42688P::FIFOReset()
 {
     const Status status = RegisterWrite(
@@ -749,6 +781,13 @@ void ICM42688P::PopulateFifoSampleMetadata(Sample& sample,
     sample.last_interrupt_timestamp_ms = timestamp_sample_ms;
 }
 
+/**
+ * @brief  读取 FIFO 字节计数，溢出时自动执行 FIFOReset
+ * @param  count_bytes FIFO 中当前字节数（输出参数）
+ * @retval Status::Ok      FIFO 中至少有一个完整 packet
+ * @retval Status::NoData  FIFO 数据不足一个 packet
+ * @retval 其他状态表示 SPI 读取错误或 FIFO 溢出
+ */
 ICM42688P::Status ICM42688P::FIFOReadCount(uint16_t& count_bytes)
 {
     uint8_t count_buffer[2]{};
@@ -888,6 +927,15 @@ ICM42688P::Status ICM42688P::FIFOReadData(const uint16_t requested_packets,
     return valid_packets == 0u ? Status::NoData : Status::Ok;
 }
 
+/**
+ * @brief  对单个 FIFO packet 做 20-bit 重组、坐标变换、标定和温度提取
+ * @param  packet  FIFO RAW 20 字节 packet
+ * @param  decoded 输出解码结果（20-bit raw、effective、16-bit、物理量、温度等）
+ * @retval Status::Ok            解码成功
+ * @retval Status::BadFifoPacket  FIFO header 校验失败
+ *
+ * @note   坐标变换：X、Z 取反，Y 保持不变，将芯片坐标系转换到目标机体系。
+ */
 ICM42688P::Status ICM42688P::DecodeFifoPacket(
     const ICM42688P_Regs::FIFO::DATA& packet,
     FifoDecodedSample& decoded) const
@@ -958,6 +1006,14 @@ ICM42688P::Status ICM42688P::DecodeFifoPacket(
     return Status::Ok;
 }
 
+/**
+ * @brief  对 FIFO batch 中多个 sample 的温度做平均并填入输出 Sample
+ * @param  samples     已解码的 FIFO sample 数组
+ * @param  sample_count sample 数量
+ * @param  output      输出 Sample，仅写入 temperature_deg_c 和 temp_raw
+ * @retval Status::Ok               温度计算成功
+ * @retval Status::InvalidArgument  参数无效
+ */
 ICM42688P::Status ICM42688P::ProcessTemperature(
     const FifoDecodedSample samples[],
     const uint16_t sample_count,
@@ -1250,15 +1306,26 @@ ICM42688P::Status ICM42688P::GetLatest(Sample& sample) const
     return Status::Ok;
 }
 
+/**
+ * @brief  ISR 通知入口：锁存 MCU 时间戳、置 pending、累计中断次数
+ * @param  timestamp_us 当前中断时刻的 MCU 微秒时间戳
+ *
+ * @note   本函数在 ISR 上下文中执行，不访问 SPI、不读 FIFO。
+ *         实际处理由 RunImpl() 的 FIFO_READ 状态在普通上下文中完成。
+ */
 void ICM42688P::DataReady(const uint64_t timestamp_us)
 {
-    // ISR 路径只保存最后一次 MCU 时间戳、置 pending 并累计中断次数。
-    // 实际 SPI/FIFO 读取由 RunImpl() 的 FIFO_READ 状态完成。
     last_data_ready_timestamp_us_ = timestamp_us;
     ++data_ready_interrupt_count_;
     data_ready_pending_ = 1u;
 }
 
+/**
+ * @brief  在普通上下文中原子消费 ISR 置位的 data-ready pending 标志
+ * @param  timestamp_sample_us 最近一次 data-ready 的 MCU 时间戳（输出参数）
+ * @retval true  有 pending 事件已消费
+ * @retval false 无 pending 事件
+ */
 bool ICM42688P::ConsumeDataReady(uint64_t& timestamp_sample_us)
 {
     const uint32_t primask = __get_PRIMASK();
