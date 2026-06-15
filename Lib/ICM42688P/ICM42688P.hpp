@@ -43,9 +43,14 @@ struct register_bank2_config_t
     uint8_t mask{0};
 };
 
+// ICM42688P 底层驱动类。
+//
+// 本类负责 SPI 寄存器访问、PX4 风格生命周期状态机、FIFO batch 解码与惯性
+// 增量计算；scheduler 调度、应用层 LED 和调试输出由 ICM42688 Service 负责。
 class ICM42688P
 {
 public:
+    // 驱动内部及对外统一使用的状态码。
     enum class Status : int32_t
     {
         Ok = 0,
@@ -102,17 +107,20 @@ public:
     ICM42688P(SPI_HandleTypeDef* hspi,
               GPIO_TypeDef* cs_port, uint16_t cs_pin);
 
-    // Start the bare-metal driver state machine. Hardware reset and configuration
-    // are advanced by Update(), matching the lifecycle of the PX4 driver.
+    // 启动裸机驱动状态机。Init() 只初始化软件状态并进入 RESET，硬件 reset、
+    // configure 和 FIFO 启动由外部后续调用 Update() 时通过 RunImpl() 推进。
     [[nodiscard]] Status Init();
     [[nodiscard]] Status Probe();
-    // Restart the asynchronous lifecycle at RESET; RunImpl performs the SPI reset.
+    // 重新把异步生命周期置于 RESET；真正的 SPI soft reset 仍由 RunImpl() 执行。
     [[nodiscard]] Status Reset();
+    // 唯一运行入口，Service 的响应式事件和周期兜底路径最终都调用该函数。
     [[nodiscard]] Status Update();
+    // ISR 通知入口：只记录 data-ready 时间戳和 pending，不执行 SPI/FIFO 读取。
     void DataReady(uint64_t timestamp_us);
+    // 拷贝最新有效缓存，不访问 SPI，也不消费 sample。
     [[nodiscard]] Status GetLatest(Sample& sample) const;
 
-    // Debug/bring-up accessors. These are not part of the primary FIFO run path.
+    // 硬件调试和初期联调访问接口，不属于正常 FIFO 主运行链路。
     [[nodiscard]] Status RegisterRead(ICM42688P_Regs::RegsAdd::BANK0 reg, uint8_t& value);
     [[nodiscard]] Status RegisterWrite(ICM42688P_Regs::RegsAdd::BANK0 reg, uint8_t value);
     [[nodiscard]] Status ReadBuffer(ICM42688P_Regs::RegsAdd::BANK0 start_reg,
@@ -122,8 +130,7 @@ public:
     [[nodiscard]] Status ReadRawGyro(RawVector& data);
 
 private:
-    // Bare-metal equivalents of the PX4 RESET, WAIT_FOR_RESET, CONFIGURE,
-    // FIFO_RESET and FIFO_READ work-queue states.
+    // 裸机版 PX4 生命周期状态：RunImpl() 在外部提供运行机会时逐步推进这些状态。
     enum class DriverState : uint8_t
     {
         RESET,
@@ -195,6 +202,8 @@ private:
     {
         return static_cast<int32_t>(now - target) >= 0;
     }
+    // ScheduleNow/ScheduleDelayed 不是 RTOS 或工作队列调度，只更新驱动内部
+    // 下一次允许执行的毫秒时间。真正的运行机会始终由 Service::Run() 提供。
     void ScheduleNow(uint32_t now)
     {
         next_run_ms_ = now;
@@ -288,6 +297,7 @@ private:
     void CS_Low() const;
     void CS_High() const;
 
+    // SPI 总线与片选绑定信息。
     SPI_HandleTypeDef* hspi_;
     GPIO_TypeDef* cs_port_;
     uint16_t cs_pin_;
@@ -295,6 +305,7 @@ private:
     uint8_t tx_buf_[ICM42688P_Regs::MAX_READ_LENGTH + ICM42688P_Regs::SPI_COMMAND_LENGTH]{};
     uint8_t rx_buf_[ICM42688P_Regs::MAX_READ_LENGTH + ICM42688P_Regs::SPI_COMMAND_LENGTH]{};
 
+    // FIFO 数据链路固定参数与传输缓冲区布局。
     static constexpr uint16_t FIFO_PACKET_SIZE{sizeof(ICM42688P_Regs::FIFO::DATA)};
     static constexpr uint16_t FIFO_ODR_HZ{8000u};
     static constexpr float FIFO_SAMPLE_DT_S{1.0F / static_cast<float>(FIFO_ODR_HZ)};
@@ -440,15 +451,15 @@ private:
 			static_cast<uint8_t>(ACCEL_CONFIG_STATIC4_BITS::ACCEL_AAF_BITSHIFT_MASK | ACCEL_CONFIG_STATIC4_BITS::ACCEL_AAF_DELTSQR_11_8_MASK)},
 	};
 
-    // initialized_ means the driver lifecycle has started. configured_ becomes
-    // true only after CONFIGURE and FIFO_RESET complete successfully.
+    // 驱动生命周期与调度状态。initialized_ 表示状态机已启动；configured_ 只有
+    // CONFIGURE 和 FIFO_RESET 成功后才为 true。
     bool initialized_{false};
     bool configured_{false};
     volatile DriverState state_{DriverState::RESET};
     Status last_status_{Status::Ok};
     uint32_t failure_count_{0};
     uint32_t reset_timestamp_ms_{0};
-    // Bare-metal replacement for PX4 ScheduleDelayed()/ScheduleNow().
+    // 裸机版 ScheduleDelayed()/ScheduleNow() 的目标时间，单位 ms。
     volatile uint32_t next_run_ms_{0};
     uint32_t sample_count_{0};
     uint32_t error_count_{0};
@@ -462,8 +473,12 @@ private:
     int32_t gyro_last_effective_[3]{};
     uint16_t last_fifo_count_bytes_{0};
     uint16_t last_fifo_valid_packets_{0};
+    // 相邻成功 data-ready 的 MCU 时间戳用于计算实测 batch dt。FIFO packet 内部
+    // timestamp 仅保存在 Sample::fifo_timestamp 中用于观察，不参与主积分时间。
     uint64_t last_fifo_timestamp_sample_us_{0u};
     bool last_fifo_timestamp_sample_valid_{false};
+    // ISR 与普通上下文之间的最小事件桥接状态。DataReady() 写入，RunImpl() 的
+    // FIFO_READ 状态通过 ConsumeDataReady() 原子消费。
     volatile uint8_t data_ready_pending_{0u};
     volatile uint32_t data_ready_interrupt_count_{0u};
     volatile uint64_t last_data_ready_timestamp_us_{0u};

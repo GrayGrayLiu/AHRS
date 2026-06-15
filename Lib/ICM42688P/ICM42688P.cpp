@@ -25,6 +25,10 @@ using ICM42688P_Regs::RegsAdd::BANK2;
 
 namespace
 {
+// ============================================================================
+// 物理量换算、状态机节拍和实测 batch dt 合理性范围
+// ============================================================================
+
 constexpr float STANDARD_GRAVITY_M_S2{9.80665F};
 constexpr float DEG_TO_RAD{0.01745329251994329577F};
 constexpr float TEMPERATURE_SENSITIVITY_LSB_PER_DEG_C{132.48F};
@@ -39,6 +43,10 @@ constexpr float MICROSECONDS_TO_SECONDS{1.0e-6F};
 constexpr float MEASURED_BATCH_DT_MIN_RATIO{0.5F};
 constexpr float MEASURED_BATCH_DT_MAX_RATIO{2.0F};
 }
+
+// ============================================================================
+// 对象构造与生命周期入口
+// ============================================================================
 
 ICM42688P::ICM42688P(SPI_HandleTypeDef* hspi,
                      GPIO_TypeDef* cs_port, uint16_t cs_pin)
@@ -301,8 +309,8 @@ ICM42688P::Status ICM42688P::ConfigureFIFOWatermark(const uint16_t watermark_byt
 
 ICM42688P::Status ICM42688P::ConfigureInterrupt()
 {
-    // CubeMX/HAL owns the EXTI edge configuration. This verifies the sensor-side
-    // INT register configuration and resets the software event latch.
+    // EXTI 边沿触发由 CubeMX/HAL 配置；这里仅校验传感器侧 INT 寄存器配置，
+    // 并清空软件侧 data-ready 事件锁存状态。
     for (const auto& config : register_bank0_cfg_) {
         if (!IsInterruptConfigRegister(config.reg)) {
             continue;
@@ -357,6 +365,8 @@ ICM42688P::Status ICM42688P::Update()
     return RunImpl();
 }
 
+// 裸机版 PX4 风格驱动生命周期中心。Service 的高优先级事件路径和 1 kHz
+// 周期兜底路径都只负责提供执行机会，具体状态转换统一在这里完成。
 ICM42688P::Status ICM42688P::RunImpl()
 {
     if (!initialized_) {
@@ -371,8 +381,8 @@ ICM42688P::Status ICM42688P::RunImpl()
         return Status::NoData;
     }
 
-    // Bare-metal equivalent of PX4 RunImpl(): next_run_ms_ replaces the work
-    // queue's ScheduleNow/ScheduleDelayed timing while Service calls us at 1 kHz.
+    // next_run_ms_ 只表达“下一次允许运行的时间”，并不主动唤醒代码；实际调用
+    // 仍来自 Service。data-ready pending 可使 FIFO_READ 跳过该毫秒延时门限。
     switch (state_) {
     case DriverState::RESET: {
         configured_ = false;
@@ -487,8 +497,8 @@ ICM42688P::Status ICM42688P::RunImpl()
     case DriverState::FIFO_READ: {
         uint64_t timestamp_sample_us{};
 
-        // The interrupt only latches an event. SPI and FIFO processing remain
-        // in this normal-context PX4-style FIFO_READ state.
+        // 中断只锁存事件和时间戳。SPI 访问及 FIFO 处理始终留在普通上下文的
+        // FIFO_READ 状态中执行。
         if (!ConsumeDataReady(timestamp_sample_us)) {
             ScheduleDelayed(now, FIFO_WATCHDOG_INTERVAL_MS);
             return Status::NoData;
@@ -510,8 +520,8 @@ ICM42688P::Status ICM42688P::RunImpl()
             }
         }
 
-        // TODO: add PX4-style periodic configuration checking without moving
-        // register recovery policy into the Service or scheduler layers.
+        // TODO: 后续可增加类似 PX4 的周期性配置检查，但寄存器恢复策略仍应留在
+        // driver 层，不应移动到 Service 或 Scheduler。
         last_status_ = status;
         return status;
     }
@@ -522,6 +532,8 @@ ICM42688P::Status ICM42688P::RunImpl()
 
 ICM42688P::Status ICM42688P::FIFORead(const uint64_t timestamp_sample_us)
 {
+    // 一次 FIFORead 读取并解码完整 batch，处理温度、角增量和速度增量，最后
+    // 更新 latest_。任何失败路径都不会推进成功 batch 的 dt 基准时间戳。
     const uint32_t timestamp_sample_ms =
         static_cast<uint32_t>(timestamp_sample_us / 1000u);
     uint16_t fifo_count_bytes{};
@@ -577,6 +589,9 @@ ICM42688P::Status ICM42688P::FIFORead(const uint64_t timestamp_sample_us)
 
     Sample sample{};
     sample.delta_samples = valid_packets;
+    // 首个成功 batch 使用名义 ODR。后续优先使用相邻成功 data-ready 的 MCU
+    // 时间差；如果实测值超出名义值 0.5~2.0 倍，则回退名义 dt，避免异常中断
+    // 间隔污染积分。FIFO 内部 timestamp 不参与这里的主时间计算。
     const float nominal_batch_dt_s = static_cast<float>(valid_packets) * FIFO_SAMPLE_DT_S;
     float batch_dt_s = nominal_batch_dt_s;
 
@@ -800,6 +815,7 @@ ICM42688P::Status ICM42688P::DecodeFifoPacket(
     constexpr float gyro_scale = (1.0F / 131.0F) * DEG_TO_RAD;
 
     for (uint8_t axis = 0u; axis < 3u; ++axis) {
+        // 将芯片默认坐标统一转换到目标机体系：X、Z 取反，Y 保持不变。
         const int32_t axis_sign = AxisSign(axis);
         decoded.accel_raw20[axis] = axis_sign * Reassemble20Bit(
             accel_high[axis], accel_low[axis], accel_extension[axis]);
@@ -856,6 +872,8 @@ ICM42688P::Status ICM42688P::ProcessGyro(
     const float sample_dt_s,
     Sample& output)
 {
+    // 对整个 FIFO batch 做梯形积分，主输出为 delta_angle_rad；平均角速度由
+    // delta_angle / delta_time 派生，不改变原始积分公式。
     if (samples == nullptr || sample_count == 0u
         || sample_count > FIFO_MAX_PACKETS_PER_UPDATE
         || sample_dt_s <= 0.0F) {
@@ -902,6 +920,8 @@ ICM42688P::Status ICM42688P::ProcessAccel(
     const float sample_dt_s,
     Sample& output)
 {
+    // 对整个 FIFO batch 做梯形积分，主输出为机体系比力积分
+    // delta_velocity_m_s；不包含导航系重力补偿或坐标系二次变换。
     if (samples == nullptr || sample_count == 0u
         || sample_count > FIFO_MAX_PACKETS_PER_UPDATE
         || sample_dt_s <= 0.0F) {
@@ -1023,8 +1043,7 @@ ICM42688P::Status ICM42688P::RegisterCheck(const register_bank2_config_t& config
         : Status::ConfigMismatch;
 }
 
-// Bank-aware register and buffer access helpers.
-// The C API also exposes selected accessors for debug/bring-up use.
+// 带 bank 选择的寄存器和缓冲区访问辅助函数。
 ICM42688P::Status ICM42688P::RegisterRead(const BANK0 reg, uint8_t& value)
 {
     const Status status = SelectBank(ICM42688P_Regs::REG_BANK_SEL_BITS::BANK_SEL_0);
@@ -1107,8 +1126,8 @@ ICM42688P::Status ICM42688P::GetLatest(Sample& sample) const
 
 void ICM42688P::DataReady(const uint64_t timestamp_us)
 {
-    // ISR entry: latch only the MCU timestamp and event state. FIFO SPI access
-    // is deferred to RunImpl() in normal context.
+    // ISR 路径只保存最后一次 MCU 时间戳、置 pending 并累计中断次数。
+    // 实际 SPI/FIFO 读取由 RunImpl() 的 FIFO_READ 状态完成。
     last_data_ready_timestamp_us_ = timestamp_us;
     ++data_ready_interrupt_count_;
     data_ready_pending_ = 1u;
