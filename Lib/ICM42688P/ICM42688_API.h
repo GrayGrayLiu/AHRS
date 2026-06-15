@@ -86,9 +86,9 @@ ICM42688_Status ICM42688_ReadRawAccel(ICM42688_RawVector *data);
 ICM42688_Status ICM42688_ReadRawGyro(ICM42688_RawVector *data);
 
 ICM42688_Status ICM42688_Update(void);
+void ICM42688_OnDataReadyInterrupt(uint64_t timestamp_us);
 ICM42688_Status ICM42688_GetLatest(ICM42688_Sample *sample);
 ICM42688_Status ICM42688_GetDeltaLatest(ICM42688_DeltaSample *sample);
-void ICM42688_OnDataReadyInterrupt(uint64_t timestamp_us);
 
 #ifdef __cplusplus
 }

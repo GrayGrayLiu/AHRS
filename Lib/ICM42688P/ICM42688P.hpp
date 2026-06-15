@@ -109,8 +109,8 @@ public:
     // Restart the asynchronous lifecycle at RESET; RunImpl performs the SPI reset.
     [[nodiscard]] Status Reset();
     [[nodiscard]] Status Update();
-    [[nodiscard]] Status GetLatest(Sample& sample) const;
     void DataReady(uint64_t timestamp_us);
+    [[nodiscard]] Status GetLatest(Sample& sample) const;
 
     // Debug/bring-up accessors. These are not part of the primary FIFO run path.
     [[nodiscard]] Status RegisterRead(ICM42688P_Regs::RegsAdd::BANK0 reg, uint8_t& value);
@@ -155,6 +155,7 @@ private:
     [[nodiscard]] Status ConfigureInterrupt();
     [[nodiscard]] Status FIFOReset();
     [[nodiscard]] Status RunImpl();
+    [[nodiscard]] bool ConsumeDataReady(uint64_t& timestamp_sample_us);
     [[nodiscard]] Status FIFORead(uint64_t timestamp_sample_us);
     [[nodiscard]] Status FIFOReadCount(uint16_t& count_bytes);
     [[nodiscard]] Status FIFOReadData(uint16_t requested_packets, uint16_t& valid_packets);
@@ -169,7 +170,6 @@ private:
                                       uint16_t sample_count,
                                       float sample_dt_s,
                                       Sample& output);
-    [[nodiscard]] bool ConsumeDataReady(uint64_t& timestamp_sample_us);
     [[nodiscard]] Status DecodeFifoPacket(const ICM42688P_Regs::FIFO::DATA& packet,
                                           FifoDecodedSample& decoded) const;
     [[nodiscard]] Status RegisterSetAndClearBits(const register_bank0_config_t& config);
@@ -273,6 +273,11 @@ private:
 
         return static_cast<int32_t>(value);
     }
+
+    [[nodiscard]] static constexpr int32_t AxisSign(const uint8_t axis)
+    {
+        return axis == 1u ? 1 : -1;
+    }
     [[nodiscard]] static constexpr int16_t SaturateToInt16(int32_t value)
     {
         return value > 32767 ? static_cast<int16_t>(32767)
@@ -293,10 +298,10 @@ private:
     static constexpr uint16_t FIFO_PACKET_SIZE{sizeof(ICM42688P_Regs::FIFO::DATA)};
     static constexpr uint16_t FIFO_ODR_HZ{8000u};
     static constexpr float FIFO_SAMPLE_DT_S{1.0F / static_cast<float>(FIFO_ODR_HZ)};
-    static constexpr uint16_t FIFO_UPDATE_HZ{100u};
-    static constexpr uint16_t FIFO_EXPECTED_PACKETS_PER_UPDATE{FIFO_ODR_HZ / FIFO_UPDATE_HZ};
+    static constexpr uint16_t FIFO_OUTPUT_RATE_HZ{400u};
+    static constexpr uint16_t FIFO_WATERMARK_PACKETS{FIFO_ODR_HZ / FIFO_OUTPUT_RATE_HZ};
     static constexpr uint16_t FIFO_MAX_PACKETS_PER_UPDATE{96u};
-    static constexpr uint16_t FIFO_WATERMARK_BYTES{1600u};
+    static constexpr uint16_t FIFO_WATERMARK_BYTES{FIFO_WATERMARK_PACKETS * FIFO_PACKET_SIZE};
     static constexpr uint16_t FIFO_TRANSFER_PREFIX_BYTES{3u};
     static constexpr uint16_t FIFO_TRANSFER_DATA_BYTES{
         FIFO_MAX_PACKETS_PER_UPDATE * FIFO_PACKET_SIZE};
@@ -309,6 +314,10 @@ private:
     static constexpr uint16_t FIFO_RX_DATA_INDEX{4u};
     static constexpr uint8_t DATA_SOURCE_FIFO{2u};
     static_assert(FIFO_PACKET_SIZE == 20u, "ICM42688P high-resolution FIFO packet must be 20 bytes");
+    static_assert(FIFO_ODR_HZ % FIFO_OUTPUT_RATE_HZ == 0u,
+                  "FIFO output rate must divide the sensor ODR exactly");
+    static_assert(FIFO_WATERMARK_PACKETS == 20u && FIFO_WATERMARK_BYTES == 400u,
+                  "400 Hz FIFO output requires a 20-packet, 400-byte watermark");
 
     uint8_t fifo_tx_buf_[FIFO_TRANSFER_BUFFER_SIZE]{};
     uint8_t fifo_rx_buf_[FIFO_TRANSFER_BUFFER_SIZE]{};
@@ -453,6 +462,8 @@ private:
     int32_t gyro_last_effective_[3]{};
     uint16_t last_fifo_count_bytes_{0};
     uint16_t last_fifo_valid_packets_{0};
+    uint64_t last_fifo_timestamp_sample_us_{0u};
+    bool last_fifo_timestamp_sample_valid_{false};
     volatile uint8_t data_ready_pending_{0u};
     volatile uint32_t data_ready_interrupt_count_{0u};
     volatile uint64_t last_data_ready_timestamp_us_{0u};

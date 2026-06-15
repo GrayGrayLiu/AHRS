@@ -16,6 +16,7 @@
  ******************************************************************************/
 
 #include "ICM42688P.hpp"
+#include "TimeBase.h"
 #include <cstring>
 
 using ICM42688P_Regs::RegsAdd::BANK0;
@@ -34,6 +35,9 @@ constexpr uint32_t CONFIGURE_RETRY_DELAY_MS{100u};
 constexpr uint32_t DRIVER_RESET_TIMEOUT_MS{1000u};
 constexpr uint32_t FIFO_WATCHDOG_INTERVAL_MS{100u};
 constexpr uint32_t FAILURE_RESET_THRESHOLD{10u};
+constexpr float MICROSECONDS_TO_SECONDS{1.0e-6F};
+constexpr float MEASURED_BATCH_DT_MIN_RATIO{0.5F};
+constexpr float MEASURED_BATCH_DT_MAX_RATIO{2.0F};
 }
 
 ICM42688P::ICM42688P(SPI_HandleTypeDef* hspi,
@@ -56,6 +60,8 @@ ICM42688P::Status ICM42688P::Init()
     fifo_decoded_count_ = 0u;
     accel_last_effective_valid_ = false;
     gyro_last_effective_valid_ = false;
+    last_fifo_timestamp_sample_us_ = 0u;
+    last_fifo_timestamp_sample_valid_ = false;
     data_ready_pending_ = 0u;
     data_ready_interrupt_count_ = 0u;
     last_data_ready_timestamp_us_ = 0u;
@@ -67,7 +73,7 @@ ICM42688P::Status ICM42688P::Init()
     state_ = DriverState::RESET;
     last_status_ = Status::Ok;
     latest_.error_counter = error_count_;
-    ScheduleNow(HAL_GetTick());
+    ScheduleNow(TimeBase_Millis());
     return Status::Ok;
 }
 
@@ -104,9 +110,11 @@ ICM42688P::Status ICM42688P::Reset()
     configured_ = false;
     latest_.configured = false;
     latest_.data_valid = false;
+    last_fifo_timestamp_sample_us_ = 0u;
+    last_fifo_timestamp_sample_valid_ = false;
     initialized_ = true;
     state_ = DriverState::RESET;
-    ScheduleNow(HAL_GetTick());
+    ScheduleNow(TimeBase_Millis());
     return Status::Ok;
 }
 
@@ -312,10 +320,7 @@ ICM42688P::Status ICM42688P::ConfigureInterrupt()
     data_ready_pending_ = 0u;
     data_ready_interrupt_count_ = 0u;
     last_data_ready_timestamp_us_ = 0u;
-
-    if (primask == 0u) {
-        __enable_irq();
-    }
+    __set_PRIMASK(primask);
 
     return Status::Ok;
 }
@@ -331,19 +336,18 @@ ICM42688P::Status ICM42688P::FIFOReset()
     }
 
     HAL_Delay(1u);
+    const uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    data_ready_pending_ = 0u;
+    __set_PRIMASK(primask);
+
     last_fifo_count_bytes_ = 0u;
     last_fifo_valid_packets_ = 0u;
     fifo_decoded_count_ = 0u;
     accel_last_effective_valid_ = false;
     gyro_last_effective_valid_ = false;
-
-    const uint32_t primask = __get_PRIMASK();
-    __disable_irq();
-    data_ready_pending_ = 0u;
-
-    if (primask == 0u) {
-        __enable_irq();
-    }
+    last_fifo_timestamp_sample_us_ = 0u;
+    last_fifo_timestamp_sample_valid_ = false;
 
     return Status::Ok;
 }
@@ -359,12 +363,10 @@ ICM42688P::Status ICM42688P::RunImpl()
         return Status::InvalidArgument;
     }
 
-    const uint32_t now = HAL_GetTick();
+    const uint32_t now = TimeBase_Millis();
     const bool data_ready_scheduled =
         state_ == DriverState::FIFO_READ && data_ready_pending_ != 0u;
 
-    // A pending INT1 event is the bare-metal ScheduleNow equivalent. The ISR
-    // only records the event; RunImpl remains responsible for scheduling work.
     if (!data_ready_scheduled && !TickReached(now, next_run_ms_)) {
         return Status::NoData;
     }
@@ -485,8 +487,8 @@ ICM42688P::Status ICM42688P::RunImpl()
     case DriverState::FIFO_READ: {
         uint64_t timestamp_sample_us{};
 
-        // INT1 only records a timestamp/pending flag. SPI FIFO access remains
-        // in normal context and is skipped when no data-ready event is pending.
+        // The interrupt only latches an event. SPI and FIFO processing remain
+        // in this normal-context PX4-style FIFO_READ state.
         if (!ConsumeDataReady(timestamp_sample_us)) {
             ScheduleDelayed(now, FIFO_WATCHDOG_INTERVAL_MS);
             return Status::NoData;
@@ -575,18 +577,33 @@ ICM42688P::Status ICM42688P::FIFORead(const uint64_t timestamp_sample_us)
 
     Sample sample{};
     sample.delta_samples = valid_packets;
-    sample.delta_time_s = static_cast<float>(valid_packets) * FIFO_SAMPLE_DT_S;
+    const float nominal_batch_dt_s = static_cast<float>(valid_packets) * FIFO_SAMPLE_DT_S;
+    float batch_dt_s = nominal_batch_dt_s;
+
+    if (last_fifo_timestamp_sample_valid_) {
+        const uint64_t measured_batch_dt_us =
+            timestamp_sample_us - last_fifo_timestamp_sample_us_;
+        const float measured_batch_dt_s =
+            static_cast<float>(measured_batch_dt_us) * MICROSECONDS_TO_SECONDS;
+
+        if (measured_batch_dt_s >= nominal_batch_dt_s * MEASURED_BATCH_DT_MIN_RATIO
+            && measured_batch_dt_s <= nominal_batch_dt_s * MEASURED_BATCH_DT_MAX_RATIO) {
+            batch_dt_s = measured_batch_dt_s;
+        }
+    }
+
+    const float sample_dt_s = batch_dt_s / static_cast<float>(valid_packets);
 
     status = ProcessTemperature(fifo_decoded_batch_, valid_packets, sample);
 
     if (status == Status::Ok) {
         status = ProcessGyro(
-            fifo_decoded_batch_, valid_packets, FIFO_SAMPLE_DT_S, sample);
+            fifo_decoded_batch_, valid_packets, sample_dt_s, sample);
     }
 
     if (status == Status::Ok) {
         status = ProcessAccel(
-            fifo_decoded_batch_, valid_packets, FIFO_SAMPLE_DT_S, sample);
+            fifo_decoded_batch_, valid_packets, sample_dt_s, sample);
     }
 
     if (status != Status::Ok) {
@@ -613,6 +630,8 @@ ICM42688P::Status ICM42688P::FIFORead(const uint64_t timestamp_sample_us)
     sample.last_interrupt_timestamp_ms = timestamp_sample_ms;
 
     sample_count_ = sample.sample_counter;
+    last_fifo_timestamp_sample_us_ = timestamp_sample_us;
+    last_fifo_timestamp_sample_valid_ = true;
     latest_ = sample;
     last_status_ = Status::Ok;
     return Status::Ok;
@@ -781,9 +800,10 @@ ICM42688P::Status ICM42688P::DecodeFifoPacket(
     constexpr float gyro_scale = (1.0F / 131.0F) * DEG_TO_RAD;
 
     for (uint8_t axis = 0u; axis < 3u; ++axis) {
-        decoded.accel_raw20[axis] = Reassemble20Bit(
+        const int32_t axis_sign = AxisSign(axis);
+        decoded.accel_raw20[axis] = axis_sign * Reassemble20Bit(
             accel_high[axis], accel_low[axis], accel_extension[axis]);
-        decoded.gyro_raw20[axis] = Reassemble20Bit(
+        decoded.gyro_raw20[axis] = axis_sign * Reassemble20Bit(
             gyro_high[axis], gyro_low[axis], gyro_extension[axis]);
         decoded.accel_effective[axis] = decoded.accel_raw20[axis] / 4;
         decoded.gyro_effective[axis] = decoded.gyro_raw20[axis] / 2;
@@ -1075,10 +1095,20 @@ ICM42688P::Status ICM42688P::ReadRawGyro(RawVector& data)
     return Status::Ok;
 }
 
+ICM42688P::Status ICM42688P::GetLatest(Sample& sample) const
+{
+    if (!initialized_) {
+        return Status::InvalidArgument;
+    }
+
+    sample = latest_;
+    return Status::Ok;
+}
+
 void ICM42688P::DataReady(const uint64_t timestamp_us)
 {
-    // EXTI context only records timing and pending state. SPI access is deferred
-    // to RunImpl() in normal scheduler context, matching PX4 DataReady().
+    // ISR entry: latch only the MCU timestamp and event state. FIFO SPI access
+    // is deferred to RunImpl() in normal context.
     last_data_ready_timestamp_us_ = timestamp_us;
     ++data_ready_interrupt_count_;
     data_ready_pending_ = 1u;
@@ -1088,6 +1118,7 @@ bool ICM42688P::ConsumeDataReady(uint64_t& timestamp_sample_us)
 {
     const uint32_t primask = __get_PRIMASK();
     __disable_irq();
+
     const bool pending = data_ready_pending_ != 0u;
 
     if (pending) {
@@ -1095,21 +1126,8 @@ bool ICM42688P::ConsumeDataReady(uint64_t& timestamp_sample_us)
         data_ready_pending_ = 0u;
     }
 
-    if (primask == 0u) {
-        __enable_irq();
-    }
-
+    __set_PRIMASK(primask);
     return pending;
-}
-
-ICM42688P::Status ICM42688P::GetLatest(Sample& sample) const
-{
-    if (!initialized_) {
-        return Status::InvalidArgument;
-    }
-
-    sample = latest_;
-    return Status::Ok;
 }
 
 void ICM42688P::CS_Low() const

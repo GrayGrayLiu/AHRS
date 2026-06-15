@@ -4,7 +4,9 @@
 #include <stdio.h>
 
 #include "ICM42688_API.h"
+#include "TimeBase.h"
 #include "main.h"
+#include "scheduler.h"
 
 #define ICM42688_RUNTIME_SAMPLE_PRINT_ENABLE 0
 
@@ -24,6 +26,7 @@ static uint32_t icm42688_next_init_tick = 0u;
 static uint32_t icm42688_last_debug_service_tick = 0u;
 static uint32_t icm42688_last_print_tick = 0u;
 static ICM42688_Status icm42688_last_status = ICM42688_STATUS_OK;
+static uint8_t icm42688_service_polling = 0u;
 
 static uint8_t TickReached(const uint32_t now, const uint32_t target)
 {
@@ -133,7 +136,7 @@ static void PrintLatest(void)
 
     ICM42688_Sample sample = {0};
     const ICM42688_Status status = ICM42688_GetLatest(&sample);
-    const uint32_t now = HAL_GetTick();
+    const uint32_t now = TimeBase_Millis();
 
     if (!TickReached(now, icm42688_last_print_tick + ICM42688_PRINT_INTERVAL_MS)) {
         return;
@@ -172,9 +175,20 @@ static void PrintLatest(void)
            gyro_z_milli);
 }
 
-void ICM42688_Service1kHz(void)
+void ICM42688_ServiceNotifyDataReadyFromISR(const uint64_t timestamp_us)
 {
-    const uint32_t now = HAL_GetTick();
+    ICM42688_OnDataReadyInterrupt(timestamp_us);
+    Scheduler_PostHighPriorityEventFromISR(SCHED_HP_EVENT_IMU_DRDY);
+}
+
+void ICM42688_ServiceRun(void)
+{
+    if (icm42688_service_polling != 0u) {
+        return;
+    }
+
+    icm42688_service_polling = 1u;
+    const uint32_t now = TimeBase_Millis();
 
     // Bare-metal scheduler adapter only: binding, startup indication and the
     // periodic call live here; the hardware lifecycle stays in RunImpl().
@@ -186,6 +200,7 @@ void ICM42688_Service1kHz(void)
             ServiceInit(now);
         }
 
+        icm42688_service_polling = 0u;
         return;
     }
 
@@ -197,4 +212,6 @@ void ICM42688_Service1kHz(void)
         icm42688_last_debug_service_tick = now;
         PrintLatest();
     }
+
+    icm42688_service_polling = 0u;
 }
