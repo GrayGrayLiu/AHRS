@@ -900,6 +900,11 @@ ICM42688P::Status ICM42688P::ProcessGyro(
 {
     // 对整个 FIFO batch 做梯形积分，主输出为 delta_angle_rad；平均角速度由
     // delta_angle / delta_time 派生，不改变原始积分公式。
+    //
+    // 该积分结构与 PX4Gyroscope::updateFIFO() 的 FIFO batch 处理思路一致：
+    // 使用上一批末尾 sample 和当前批末尾 sample 构成跨 batch 梯形积分边界，
+    // 中间 sample 完整累加，最终得到本批次 delta_angle。
+    // 当前裸机工程没有 PX4Gyroscope/uORB，因此直接把积分结果写入 Sample。
     if (samples == nullptr || sample_count == 0u
         || sample_count > FIFO_MAX_PACKETS_PER_UPDATE
         || sample_dt_s <= 0.0F) {
@@ -948,6 +953,11 @@ ICM42688P::Status ICM42688P::ProcessAccel(
 {
     // 对整个 FIFO batch 做梯形积分，主输出为机体系比力积分
     // delta_velocity_m_s；不包含导航系重力补偿或坐标系二次变换。
+    //
+    // 该积分结构与 PX4Accelerometer::updateFIFO() 的 FIFO batch 处理思路一致：
+    // 使用上一批末尾 sample 和当前批末尾 sample 构成跨 batch 梯形积分边界，
+    // 中间 sample 完整累加，最终得到本批次 delta_velocity。
+    // 当前裸机工程没有 PX4Accelerometer/uORB，因此直接把积分结果写入 Sample。
     if (samples == nullptr || sample_count == 0u
         || sample_count > FIFO_MAX_PACKETS_PER_UPDATE
         || sample_dt_s <= 0.0F) {
