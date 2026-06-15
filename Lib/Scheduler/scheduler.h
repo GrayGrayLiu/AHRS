@@ -18,8 +18,16 @@ typedef struct
     uint32_t last_run;
 }sched_task_t;
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 void Scheduler_Setup(void);
 void Scheduler_Run(void);
 void Scheduler_PostHighPriorityEventFromISR(uint32_t event);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif //ELECTROMAGNETICARTILLERY_SCHEDULER_H

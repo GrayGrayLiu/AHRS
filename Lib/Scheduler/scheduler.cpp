@@ -9,6 +9,15 @@
 #include <stdio.h>
 #include "ICM42688_API.h"
 
+namespace
+{
+// App initialization section.
+static void Scheduler_AppSetup()
+{
+    // Application-layer initialization hook.
+}
+
+// High-priority / event-driven scheduler section.
 //全局事件位图，每一位代表一种高优先级事件，事件定义在定义在 scheduler.h
 static volatile uint32_t scheduler_hp_events = 0u;
 
@@ -27,9 +36,10 @@ static const sched_hp_handler_entry_t scheduler_hp_handlers[] =
 
 static const uint8_t SCHED_HP_HANDLER_NUM =
     (uint8_t)(sizeof(scheduler_hp_handlers) / sizeof(scheduler_hp_handlers[0]));
+}
 
 //事件投递函数，通常由 ISR 或 ISR-adapter 调用,把对应事件位设置为 1
-void Scheduler_PostHighPriorityEventFromISR(const uint32_t event)
+extern "C" void Scheduler_PostHighPriorityEventFromISR(const uint32_t event)
 {
     const uint32_t primask = __get_PRIMASK();
     __disable_irq();
@@ -37,6 +47,8 @@ void Scheduler_PostHighPriorityEventFromISR(const uint32_t event)
     __set_PRIMASK(primask);
 }
 
+namespace
+{
 //取出并清空事件位图
 static uint32_t Scheduler_TakeHighPriorityEvents(void)
 {
@@ -69,7 +81,7 @@ static void Scheduler_HighPriorityPoll(void)
     //取出当前所有 high-priority events
     const uint32_t events = Scheduler_TakeHighPriorityEvents();
 
-    //根据静态注册表把事件分发到对应模块的 ServicePoll
+    //根据静态注册表把事件分发到对应模块的 service run 函数
     for (uint8_t index = 0u; index < SCHED_HP_HANDLER_NUM; ++index) {
         if ((events & scheduler_hp_handlers[index].event) != 0u) {
             scheduler_hp_handlers[index].handler();
@@ -79,6 +91,7 @@ static void Scheduler_HighPriorityPoll(void)
     polling = 0u;
 }
 
+// Periodic polling scheduler section.
 static uint32_t imu_last_sample_counter = 0;
 void Print_ICM42688_Delta_Debug(void)
 {
@@ -213,8 +226,9 @@ static sched_task_t sched_tasks[] =
 };
 //根据数组长度，判断线程数量
 #define TASK_NUM (sizeof(sched_tasks) / sizeof(sched_task_t))
+}
 
-void Scheduler_Setup(void)
+extern "C" void Scheduler_Setup(void)
 {
     uint8_t index = 0;
     //初始化任务表
@@ -226,10 +240,12 @@ void Scheduler_Setup(void)
             sched_tasks[index].interval_ticks = 1;
         }
     }
+
+    Scheduler_AppSetup();
 }
 
 //这个函数放到main函数的while(1)中，不停判断是否有线程应该执行
-void Scheduler_Run(void)
+extern "C" void Scheduler_Run(void)
 {
     uint8_t index = 0;
     Scheduler_HighPriorityPoll();
