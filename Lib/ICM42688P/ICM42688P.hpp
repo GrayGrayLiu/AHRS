@@ -184,6 +184,9 @@ private:
                                     uint64_t timestamp_sample_us,
                                     uint32_t timestamp_sample_ms,
                                     uint16_t valid_packets) const;
+    // 只负责在 FIFORead() NoData 路径填充 latest_ 元信息字段，不修改 data_valid 和 last_status_。
+    void PopulateNoDataSampleMetadata(uint64_t timestamp_sample_us,
+                                      uint32_t timestamp_sample_ms);
     [[nodiscard]] Status DecodeFifoPacket(const ICM42688P_Regs::FIFO::DATA& packet,
                                           FifoDecodedSample& decoded) const;
     [[nodiscard]] Status RegisterSetAndClearBits(const register_bank0_config_t& config);

@@ -673,11 +673,7 @@ ICM42688P::Status ICM42688P::FIFORead(const uint64_t timestamp_sample_us)
 
     // 2. 处理 FIFO count 阶段的无数据和错误返回。
     if (status == Status::NoData) {
-        latest_.configured = configured_;
-        latest_.error_counter = error_count_;
-        latest_.interrupt_counter = data_ready_interrupt_count_;
-        latest_.last_interrupt_timestamp_us = timestamp_sample_us;
-        latest_.last_interrupt_timestamp_ms = timestamp_sample_ms;
+        PopulateNoDataSampleMetadata(timestamp_sample_us, timestamp_sample_ms);
         last_status_ = status;
         return status;
     }
@@ -693,11 +689,7 @@ ICM42688P::Status ICM42688P::FIFORead(const uint64_t timestamp_sample_us)
 
     // 4. 处理 FIFO 数据读取阶段的无数据和错误返回。
     if (status == Status::NoData) {
-        latest_.configured = configured_;
-        latest_.error_counter = error_count_;
-        latest_.interrupt_counter = data_ready_interrupt_count_;
-        latest_.last_interrupt_timestamp_us = timestamp_sample_us;
-        latest_.last_interrupt_timestamp_ms = timestamp_sample_ms;
+        PopulateNoDataSampleMetadata(timestamp_sample_us, timestamp_sample_ms);
         last_status_ = status;
         return status;
     }
@@ -783,6 +775,24 @@ void ICM42688P::PopulateFifoSampleMetadata(Sample& sample,
     sample.interrupt_counter = data_ready_interrupt_count_;
     sample.last_interrupt_timestamp_us = timestamp_sample_us;
     sample.last_interrupt_timestamp_ms = timestamp_sample_ms;
+}
+
+/**
+ * @brief  在 FIFORead() NoData 路径中填充 latest_ 元信息字段
+ * @param  timestamp_sample_us  当前 data-ready 的 MCU 微秒时间戳
+ * @param  timestamp_sample_ms  当前 data-ready 的 MCU 毫秒时间戳
+ *
+ * @note   仅更新 latest_ 的配置状态、错误计数、中断计数和时间戳；
+ *         不修改 data_valid、last_status_ 或 sample_counter。
+ */
+void ICM42688P::PopulateNoDataSampleMetadata(const uint64_t timestamp_sample_us,
+                                             const uint32_t timestamp_sample_ms)
+{
+    latest_.configured = configured_;
+    latest_.error_counter = error_count_;
+    latest_.interrupt_counter = data_ready_interrupt_count_;
+    latest_.last_interrupt_timestamp_us = timestamp_sample_us;
+    latest_.last_interrupt_timestamp_ms = timestamp_sample_ms;
 }
 
 /**
