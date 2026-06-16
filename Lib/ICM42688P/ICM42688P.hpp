@@ -162,6 +162,7 @@ private:
     [[nodiscard]] Status ConfigureInterrupt();
     [[nodiscard]] Status FIFOReset();
     [[nodiscard]] Status ResetFifoAndReturn(Status status_after_successful_reset);
+    [[nodiscard]] Status RecordFifoReadErrorAndReturn(Status status);
     [[nodiscard]] Status RunImpl();
     [[nodiscard]] bool ConsumeDataReady(uint64_t& timestamp_sample_us);
     [[nodiscard]] Status FIFORead(uint64_t timestamp_sample_us);

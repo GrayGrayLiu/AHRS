@@ -433,6 +433,20 @@ ICM42688P::Status ICM42688P::ResetFifoAndReturn(const Status status_after_succes
     return reset_status == Status::Ok ? status_after_successful_reset : reset_status;
 }
 
+/**
+ * @brief  统一记录 FIFORead() error 路径的驱动状态并返回状态码
+ * @param  status FIFORead() 当前的错误状态码
+ * @return 传入的 status
+ */
+ICM42688P::Status ICM42688P::RecordFifoReadErrorAndReturn(const Status status)
+{
+    ++error_count_;
+    latest_.error_counter = error_count_;
+    latest_.data_valid = false;
+    last_status_ = status;
+    return status;
+}
+
 ICM42688P::Status ICM42688P::Update()
 {
     return RunImpl();
@@ -669,11 +683,7 @@ ICM42688P::Status ICM42688P::FIFORead(const uint64_t timestamp_sample_us)
     }
 
     if (status != Status::Ok) {
-        ++error_count_;
-        latest_.error_counter = error_count_;
-        latest_.data_valid = false;
-        last_status_ = status;
-        return status;
+        return RecordFifoReadErrorAndReturn(status);
     }
 
     // 3. 根据 FIFO count 计算期望读取的 packet 数，并读取完整 FIFO batch。
@@ -693,20 +703,12 @@ ICM42688P::Status ICM42688P::FIFORead(const uint64_t timestamp_sample_us)
     }
 
     if (status != Status::Ok) {
-        ++error_count_;
-        latest_.error_counter = error_count_;
-        latest_.data_valid = false;
-        last_status_ = status;
-        return status;
+        return RecordFifoReadErrorAndReturn(status);
     }
 
     // 5. 校验本次 batch 的有效 packet 数。
     if (valid_packets == 0u || valid_packets != fifo_decoded_count_) {
-        ++error_count_;
-        latest_.error_counter = error_count_;
-        latest_.data_valid = false;
-        last_status_ = Status::BadFifoPacket;
-        return Status::BadFifoPacket;
+        return RecordFifoReadErrorAndReturn(Status::BadFifoPacket);
     }
 
     // 6. 初始化输出 Sample，并计算本次 batch 的积分时间。
@@ -739,11 +741,7 @@ ICM42688P::Status ICM42688P::FIFORead(const uint64_t timestamp_sample_us)
 
     // 8. 处理数据转换失败路径。
     if (status != Status::Ok) {
-        ++error_count_;
-        latest_.error_counter = error_count_;
-        latest_.data_valid = false;
-        last_status_ = status;
-        return status;
+        return RecordFifoReadErrorAndReturn(status);
     }
 
     // 任何失败路径都不会推进成功 batch 的 sample 计数和 dt 基准时间戳。
