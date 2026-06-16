@@ -201,6 +201,22 @@ If variables can be grouped logically, group them and place short inline Chinese
 
 Avoid vague comments. Comments should explain intent, timing, state-machine meaning, data ownership, or hardware constraints.
 
+## Header and Formatting Style
+
+1. 函数声明、函数调用、短 constexpr 表达式、短初始化语句，优先保持单行。
+2. 不要机械套用 80/100 列换行规则。只有在一行明显过长、影响横向阅读，或语义上必须分行时才换行。
+3. 对本项目而言，约 140～160 字符以内且可读性良好的声明/调用可以保持单行。
+4. 形参列表不要频繁换行；除非参数很多、类型很长或一行已经明显不可读。
+5. 头文件中的声明区域应按功能分块，并用空行分隔不同功能组。
+6. 头文件中的 public/private 函数声明应优先作为"接口索引"保持紧凑，不要把简单声明写成多行。
+7. 注释应解释职责、边界、状态含义、数据含义和关键不变量，不要重复代码表面含义。
+8. 对字段很多的 struct / enum，应给关键字段或枚举项补充短行注释。
+9. 行注释优先写在同一行；如果同一行太长，则把注释放在上一行。
+10. 不要在头文件的全局作用域新增 using namespace。已有头文件如需减少长限定名，应优先使用类内 type alias 或局部限定名。
+11. 在 .cpp 文件内部可以使用局部 using / using namespace，但不要让命名空间污染通过头文件传播给所有包含者。
+12. 不要自动格式化整个文件；只格式化本轮明确修改的局部代码。
+13. 如果用户已经手动整理了函数声明、形参列表或注释布局，不要未经请求重新换行或改成另一种风格。除非存在编译错误、明显格式错误或用户明确要求，否则保留用户的手动布局。
+
 ## Refactoring Rules
 
 Deep refactoring is allowed only when the user explicitly requests it.
