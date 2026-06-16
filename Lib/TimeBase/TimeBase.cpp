@@ -1,6 +1,9 @@
 /**
- * @file    TimeBase.c
+ * @file    TimeBase.cpp
  * @brief   全系统时间基准实现（TIM2 硬件定时器 + 软件溢出扩展）
+ *
+ * @note    TimeBase.h 保持 .h 后缀作为 C ABI 边界，本文件以 C++ 编译。
+ *          TimeBase.h 中的 extern "C" 声明与本文件的定义自动匹配 C linkage。
  */
 
 #include "TimeBase.h"

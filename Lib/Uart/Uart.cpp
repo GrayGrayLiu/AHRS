@@ -1,3 +1,15 @@
+/**
+ * @file    Uart.cpp
+ * @brief   UART 串口通信模块（C++ 编译单元，预留）
+ *
+ * @details
+ * 本文件以 C++ 编译，当前为预留模块，无有效功能代码。
+ * 旧有的 UART buffer 和 HAL_UART_RxCpltCallback 实现均已注释保留，
+ * 供后续恢复时参考。
+ *
+ * Uart.h 保持 .h 后缀作为 C/C++ 共用 C ABI 边界。
+ */
+
 //
 // Created by Gray on 2025/1/7.
 //
