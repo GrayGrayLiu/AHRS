@@ -2,6 +2,24 @@
 // Created by Gray on 2026/1/7.
 //
 
+/**
+ * @file    EXIT.cpp
+ * @brief   HAL GPIO EXTI 回调实现
+ *
+ * @details
+ * HAL_GPIO_EXTI_Callback 在 GPIO EXTI 中断的 ISR 上下文中被 HAL 调用。
+ * 当前只有 IMU_INT1_Pin 的 data-ready 中断被实际处理。
+ *
+ * ISR -> 普通上下文边界：
+ *   ISR 中仅调用 icm42688_service::NotifyDataReadyFromISR()，该函数：
+ *   1. 调用 ICM42688P::DataReady() 锁存 MCU 微秒时间戳并置 pending 标志；
+ *   2. 调用 Scheduler_PostHighPriorityEventFromISR() 原子置位事件位图。
+ *   实际 SPI/FIFO 读取由 scheduler 主循环中的 HighPriorityPoll() 在普通上下
+ *   文中执行。
+ *
+ * @note   不要在 ISR 中添加 SPI 访问、printf、HAL_Delay 或任何阻塞操作。
+ */
+
 #include "EXIT.h"
 
 #include "ICM42688_Service.hpp"

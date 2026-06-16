@@ -1,3 +1,8 @@
+/**
+ * @file    scheduler.cpp
+ * @brief   裸机 cooperative 调度器实现
+ */
+
 //
 // Created by Gray on 2026/1/7.
 //
@@ -34,11 +39,11 @@ using sched_hp_handler_t = void (*)(void);
 
 struct sched_hp_handler_entry_t
 {
-    uint32_t event;
-    sched_hp_handler_t handler;
+    uint32_t event;               // 事件位掩码（如 SCHED_HP_EVENT_IMU_DRDY）
+    sched_hp_handler_t handler;   // 对应的处理函数（在普通上下文中调用）
 };
 
-// 静态事件处理表用于把事件位映射到普通上下文中的处理函数。后续新增响应式
+// 静态事件处理表把事件位映射到普通上下文中的处理函数。后续新增响应式
 // 事件时只需扩展表项，不需要把分发器重新改成多段硬编码判断。
 const sched_hp_handler_entry_t scheduler_hp_handlers[] =
 {
@@ -48,8 +53,9 @@ const sched_hp_handler_entry_t scheduler_hp_handlers[] =
 constexpr uint8_t SCHED_HP_HANDLER_NUM =
     static_cast<uint8_t>(sizeof(scheduler_hp_handlers) / sizeof(scheduler_hp_handlers[0]));
 
-// 原子地取出并清空事件位图。临界区保证“读取 + 清零”不可被 ISR 插入，
+// 原子地取出并清空事件位图。临界区保证"读取 + 清零"不可被 ISR 插入，
 // 避免刚到达的事件在主循环清零位图时丢失。
+// @note  在普通上下文中调用。
 uint32_t Scheduler_TakeHighPriorityEvents()
 {
     const uint32_t primask = __get_PRIMASK();
@@ -64,6 +70,7 @@ uint32_t Scheduler_TakeHighPriorityEvents()
 
 // 在普通上下文中分发高优先级事件。函数内部的静态 polling 标志用于防止
 // 事件 handler 间接触发调度器时发生嵌套分发；它具有状态保持语义，不能移除。
+// @note  由 Scheduler_Run() 在每次周期任务检查前后调用。
 void Scheduler_HighPriorityPoll()
 {
     static uint8_t polling = 0u;
@@ -140,6 +147,10 @@ void Print_ICM42688_Delta_Debug()
            imu.temperature_deg_c);
 }
 
+// ── 周期任务回调 ──
+// 各频率任务以 Loop_*Hz 命名，由 Scheduler_Run() 按 interval_ticks 到期调用。
+// 均在普通上下文中执行。
+
 void Loop_1000Hz() // 每 1 ms 执行一次。
 {
     // 周期 backup 路径与 EXTI 高优先级事件共用同一个 Service 入口。
@@ -147,65 +158,65 @@ void Loop_1000Hz() // 每 1 ms 执行一次。
     icm42688_service::Run();
 }
 
-void Loop_500Hz() // 每 2 ms 执行一次。
+void Loop_500Hz()   // 每 2 ms 执行一次。当前未使用。
 {
 }
 
-void Loop_250Hz() // 每 4 ms 执行一次。
+void Loop_250Hz()   // 每 4 ms 执行一次。当前未使用。
 {
 }
 
-void Loop_200Hz() // 每 5 ms 执行一次。
+void Loop_200Hz()   // 每 5 ms 执行一次。当前未使用。
 {
 }
 
-void Loop_100Hz() // 每 10 ms 执行一次。
+void Loop_100Hz()   // 每 10 ms 执行一次。当前未使用。
 {
 }
 
-void Loop_50Hz() // 每 20 ms 执行一次。
+void Loop_50Hz()    // 每 20 ms 执行一次。当前未使用。
 {
 }
 
-void Loop_20Hz() // 每 50 ms 执行一次。
+void Loop_20Hz()    // 每 50 ms 执行一次。当前未使用。
 {
 }
 
-void Loop_10Hz() // 每 100 ms 执行一次。
+void Loop_10Hz()    // 每 100 ms 执行一次。当前未使用。
 {
 }
 
-void Loop_5Hz() // 每 200 ms 执行一次。
+void Loop_5Hz()     // 每 200 ms 执行一次。当前未使用。
 {
 }
 
-void Loop_4Hz() // 每 250 ms 执行一次。
+void Loop_4Hz()     // 每 250 ms 执行一次。当前未使用。
 {
 }
 
-void Loop_2Hz() // 每 500 ms 执行一次。
+void Loop_2Hz()     // 每 500 ms 执行一次。当前未使用。
 {
 }
 
-void Loop_1Hz() // 每 1000 ms 执行一次。
+void Loop_1Hz()     // 每 1000 ms 执行一次。
 {
     Print_ICM42688_Delta_Debug();
 }
 
-void Loop_0_5Hz() // 每 2 s 执行一次。
+void Loop_0_5Hz()   // 每 2 s 执行一次。当前未使用。
 {
 }
 
-void Loop_0_2Hz() // 每 5 s 执行一次。
+void Loop_0_2Hz()   // 每 5 s 执行一次。当前未使用。
 {
 }
 
-void Loop_0_1Hz() // 每 10 s 执行一次。
+void Loop_0_1Hz()   // 每 10 s 执行一次。当前未使用。
 {
 }
 
-// 周期任务静态配置表。rate_hz 和任务顺序属于当前调度行为，本轮保持不变；
-// Scheduler_Setup() 根据频率计算 interval_ticks。
+// ── 周期任务静态配置表 ──
+// rate_hz 和任务顺序属于当前调度行为；Scheduler_Setup() 根据频率计算 interval_ticks。
 sched_task_t sched_tasks[] =
 {
     {Loop_1000Hz, 1000, 0, 0},
@@ -234,6 +245,7 @@ constexpr size_t TASK_NUM = sizeof(sched_tasks) / sizeof(sched_tasks[0]);
  *
  * @note   仅操作位图，不在 ISR 上下文执行 SPI、FIFO 或 printf。
  *         实际处理由 Scheduler_HighPriorityPoll() 在普通上下文中完成。
+ *         可在 ISR 中安全调用。
  */
 extern "C" void Scheduler_PostHighPriorityEventFromISR(const uint32_t event)
 {
@@ -247,6 +259,7 @@ extern "C" void Scheduler_PostHighPriorityEventFromISR(const uint32_t event)
  * @brief  初始化调度器：计算周期任务 tick 间隔，并调用应用层初始化入口
  *
  * @note   Scheduler_AppSetup() 是独立的应用层初始化扩展点，与调度器自身设置分离。
+ *         在 main 中调用一次，先于 Scheduler_Run。
  */
 extern "C" void Scheduler_Setup(void)
 {
@@ -267,6 +280,11 @@ extern "C" void Scheduler_Setup(void)
  * @note   在每次任务检查前后插入 Scheduler_HighPriorityPoll()，
  *         使 ISR 投递的 IMU data-ready 事件尽快在普通上下文得到处理。
  *         周期任务按 TimeBase_Millis() + interval_ticks 判断是否到期。
+ *
+ *         调度顺序：
+ *         1. 入循环时先 poll 一次，处理积压的高优事件；
+ *         2. 对每个周期任务：poll → 检查到期 → poll → 执行 → poll；
+ *         3. poll 的 polling 静态标志防止嵌套。
  */
 extern "C" void Scheduler_Run(void)
 {
