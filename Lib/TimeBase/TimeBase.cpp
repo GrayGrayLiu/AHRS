@@ -75,7 +75,7 @@ uint32_t TimeBase_Millis()
  * @brief  TIM2 更新中断 ISR 回调
  * @note   仅处理 TIM2；在 ISR 上下文中执行，只递增溢出计数，不做任何阻塞操作。
  */
-void TimeBase_OnTimPeriodElapsed(TIM_HandleTypeDef *const htim)
+void TimeBase_OnTimPeriodElapsed(TIM_HandleTypeDef *htim)
 {
     if (htim != nullptr && htim->Instance == TIM2) {
         ++timebase_tim2_overflow_count;
