@@ -245,8 +245,8 @@ ICM42688P::Status ICM42688P::Configure()
 
     // 3. 配置 Bank0 中除 FIFO_CONFIG1 和 PWR_MGMT0 以外的控制寄存器。
     //    FIFO_CONFIG1 需要在 watermark 配置完成后写入，PWR_MGMT0 需要最后写入以启动传感器。
-    const register_bank0_config_t* fifo_config1 = nullptr;
-    const register_bank0_config_t* power_config = nullptr;
+    const ICM42688P::RegisterBank0Config* fifo_config1 = nullptr;
+    const ICM42688P::RegisterBank0Config* power_config = nullptr;
 
     for (const auto& config : register_bank0_cfg_) {
         if (config.reg == BANK0::PWR_MGMT0) {
@@ -337,12 +337,12 @@ ICM42688P::Status ICM42688P::ConfigureFIFOWatermark(const uint16_t watermark_byt
         return Status::InvalidArgument;
     }
 
-    const register_bank0_config_t watermark_low{
+    const ICM42688P::RegisterBank0Config watermark_low{
         BANK0::FIFO_CONFIG2,
         static_cast<uint8_t>(watermark_bytes & 0x00FFu),
         static_cast<uint8_t>(ICM42688P_Regs::FIFO_CONFIG2_BITS::FIFO_WM_7_0_MASK)
     };
-    const register_bank0_config_t watermark_high{
+    const ICM42688P::RegisterBank0Config watermark_high{
         BANK0::FIFO_CONFIG3,
         static_cast<uint8_t>((watermark_bytes >> 8u) & 0x0Fu),
         static_cast<uint8_t>(ICM42688P_Regs::FIFO_CONFIG3_BITS::FIFO_WM_11_8_MASK)
@@ -1153,7 +1153,7 @@ ICM42688P::Status ICM42688P::ProcessAccel(
     return Status::Ok;
 }
 
-ICM42688P::Status ICM42688P::RegisterSetAndClearBits(const register_bank0_config_t& config)
+ICM42688P::Status ICM42688P::RegisterSetAndClearBits(const ICM42688P::RegisterBank0Config& config)
 {
     uint8_t old_value{};
     Status status = RegisterRead(config.reg, old_value);
@@ -1162,11 +1162,11 @@ ICM42688P::Status ICM42688P::RegisterSetAndClearBits(const register_bank0_config
         return status;
     }
 
-    const uint8_t new_value = ComposeRegisterValue(old_value, config.setBits, config.mask);
+    const uint8_t new_value = ComposeRegisterValue(old_value, config.set_bits, config.mask);
     return new_value == old_value ? Status::Ok : RegisterWrite(config.reg, new_value);
 }
 
-ICM42688P::Status ICM42688P::RegisterSetAndClearBits(const register_bank1_config_t& config)
+ICM42688P::Status ICM42688P::RegisterSetAndClearBits(const ICM42688P::RegisterBank1Config& config)
 {
     uint8_t old_value{};
     Status status = RegisterRead(config.reg, old_value);
@@ -1175,11 +1175,11 @@ ICM42688P::Status ICM42688P::RegisterSetAndClearBits(const register_bank1_config
         return status;
     }
 
-    const uint8_t new_value = ComposeRegisterValue(old_value, config.setBits, config.mask);
+    const uint8_t new_value = ComposeRegisterValue(old_value, config.set_bits, config.mask);
     return new_value == old_value ? Status::Ok : RegisterWrite(config.reg, new_value);
 }
 
-ICM42688P::Status ICM42688P::RegisterSetAndClearBits(const register_bank2_config_t& config)
+ICM42688P::Status ICM42688P::RegisterSetAndClearBits(const ICM42688P::RegisterBank2Config& config)
 {
     uint8_t old_value{};
     Status status = RegisterRead(config.reg, old_value);
@@ -1188,11 +1188,11 @@ ICM42688P::Status ICM42688P::RegisterSetAndClearBits(const register_bank2_config
         return status;
     }
 
-    const uint8_t new_value = ComposeRegisterValue(old_value, config.setBits, config.mask);
+    const uint8_t new_value = ComposeRegisterValue(old_value, config.set_bits, config.mask);
     return new_value == old_value ? Status::Ok : RegisterWrite(config.reg, new_value);
 }
 
-ICM42688P::Status ICM42688P::RegisterCheck(const register_bank0_config_t& config)
+ICM42688P::Status ICM42688P::RegisterCheck(const ICM42688P::RegisterBank0Config& config)
 {
     uint8_t value{};
     const Status status = RegisterRead(config.reg, value);
@@ -1201,12 +1201,12 @@ ICM42688P::Status ICM42688P::RegisterCheck(const register_bank0_config_t& config
         return status;
     }
 
-    return RegisterValueMatches(value, config.setBits, config.mask)
+    return RegisterValueMatches(value, config.set_bits, config.mask)
         ? Status::Ok
         : Status::ConfigMismatch;
 }
 
-ICM42688P::Status ICM42688P::RegisterCheck(const register_bank1_config_t& config)
+ICM42688P::Status ICM42688P::RegisterCheck(const ICM42688P::RegisterBank1Config& config)
 {
     uint8_t value{};
     const Status status = RegisterRead(config.reg, value);
@@ -1215,12 +1215,12 @@ ICM42688P::Status ICM42688P::RegisterCheck(const register_bank1_config_t& config
         return status;
     }
 
-    return RegisterValueMatches(value, config.setBits, config.mask)
+    return RegisterValueMatches(value, config.set_bits, config.mask)
         ? Status::Ok
         : Status::ConfigMismatch;
 }
 
-ICM42688P::Status ICM42688P::RegisterCheck(const register_bank2_config_t& config)
+ICM42688P::Status ICM42688P::RegisterCheck(const ICM42688P::RegisterBank2Config& config)
 {
     uint8_t value{};
     const Status status = RegisterRead(config.reg, value);
@@ -1229,7 +1229,7 @@ ICM42688P::Status ICM42688P::RegisterCheck(const register_bank2_config_t& config
         return status;
     }
 
-    return RegisterValueMatches(value, config.setBits, config.mask)
+    return RegisterValueMatches(value, config.set_bits, config.mask)
         ? Status::Ok
         : Status::ConfigMismatch;
 }
