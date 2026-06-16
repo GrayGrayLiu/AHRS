@@ -174,6 +174,8 @@ private:
     // ========================================================================
     // A. 生命周期与配置状态机
     // ========================================================================
+    // 同步内部配置状态和对外 Sample 快照状态，避免 Service 看到过期 configured 标志。
+    void SetConfigured(bool configured);
     [[nodiscard]] Status WaitForReset();
     [[nodiscard]] Status Configure();
     [[nodiscard]] Status ConfigureFIFOWatermark(uint16_t watermark_bytes);
@@ -195,8 +197,8 @@ private:
     // C. FIFO packet 解码与 batch 数据处理
     // ========================================================================
     [[nodiscard]] Status ProcessTemperature(const FifoDecodedSample samples[], uint16_t sample_count, Sample& output) const;
-    [[nodiscard]] Status ProcessGyro(const FifoDecodedSample samples[], uint16_t sample_count, float sample_dt_s, Sample& output);
-    [[nodiscard]] Status ProcessAccel(const FifoDecodedSample samples[], uint16_t sample_count, float sample_dt_s, Sample& output);
+    [[nodiscard]] Status ProcessGyro(const FifoDecodedSample samples[], uint16_t sample_count, float batch_dt_s, Sample& output);
+    [[nodiscard]] Status ProcessAccel(const FifoDecodedSample samples[], uint16_t sample_count, float batch_dt_s, Sample& output);
     // 只负责填充一次成功 FIFO batch 对应 Sample 的元信息字段，不参与积分计算。
     void PopulateFifoSampleMetadata(Sample& sample, uint64_t timestamp_sample_us, uint32_t timestamp_sample_ms, uint16_t valid_packets) const;
     // 只负责在 FIFORead() NoData 路径填充 latest_ 元信息字段，不修改 data_valid 和 last_status_。
@@ -521,6 +523,8 @@ private:
     // ========================================================================
     // initialized_ 在 Init() 成功后为 true；configured_ 在 CONFIGURE + FIFO_RESET
     // 均成功后为 true。
+    // configured_ 是内部状态机使用的配置完成标志；latest_.configured 是对外 Sample
+    // 快照中的对应标志，二者由 SetConfigured() 统一同步，不应分散手写赋值。
     bool initialized_{false};
     bool configured_{false};
     volatile DriverState state_{DriverState::RESET};
