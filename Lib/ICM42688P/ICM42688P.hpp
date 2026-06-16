@@ -193,11 +193,11 @@ private:
     [[nodiscard]] Status RegisterCheck(const register_bank2_config_t& config);
     [[nodiscard]] Status SelectBank(ICM42688P_Regs::REG_BANK_SEL_BITS bank, bool force = false);
 
-    [[nodiscard]] Status WriteRegister(ICM42688P_Regs::RegsAdd::BANK1 reg, uint8_t value);
-    [[nodiscard]] Status WriteRegister(ICM42688P_Regs::RegsAdd::BANK2 reg, uint8_t value);
+    [[nodiscard]] Status RegisterWrite(ICM42688P_Regs::RegsAdd::BANK1 reg, uint8_t value);
+    [[nodiscard]] Status RegisterWrite(ICM42688P_Regs::RegsAdd::BANK2 reg, uint8_t value);
 
-    [[nodiscard]] Status ReadRegister(ICM42688P_Regs::RegsAdd::BANK1 reg, uint8_t& value);
-    [[nodiscard]] Status ReadRegister(ICM42688P_Regs::RegsAdd::BANK2 reg, uint8_t& value);
+    [[nodiscard]] Status RegisterRead(ICM42688P_Regs::RegsAdd::BANK1 reg, uint8_t& value);
+    [[nodiscard]] Status RegisterRead(ICM42688P_Regs::RegsAdd::BANK2 reg, uint8_t& value);
 
     [[nodiscard]] Status WriteRegisterRaw(uint8_t reg, uint8_t value) const;
     [[nodiscard]] Status ReadRegisterRaw(uint8_t reg, uint8_t& value);

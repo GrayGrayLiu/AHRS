@@ -1161,27 +1161,27 @@ ICM42688P::Status ICM42688P::RegisterSetAndClearBits(const register_bank0_config
 ICM42688P::Status ICM42688P::RegisterSetAndClearBits(const register_bank1_config_t& config)
 {
     uint8_t old_value{};
-    Status status = ReadRegister(config.reg, old_value);
+    Status status = RegisterRead(config.reg, old_value);
 
     if (status != Status::Ok) {
         return status;
     }
 
     const uint8_t new_value = ComposeRegisterValue(old_value, config.setBits, config.mask);
-    return new_value == old_value ? Status::Ok : WriteRegister(config.reg, new_value);
+    return new_value == old_value ? Status::Ok : RegisterWrite(config.reg, new_value);
 }
 
 ICM42688P::Status ICM42688P::RegisterSetAndClearBits(const register_bank2_config_t& config)
 {
     uint8_t old_value{};
-    Status status = ReadRegister(config.reg, old_value);
+    Status status = RegisterRead(config.reg, old_value);
 
     if (status != Status::Ok) {
         return status;
     }
 
     const uint8_t new_value = ComposeRegisterValue(old_value, config.setBits, config.mask);
-    return new_value == old_value ? Status::Ok : WriteRegister(config.reg, new_value);
+    return new_value == old_value ? Status::Ok : RegisterWrite(config.reg, new_value);
 }
 
 ICM42688P::Status ICM42688P::RegisterCheck(const register_bank0_config_t& config)
@@ -1201,7 +1201,7 @@ ICM42688P::Status ICM42688P::RegisterCheck(const register_bank0_config_t& config
 ICM42688P::Status ICM42688P::RegisterCheck(const register_bank1_config_t& config)
 {
     uint8_t value{};
-    const Status status = ReadRegister(config.reg, value);
+    const Status status = RegisterRead(config.reg, value);
 
     if (status != Status::Ok) {
         return status;
@@ -1215,7 +1215,7 @@ ICM42688P::Status ICM42688P::RegisterCheck(const register_bank1_config_t& config
 ICM42688P::Status ICM42688P::RegisterCheck(const register_bank2_config_t& config)
 {
     uint8_t value{};
-    const Status status = ReadRegister(config.reg, value);
+    const Status status = RegisterRead(config.reg, value);
 
     if (status != Status::Ok) {
         return status;
@@ -1374,25 +1374,25 @@ ICM42688P::Status ICM42688P::SelectBank(const ICM42688P_Regs::REG_BANK_SEL_BITS 
     return Status::Ok;
 }
 
-ICM42688P::Status ICM42688P::WriteRegister(const BANK1 reg, const uint8_t value)
+ICM42688P::Status ICM42688P::RegisterWrite(const BANK1 reg, const uint8_t value)
 {
     const Status status = SelectBank(ICM42688P_Regs::REG_BANK_SEL_BITS::BANK_SEL_1);
     return status == Status::Ok ? WriteRegisterRaw(static_cast<uint8_t>(reg), value) : status;
 }
 
-ICM42688P::Status ICM42688P::WriteRegister(const BANK2 reg, const uint8_t value)
+ICM42688P::Status ICM42688P::RegisterWrite(const BANK2 reg, const uint8_t value)
 {
     const Status status = SelectBank(ICM42688P_Regs::REG_BANK_SEL_BITS::BANK_SEL_2);
     return status == Status::Ok ? WriteRegisterRaw(static_cast<uint8_t>(reg), value) : status;
 }
 
-ICM42688P::Status ICM42688P::ReadRegister(const BANK1 reg, uint8_t& value)
+ICM42688P::Status ICM42688P::RegisterRead(const BANK1 reg, uint8_t& value)
 {
     const Status status = SelectBank(ICM42688P_Regs::REG_BANK_SEL_BITS::BANK_SEL_1);
     return status == Status::Ok ? ReadRegisterRaw(static_cast<uint8_t>(reg), value) : status;
 }
 
-ICM42688P::Status ICM42688P::ReadRegister(const BANK2 reg, uint8_t& value)
+ICM42688P::Status ICM42688P::RegisterRead(const BANK2 reg, uint8_t& value)
 {
     const Status status = SelectBank(ICM42688P_Regs::REG_BANK_SEL_BITS::BANK_SEL_2);
     return status == Status::Ok ? ReadRegisterRaw(static_cast<uint8_t>(reg), value) : status;
