@@ -17,7 +17,7 @@
 #include "ICM42688_Service.hpp"
 
 #include <new>
-#include <stdint.h>
+#include <cstdint>
 #include <stdio.h>
 
 #include "TimeBase.h"
@@ -71,9 +71,9 @@ uint8_t icm42688_service_polling = 0u;              // Run() 重入保护标志
 // ============================================================================
 
 // 使用有符号差值处理 uint32_t 毫秒计数回绕。
-uint8_t TickReached(const uint32_t now, const uint32_t target)
+bool TickReached(const uint32_t now, const uint32_t target)
 {
-    return (uint8_t)((int32_t)(now - target) >= 0);
+    return static_cast<int32_t>(now - target) >= 0;
 }
 
 // 设置板载 RGB LED。
@@ -81,9 +81,7 @@ uint8_t TickReached(const uint32_t now, const uint32_t target)
 //   蓝 — 初始化/非运行状态
 //   红 — 错误状态
 //   绿 — 正常运行状态
-void SetLed(const GPIO_PinState red,
-            const GPIO_PinState green,
-            const GPIO_PinState blue)
+void SetLed(const GPIO_PinState red, const GPIO_PinState green, const GPIO_PinState blue)
 {
     HAL_GPIO_WritePin(RGB_R_GPIO_Port, RGB_R_Pin, red);
     HAL_GPIO_WritePin(RGB_G_GPIO_Port, RGB_G_Pin, green);
@@ -100,8 +98,7 @@ void SetLed(const GPIO_PinState red,
 // Init 失败后按 ICM42688_INIT_RETRY_INTERVAL_MS 重试。
 void ServiceInit(const uint32_t now)
 {
-    if (icm42688_started
-        || !TickReached(now, icm42688_next_init_tick)) {
+    if (icm42688_started || !TickReached(now, icm42688_next_init_tick)) {
         return;
     }
 
@@ -110,8 +107,7 @@ void ServiceInit(const uint32_t now)
 
     if (!icm42688_bound) {
         printf("[ICM42688P] bind...\r\n");
-        icm42688 = ::new (static_cast<void *>(icm42688_storage))
-            ICM42688P(&hspi1, IMU_SPI_CS_GPIO_Port, IMU_SPI_CS_Pin);
+        icm42688 = ::new (static_cast<void *>(icm42688_storage)) ICM42688P(&hspi1, IMU_SPI_CS_GPIO_Port, IMU_SPI_CS_Pin);
         icm42688_bound = true;
         printf("[ICM42688P] bind ok\r\n");
     }
@@ -141,7 +137,7 @@ void ServiceInit(const uint32_t now)
 // running 标志与 RGB LED。
 // 该函数不实现任何寄存器或 FIFO 处理逻辑。
 // LED 状态：
-//   蓝灯 — 未配置完成（configured == 0）
+//   蓝灯 — 未配置完成（configured == false）
 //   红灯 — 驱动返回错误（非 Ok 且非 NoData）
 //   绿灯 — 正常运行（configured && Ok/NoData）
 void Update()
@@ -153,10 +149,9 @@ void Update()
     icm42688_last_status = icm42688->Update();
     ICM42688P::Sample sample{};
     const ICM42688P::Status sample_status = icm42688->GetLatest(sample);
-    const uint8_t configured = (uint8_t)(
-        sample_status == ICM42688P::Status::Ok && sample.configured);
+    const bool configured = sample_status == ICM42688P::Status::Ok && sample.configured;
 
-    if (configured == 0u) {
+    if (!configured) {
         icm42688_running = 0u;
 
         if (icm42688_last_status == ICM42688P::Status::Ok
@@ -218,26 +213,26 @@ void PrintLatest()
         printf("[ICM42688P] unavailable get=%ld st=%ld e=%lu\r\n",
                static_cast<long>(status),
                static_cast<long>(icm42688_last_status),
-               (unsigned long)sample.error_counter);
+               static_cast<unsigned long>(sample.error_counter));
         return;
     }
 
-    const long accel_z_milli = (long)(sample.accel_m_s2[2] * 1000.0f);
-    const long gyro_z_milli = (long)(sample.gyro_rad_s[2] * 1000.0f);
-    const long delta_time_ms = (long)(sample.delta_time_s * 1000.0f);
-    const long delta_angle_z_micro = (long)(sample.delta_angle_rad[2] * 1000000.0f);
-    const long delta_velocity_z_micro = (long)(sample.delta_velocity_m_s[2] * 1000000.0f);
+    const long accel_z_milli = static_cast<long>(sample.accel_m_s2[2] * 1000.0f);
+    const long gyro_z_milli = static_cast<long>(sample.gyro_rad_s[2] * 1000.0f);
+    const long delta_time_ms = static_cast<long>(sample.delta_time_s * 1000.0f);
+    const long delta_angle_z_micro = static_cast<long>(sample.delta_angle_rad[2] * 1000000.0f);
+    const long delta_velocity_z_micro = static_cast<long>(sample.delta_velocity_m_s[2] * 1000000.0f);
 
     printf("[ICM42688P] st=%ld src=%u cnt=%u n=%u hdr=0x%02X s=%lu e=%lu "
            "irq=%lu dt=%ld dthz=%ld dvz=%ld az=%ld gz=%ld\r\n",
            static_cast<long>(icm42688_last_status),
-           (unsigned int)sample.data_source,
-           (unsigned int)sample.fifo_count_bytes,
-           (unsigned int)sample.fifo_valid_packets,
-           (unsigned int)sample.fifo_header,
-           (unsigned long)sample.sample_counter,
-           (unsigned long)sample.error_counter,
-           (unsigned long)sample.interrupt_counter,
+           static_cast<unsigned int>(sample.data_source),
+           static_cast<unsigned int>(sample.fifo_count_bytes),
+           static_cast<unsigned int>(sample.fifo_valid_packets),
+           static_cast<unsigned int>(sample.fifo_header),
+           static_cast<unsigned long>(sample.sample_counter),
+           static_cast<unsigned long>(sample.error_counter),
+           static_cast<unsigned long>(sample.interrupt_counter),
            delta_time_ms,
            delta_angle_z_micro,
            delta_velocity_z_micro,
@@ -271,13 +266,16 @@ void icm42688_service::NotifyDataReadyFromISR(const uint64_t timestamp_us)
  * @brief  Service 统一执行入口
  *
  * @note   由 Scheduler 的高优先级事件路径和 1 kHz 周期兜底路径共用。
+ *         内部 polling 标志防止嵌套重入（如 handler 间接触发 scheduler）。
+ *
+ *         执行阶段：
  *         1. 驱动尚未启动时按固定节拍尝试构造和 Init；
  *         2. 启动后调用 Update() 推进 RunImpl；
- *         3. 按既有节拍进入默认关闭的调试输出路径。
- *         内部 polling 标志防止嵌套重入（如 handler 间接触发 scheduler）。
+ *         3. 按独立节拍进入默认关闭的调试输出路径。
  */
 void icm42688_service::Run()
 {
+    // 防重入保护：如果 scheduler 在 handler 中间接触发本函数，直接返回。
     if (icm42688_service_polling != 0u) {
         return;
     }
@@ -285,10 +283,9 @@ void icm42688_service::Run()
     icm42688_service_polling = 1u;
     const uint32_t now = TimeBase_Millis();
 
+    // 阶段 1：驱动尚未完成 Init 时，按节拍尝试 ServiceInit。
     if (!icm42688_started) {
-        if (TickReached(now,
-                        icm42688_last_init_service_tick
-                        + ICM42688_INIT_SERVICE_INTERVAL_MS)) {
+        if (TickReached(now, icm42688_last_init_service_tick + ICM42688_INIT_SERVICE_INTERVAL_MS)) {
             icm42688_last_init_service_tick = now;
             ServiceInit(now);
         }
@@ -297,11 +294,11 @@ void icm42688_service::Run()
         return;
     }
 
+    // 阶段 2：推进底层驱动状态机。
     Update();
 
-    if (TickReached(now,
-                    icm42688_last_debug_service_tick
-                    + ICM42688_DEBUG_SERVICE_INTERVAL_MS)) {
+    // 阶段 3：按独立节拍触发调试输出（默认由编译开关关闭）。
+    if (TickReached(now, icm42688_last_debug_service_tick + ICM42688_DEBUG_SERVICE_INTERVAL_MS)) {
         icm42688_last_debug_service_tick = now;
         PrintLatest();
     }
