@@ -1,78 +1,192 @@
 /**
  * @file    scheduler.h
- * @brief   裸机 cooperative 调度器接口
+ * @brief   通用裸机协作式 WorkQueue-like 调度器接口（C ABI）
  *
  * @details
- * 调度器分为两层：
+ * 新 Scheduler 参考 PX4 WorkQueue / ScheduledWorkItem 思想，但不引入 RTOS
+ * 线程、独立任务栈、抢占、时间片、阻塞等待、信号量、互斥锁、动态内存。
  *
- * 1. 高优先级事件（响应式）
- *    ISR 通过 Scheduler_PostHighPriorityEventFromISR() 原子置位事件位图；
- *    主循环中 Scheduler_HighPriorityPoll() 轮询位图并分发到对应 handler。
- *    当前只有 SCHED_HP_EVENT_IMU_DRDY 一个事件，对应 icm42688_service::Run。
+ * 调度器核心不依赖任何业务模块（ICM42688P、IMU、FIFO、EXIT、TimeBase、UART、
+ * HAL_SPI、HAL_TIM 等）。时间和临界区能力通过 SchedulerPort 回调注入。
  *
- * 2. 周期轮询任务
- *    静态任务表 sched_tasks[] 定义了一组从 1000 Hz 到 0.1 Hz 的回调；
- *    Scheduler_Run() 每 tick 检查所有任务是否到期并执行。
- *    1 kHz 任务固定调用 icm42688_service::Run() 作为 IMU 周期兜底路径。
- *
- * ISR ↔ 普通上下文边界：
- *    - PostHighPriorityEventFromISR 可在 ISR 调用，仅操作 volatile 位图。
- *    - 事件 handler（Service::Run）在普通上下文中由 HighPriorityPoll 调用。
- *    - 周期任务回调均在普通上下文中执行。
+ * 本头文件 C/C++ 均可 include。所有公开类型使用 C-compatible 声明。
  */
 
 #ifndef ELECTROMAGNETICARTILLERY_SCHEDULER_H
 #define ELECTROMAGNETICARTILLERY_SCHEDULER_H
 
-#include "stm32h7xx.h"
-
-// 调度器基础 tick 为 1 ms，每秒 1000 tick。
-#define TICK_PER_SECOND 1000
-
-// ── 高优先级事件位定义 ──
-// IMU data-ready 事件位。ISR adapter 通过该事件通知主循环尽快运行
-// IMU Service，ISR 本身不执行 SPI 读取或驱动处理逻辑。
-#define SCHED_HP_EVENT_IMU_DRDY (1u << 0)
-
-// ── 周期轮询任务表项 ──
-typedef struct
-{
-    // 周期任务函数指针，由 Scheduler_Run() 在任务到期时调用。
-    void(*task_func)(void);
-    // 任务期望执行频率，单位 Hz。
-    float rate_hz;
-    // 执行间隔，单位为 1 ms tick；由 Scheduler_Setup() 根据 rate_hz 计算。
-    uint16_t interval_ticks;
-    // 任务上一次执行的时间戳，单位 ms。
-    uint32_t last_run;
-}sched_task_t;
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
+// ============================================================================
+// 第一部分：通用 WorkQueue-like Scheduler 类型定义（C-compatible）
+// ============================================================================
+
+// ── 任务标识 ──
+typedef uint8_t SchedulerTaskId;
+#define SCHEDULER_TASK_ID_INVALID  0xFFu
+
+// ── 事件掩码（最多 32 种事件） ──
+typedef uint32_t SchedulerEventMask;
+
+// ── 运行原因（bitmask，可同时设置多个原因） ──
+typedef uint32_t SchedulerRunReason;
+#define SCHEDULER_REASON_NONE      0u
+#define SCHEDULER_REASON_EVENT     (1u << 0)
+#define SCHEDULER_REASON_DEADLINE  (1u << 1)
+#define SCHEDULER_REASON_INTERVAL  (1u << 2)
+#define SCHEDULER_REASON_MANUAL    (1u << 3)
+
+// ── 优先级（当前阶段三档） ──
+typedef enum {
+    SCHEDULER_PRIORITY_LOW    = 0,
+    SCHEDULER_PRIORITY_NORMAL = 1,
+    SCHEDULER_PRIORITY_HIGH   = 2,
+} SchedulerPriority;
+
+// ── 最大任务数（受 32-bit bookkeeping 限制） ──
+#define SCHEDULER_MAX_TASKS 16u
+#if SCHEDULER_MAX_TASKS > 32u
+#error "SCHEDULER_MAX_TASKS must be <= 32 because scheduler ready/event bookkeeping uses 32-bit masks."
+#endif
+
+// ── Token-based 临界区 ──
+typedef uint32_t SchedulerCriticalState;
+
+typedef SchedulerCriticalState (*SchedulerEnterCriticalFn)(void);
+typedef void                   (*SchedulerExitCriticalFn)(SchedulerCriticalState state);
+
+// ── SchedulerPort 回调表（初始化时注入，生命周期 >= 调度器生命周期） ──
+typedef struct {
+    uint32_t (*get_time_ms)(void);
+    uint64_t (*get_time_us)(void);
+    SchedulerEnterCriticalFn enter_critical;
+    SchedulerExitCriticalFn  exit_critical;
+} SchedulerPort;
+
+// ── Task callback 签名 ──
+typedef void (*SchedulerTaskFn)(
+    SchedulerRunReason reason,
+    SchedulerEventMask events,
+    uint32_t            now_ms,
+    uint64_t            now_us,
+    void               *context
+);
+
+// ── 任务注册配置 ──
+typedef struct {
+    const char        *name;                  // 调试名称（可为 NULL）
+    SchedulerTaskFn    fn;                    // 任务回调（不可为 NULL）
+    void              *context;               // 用户上下文
+    SchedulerPriority  priority;              // 优先级
+    SchedulerEventMask event_mask;            // 订阅的事件掩码（0 = 不订阅事件）
+    uint32_t           period_ms;             // 周期调度间隔（0 = 不周期调度）
+    uint32_t           initial_delay_ms;      // 首次周期调度延迟；0 表示使用 period_ms 作为首次延迟
+    uint32_t           event_deadline_ms;     // event deadline 最大等待时间（0 = 无 deadline）
+    uint8_t            enable_on_register;    // 注册后立即启用（非 0 = 启用）
+} SchedulerTaskConfig;
+
+// ── 运行时统计 ──
+typedef struct {
+    uint32_t run_count;               // 累计被调度次数
+    uint32_t event_run_count;         // 其中因 event 触发的次数
+    uint32_t deadline_run_count;      // 其中因 deadline/delay 触发的次数
+    uint32_t interval_run_count;      // 其中因周期 interval 触发的次数
+    uint32_t manual_run_count;        // 其中因 ScheduleNow 触发的次数
+    uint32_t deadline_miss_count;     // 预留：deadline 到期但任务未及时运行次数，后续定义统计语义后启用
+    uint32_t reentry_block_count;     // 任务正运行中被再次触发而拦截的次数
+    uint32_t last_runtime_us;         // 最近一次执行时间，微秒
+    uint32_t max_runtime_us;          // 单次最大执行时间，微秒
+    uint32_t min_runtime_us;          // 单次最小执行时间，微秒
+    uint32_t last_run_ms;             // 最近一次执行时刻，调度器毫秒时间戳
+    uint64_t last_run_us;             // 最近一次执行时刻，调度器微秒时间戳
+} SchedulerTaskStats;
+
+// ============================================================================
+// 第二部分：通用 WorkQueue-like Scheduler API
+// ============================================================================
+
+// ── A. 初始化 ──
+
 /**
- * @brief  初始化调度器，根据各周期任务频率计算 interval_ticks
- * @note   在 main 中调用一次，先于 Scheduler_Run。
+ * @brief  初始化调度器
+ * @param  port  平台适配回调表（不可为 NULL，必要回调不可为空函数指针）
+ * @note   在 main() 中调用一次，先于所有 Register/Schedule/Run 操作。
  */
+void Scheduler_Init(const SchedulerPort *port);
+
+// ── B. 任务注册 ──
+
+SchedulerTaskId Scheduler_RegisterTask(const SchedulerTaskConfig *config);
+
+SchedulerTaskId Scheduler_RegisterPeriodicTask(const char *name, uint32_t period_ms, SchedulerTaskFn fn, void *context, SchedulerPriority priority);
+SchedulerTaskId Scheduler_RegisterEventTask(const char *name, SchedulerEventMask event_mask, SchedulerTaskFn fn, void *context, SchedulerPriority priority);
+SchedulerTaskId Scheduler_RegisterEventDeadlineTask(const char *name, SchedulerEventMask event_mask, uint32_t deadline_ms, SchedulerTaskFn fn, void *context, SchedulerPriority priority);
+
+// ── C. 事件投递 ──
+
+void Scheduler_PostEvent(SchedulerEventMask event_mask);
+void Scheduler_PostEventFromISR(SchedulerEventMask event_mask);
+
+// ── D. 调度控制（普通上下文） ──
+
+void Scheduler_ScheduleNow(SchedulerTaskId task_id);
+void Scheduler_ScheduleDelayed(SchedulerTaskId task_id, uint32_t delay_ms);
+void Scheduler_ScheduleAt(SchedulerTaskId task_id, uint32_t target_ms);
+void Scheduler_ScheduleOnInterval(SchedulerTaskId task_id, uint32_t interval_ms, uint32_t initial_delay_ms);
+void Scheduler_Cancel(SchedulerTaskId task_id);
+
+// ── E. 调度控制（ISR 上下文） ──
+
+void Scheduler_ScheduleNowFromISR(SchedulerTaskId task_id);
+void Scheduler_ScheduleDelayedFromISR(SchedulerTaskId task_id, uint32_t delay_ms);
+void Scheduler_ScheduleAtFromISR(SchedulerTaskId task_id, uint32_t target_ms);
+void Scheduler_CancelFromISR(SchedulerTaskId task_id);
+
+// ── F. 启用 / 禁用 ──
+
+void    Scheduler_EnableTask(SchedulerTaskId task_id);
+void    Scheduler_DisableTask(SchedulerTaskId task_id);
+uint8_t Scheduler_IsTaskEnabled(SchedulerTaskId task_id);
+
+// ── G. 调度器入口 ──
+
+/**
+ * @brief  运行一个调度周期
+ * @note   在 main while(1) 中反复调用。内部取出 ready 任务并按优先级执行。
+ */
+void Scheduler_RunOnce(void);
+
+// ── H. 运行时统计查询 ──
+
+uint8_t Scheduler_GetTaskStats(SchedulerTaskId task_id, SchedulerTaskStats *stats);
+void    Scheduler_ClearTaskStats(SchedulerTaskId task_id);
+void    Scheduler_ClearAllTaskStats(void);
+uint8_t Scheduler_GetTaskCount(void);
+
+// ============================================================================
+// 第三部分：Legacy Compatibility（阶段 7 移除）
+// ============================================================================
+
+// ── 旧高优先级事件位定义 ──
+#define SCHED_HP_EVENT_IMU_DRDY (1u << 0)
+#define TICK_PER_SECOND 1000
+
+// ── 旧周期轮询任务表项 ──
+typedef struct {
+    void (*task_func)(void);
+    float rate_hz;
+    uint16_t interval_ticks;
+    uint32_t last_run;
+} sched_task_t;
+
+// ── 旧 API（当前仍被 main.c / EXIT.cpp 使用） ──
+
 void Scheduler_Setup(void);
-
-/**
- * @brief  cooperative 调度入口，在 main while(1) 中反复调用
- *
- * @note   负责分发高优先级事件并遍历周期任务表。
- *         在每次任务检查前后插入 Scheduler_HighPriorityPoll()，
- *         使 ISR 投递的事件尽快在普通上下文得到处理。
- */
 void Scheduler_Run(void);
-
-/**
- * @brief  ISR 级事件投递入口：原子置位高优先级事件，不直接执行 handler
- * @param  event 高优先级事件位（如 SCHED_HP_EVENT_IMU_DRDY）
- *
- * @note   仅操作位图，不在 ISR 上下文执行 SPI、FIFO 或 printf。
- *         可在 ISR 中安全调用。
- */
 void Scheduler_PostHighPriorityEventFromISR(uint32_t event);
 
 #ifdef __cplusplus
