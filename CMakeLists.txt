@@ -57,6 +57,7 @@ include_directories(Core/Inc Drivers/STM32H7xx_HAL_Driver/Inc Drivers/STM32H7xx_
                     Lib/Printf
                     Lib/RGB
                     Lib/Scheduler
+                    Lib/SystemPort
                     Lib/TimeBase
                     Lib/Timer
                     Lib/Uart
@@ -72,6 +73,7 @@ file(GLOB_RECURSE SOURCES "Core/*.*" "Drivers/*.*"
     Lib/Printf/*.*
     Lib/RGB/*.*
     Lib/Scheduler/*.*
+    Lib/SystemPort/*.*
     Lib/TimeBase/*.*
     Lib/Timer/*.*
     Lib/Uart/*.*
