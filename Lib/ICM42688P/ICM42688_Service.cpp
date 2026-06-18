@@ -259,7 +259,7 @@ void icm42688_service::NotifyDataReadyFromISR(const uint64_t timestamp_us)
         icm42688->DataReady(timestamp_us);
     }
 
-    Scheduler_PostHighPriorityEventFromISR(SCHED_HP_EVENT_IMU_DRDY);
+    Scheduler_PostEventFromISR(SCHED_HP_EVENT_IMU_DRDY);
 }
 
 /**

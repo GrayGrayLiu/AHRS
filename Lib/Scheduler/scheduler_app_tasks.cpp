@@ -22,9 +22,18 @@ namespace
 // Task ID（文件作用域，stats task 通过 s_smoke_id 读取 smoke 的统计）
 // ============================================================================
 
+constexpr uint32_t IMU_DRDY_DEADLINE_MS = 5u;
+
 static SchedulerTaskId s_smoke_id = SCHEDULER_TASK_ID_INVALID;
 static SchedulerTaskId s_stats_id = SCHEDULER_TASK_ID_INVALID;
 static SchedulerTaskId s_imu_debug_id = SCHEDULER_TASK_ID_INVALID;
+static SchedulerTaskId s_imu_drdy_id = SCHEDULER_TASK_ID_INVALID;
+static SchedulerTaskId s_imu_drdy_diag_id = SCHEDULER_TASK_ID_INVALID;
+
+// ── 6B-6C 过渡诊断计数器（阶段 6D 删除） ──
+static volatile uint32_t s_imu_drdy_total_count    = 0u;
+static volatile uint32_t s_imu_drdy_event_count    = 0u;
+static volatile uint32_t s_imu_drdy_deadline_count = 0u;
 
 // ============================================================================
 // Smoke heartbeat task — 验证 generic Scheduler 周期调度链路
@@ -135,6 +144,48 @@ static void ImuDebugTask(SchedulerRunReason reason, SchedulerEventMask events,
            imu.temperature_deg_c);
 }
 
+// ============================================================================
+// ICM42688P event+deadline task（阶段 6B 接入，6C 后成为主数据路径）
+// ============================================================================
+
+/**
+ * @brief  ICM42688P data-ready event+deadline task（HIGH priority）。
+ * @note   6B 阶段验证 generic event path 全链路（ISR→PostEvent→RunOnce→callback）；
+ *         6C 停用 Loop_1000Hz 后本 task 成为 IMU 主数据路径。
+ *         不直接访问 SPI/FIFO，只调用 icm42688_service::Run()。
+ */
+static void ImuDrdyTask(SchedulerRunReason reason, SchedulerEventMask events,
+                        uint32_t now_ms, uint64_t now_us, void *context)
+{
+    (void)events; (void)now_ms; (void)now_us; (void)context;
+
+    ++s_imu_drdy_total_count;
+
+    if ((reason & SCHEDULER_REASON_EVENT) != 0u)    { ++s_imu_drdy_event_count; }
+    if ((reason & SCHEDULER_REASON_DEADLINE) != 0u) { ++s_imu_drdy_deadline_count; }
+
+    icm42688_service::Run();
+}
+
+// ============================================================================
+// 6B 过渡诊断 print task（30 s，阶段 6D 删除）
+// ============================================================================
+
+/**
+ * @brief  6B 过渡诊断 task：输出 ImuDrdyTask 的 reason 计数。
+ * @note   30 秒周期，LOW priority。阶段 6D 删除。
+ */
+static void ImuDrdyDiagTask(SchedulerRunReason reason, SchedulerEventMask events,
+                            uint32_t now_ms, uint64_t now_us, void *context)
+{
+    (void)reason; (void)events; (void)now_ms; (void)now_us; (void)context;
+
+    printf("[drdy] total=%lu event=%lu deadline=%lu\r\n",
+           (unsigned long)s_imu_drdy_total_count,
+           (unsigned long)s_imu_drdy_event_count,
+           (unsigned long)s_imu_drdy_deadline_count);
+}
+
 } // namespace
 
 // ============================================================================
@@ -168,5 +219,20 @@ extern "C" void SchedulerAppTasks_RegisterAll(void)
 
     if (s_imu_debug_id == SCHEDULER_TASK_ID_INVALID) {
         printf("[sched] imu_debug register failed\r\n");
+    }
+
+    s_imu_drdy_id = Scheduler_RegisterEventDeadlineTask(
+        "imu_drdy", SCHED_HP_EVENT_IMU_DRDY, IMU_DRDY_DEADLINE_MS,
+        ImuDrdyTask, NULL, SCHEDULER_PRIORITY_HIGH);
+
+    if (s_imu_drdy_id == SCHEDULER_TASK_ID_INVALID) {
+        printf("[sched] imu_drdy register failed\r\n");
+    }
+
+    s_imu_drdy_diag_id = Scheduler_RegisterPeriodicTask(
+        "imu_drdy_diag", 30000u, ImuDrdyDiagTask, NULL, SCHEDULER_PRIORITY_LOW);
+
+    if (s_imu_drdy_diag_id == SCHEDULER_TASK_ID_INVALID) {
+        printf("[sched] imu_drdy_diag register failed\r\n");
     }
 }
