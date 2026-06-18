@@ -4,15 +4,15 @@
  *
  * @details
  * 本文件实现所有挂载到 generic Scheduler 的应用级任务 callback 和注册逻辑。
- * 当前包含阶段 4C 的 smoke heartbeat task 和 stats reader task；
- * 后续可在此新增 IMU debug print、LED 管理等低优先级任务。
+ * 当前包含 smoke heartbeat task、stats reader task 和 IMU debug print task；
+ * 后续可在此新增 LED 管理等低优先级任务。
  *
- * 不依赖 ICM42688P / SPI / FIFO / EXIT / TimeBase。
- * 不实现任何调度核心逻辑。
+ * 不依赖 SPI / FIFO / EXIT / TimeBase。不实现任何调度核心逻辑。
  */
 
 #include "scheduler_app_tasks.h"
 #include "scheduler.h"
+#include "ICM42688_Service.hpp"
 #include <stdio.h>
 
 namespace
@@ -24,6 +24,7 @@ namespace
 
 static SchedulerTaskId s_smoke_id = SCHEDULER_TASK_ID_INVALID;
 static SchedulerTaskId s_stats_id = SCHEDULER_TASK_ID_INVALID;
+static SchedulerTaskId s_imu_debug_id = SCHEDULER_TASK_ID_INVALID;
 
 // ============================================================================
 // Smoke heartbeat task — 验证 generic Scheduler 周期调度链路
@@ -75,6 +76,65 @@ static void StatsTask(SchedulerRunReason reason, SchedulerEventMask events,
     }
 }
 
+// ============================================================================
+// IMU debug print task — 从 legacy Loop_1Hz 迁移到 generic Scheduler
+// ============================================================================
+
+/**
+ * @brief  IMU delta 调试 print task（1 Hz 低优先级）。
+ * @note   等价于旧 Print_ICM42688_Delta_Debug()。只读取 Service 缓存，不访问
+ *         SPI / FIFO / EXIT，不修改 ICM42688P 驱动状态机。自行维护 sample_counter 去重。
+ */
+static void ImuDebugTask(SchedulerRunReason reason, SchedulerEventMask events,
+                         uint32_t now_ms, uint64_t now_us, void *context)
+{
+    (void)reason; (void)events; (void)now_ms; (void)now_us; (void)context;
+
+    icm42688_service::DeltaSample imu{};
+    const ICM42688P::Status status = icm42688_service::GetDeltaLatest(&imu);
+
+    if (status != ICM42688P::Status::Ok) {
+        printf("[imu] st=%d\r\n", static_cast<int>(status));
+        return;
+    }
+
+    static uint32_t s_imu_last_sample_counter = 0u;
+
+    if (imu.sample_counter == s_imu_last_sample_counter) {
+        return;
+    }
+    s_imu_last_sample_counter = imu.sample_counter;
+
+    if (imu.delta_time_s <= 0.0f) {
+        printf("[imu] bad dt\r\n");
+        return;
+    }
+
+    float gyro_rad_s[3];
+    float force_m_s2[3];
+
+    for (uint8_t i = 0; i < 3; i++) {
+        gyro_rad_s[i] = imu.delta_angle_rad[i] / imu.delta_time_s;
+        force_m_s2[i] = imu.delta_velocity_m_s[i] / imu.delta_time_s;
+    }
+
+    printf("t=%llu c=%lu n=%u dt=%.6f "
+           "w=%.1f %.1f %.1f "
+           "f=%.2f %.2f %.2f "
+           "T=%.2f\r\n",
+           (unsigned long long)imu.timestamp_us,
+           (unsigned long)imu.sample_counter,
+           (unsigned int)imu.delta_samples,
+           imu.delta_time_s,
+           gyro_rad_s[0] * 57.2957795f,
+           gyro_rad_s[1] * 57.2957795f,
+           gyro_rad_s[2] * 57.2957795f,
+           force_m_s2[0],
+           force_m_s2[1],
+           force_m_s2[2],
+           imu.temperature_deg_c);
+}
+
 } // namespace
 
 // ============================================================================
@@ -101,5 +161,12 @@ extern "C" void SchedulerAppTasks_RegisterAll(void)
 
     if (s_stats_id == SCHEDULER_TASK_ID_INVALID) {
         printf("[sched] stats register failed\r\n");
+    }
+
+    s_imu_debug_id = Scheduler_RegisterPeriodicTask(
+        "imu_debug", 1000u, ImuDebugTask, NULL, SCHEDULER_PRIORITY_LOW);
+
+    if (s_imu_debug_id == SCHEDULER_TASK_ID_INVALID) {
+        printf("[sched] imu_debug register failed\r\n");
     }
 }

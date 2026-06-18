@@ -253,60 +253,6 @@ void Scheduler_HighPriorityPoll()
 // 周期轮询任务调度区域（Legacy — 阶段 7 移除）
 // ============================================================================
 
-// 记录最近一次已打印的 IMU sample counter，避免 1 Hz 调试任务重复打印同一批数据。
-uint32_t imu_last_sample_counter = 0u;
-
-/**
- * @brief  1 Hz IMU delta 调试 print（阶段 7 迁移到低优 periodic task）。
- * @note   只读取 Service 缓存，不直接访问 SPI，不参与 ICM42688P 驱动状态机。
- */
-void Print_ICM42688_Delta_Debug()
-{
-    icm42688_service::DeltaSample imu{};
-
-    const ICM42688P::Status status = icm42688_service::GetDeltaLatest(&imu);
-
-    if (status != ICM42688P::Status::Ok) {
-        printf("[imu] st=%d\r\n", static_cast<int>(status));
-        return;
-    }
-
-    if (imu.sample_counter == imu_last_sample_counter) {
-        return; // 没有新数据时不重复打印。
-    }
-
-    imu_last_sample_counter = imu.sample_counter;
-
-    if (imu.delta_time_s <= 0.0f) {
-        printf("[imu] bad dt\r\n");
-        return;
-    }
-
-    float gyro_rad_s[3];
-    float force_m_s2[3];
-
-    for (uint8_t i = 0; i < 3; i++) {
-        gyro_rad_s[i] = imu.delta_angle_rad[i] / imu.delta_time_s;
-        force_m_s2[i] = imu.delta_velocity_m_s[i] / imu.delta_time_s;
-    }
-
-    printf("t=%llu c=%lu n=%u dt=%.6f "
-           "w=%.1f %.1f %.1f "
-           "f=%.2f %.2f %.2f "
-           "T=%.2f\r\n",
-           (unsigned long long)imu.timestamp_us,
-           (unsigned long)imu.sample_counter,
-           (unsigned int)imu.delta_samples,
-           imu.delta_time_s,
-           gyro_rad_s[0] * 57.2957795f,
-           gyro_rad_s[1] * 57.2957795f,
-           gyro_rad_s[2] * 57.2957795f,
-           force_m_s2[0],
-           force_m_s2[1],
-           force_m_s2[2],
-           imu.temperature_deg_c);
-}
-
 // ── 周期任务回调（Legacy — 阶段 7 移除） ──
 // 各频率任务由 Scheduler_Run() 按 interval_ticks 到期调用。均在普通上下文中执行。
 // Loop_500Hz ~ Loop_10Hz 及 Loop_0_5Hz ~ Loop_0_1Hz 为预留占位槽，当前空函数。
@@ -382,11 +328,11 @@ void Loop_2Hz()
 }
 
 /**
- * @brief  Legacy 1 Hz debug print wrapper（阶段 7 迁移）。
+ * @brief  Legacy 1 Hz 占位槽。
+ * @note   IMU debug print 已迁移到 generic Scheduler 的 ImuDebugTask。
  */
 void Loop_1Hz()
 {
-    Print_ICM42688_Delta_Debug();
 }
 
 /**
