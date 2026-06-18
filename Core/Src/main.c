@@ -52,7 +52,8 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-
+static SchedulerTaskId scheduler_smoke_task_id = SCHEDULER_TASK_ID_INVALID;
+static SchedulerTaskId scheduler_stats_task_id = SCHEDULER_TASK_ID_INVALID;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -65,6 +66,7 @@ static void MPU_Config(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 static void SchedulerSmokeTask(SchedulerRunReason reason, SchedulerEventMask events, uint32_t now_ms, uint64_t now_us, void *context);
+static void SchedulerStatsTask(SchedulerRunReason reason, SchedulerEventMask events, uint32_t now_ms, uint64_t now_us, void *context);
 /* USER CODE END 0 */
 
 /**
@@ -120,11 +122,18 @@ int main(void)
 
       Scheduler_Init(&scheduler_port);
 
-      const SchedulerTaskId smoke_id = Scheduler_RegisterPeriodicTask(
+      scheduler_smoke_task_id = Scheduler_RegisterPeriodicTask(
           "scheduler_smoke", 2000u, SchedulerSmokeTask, NULL, SCHEDULER_PRIORITY_LOW);
 
-      if (smoke_id == SCHEDULER_TASK_ID_INVALID) {
+      if (scheduler_smoke_task_id == SCHEDULER_TASK_ID_INVALID) {
           printf("[sched] smoke register failed\r\n");
+      } else {
+          scheduler_stats_task_id = Scheduler_RegisterPeriodicTask(
+              "scheduler_stats", 5000u, SchedulerStatsTask, NULL, SCHEDULER_PRIORITY_LOW);
+
+          if (scheduler_stats_task_id == SCHEDULER_TASK_ID_INVALID) {
+              printf("[sched] stats register failed\r\n");
+          }
       }
   }
   /* USER CODE END 2 */
@@ -220,6 +229,34 @@ static void SchedulerSmokeTask(SchedulerRunReason reason, SchedulerEventMask eve
     ++count;
 
     printf("[sched] heartbeat count=%lu\r\n", (unsigned long)count);
+}
+
+/**
+ * @brief  阶段 4C stats smoke task：验证 Scheduler_GetTaskStats 和多任务并行。
+ * @note   只读取 smoke task 的调度统计并 printf，不访问 ICM42688P / SPI / FIFO。
+ *         阶段 5 后可用正式任务替换或删除。
+ */
+static void SchedulerStatsTask(SchedulerRunReason reason, SchedulerEventMask events,
+                               uint32_t now_ms, uint64_t now_us, void *context)
+{
+    (void)reason;
+    (void)events;
+    (void)now_ms;
+    (void)now_us;
+    (void)context;
+
+    if (scheduler_smoke_task_id == SCHEDULER_TASK_ID_INVALID) {
+        return;
+    }
+
+    SchedulerTaskStats stats;
+    if (Scheduler_GetTaskStats(scheduler_smoke_task_id, &stats) != 0u) {
+        printf("[sched] stats smoke_run=%lu interval=%lu last_us=%lu max_us=%lu\r\n",
+               (unsigned long)stats.run_count,
+               (unsigned long)stats.interval_run_count,
+               (unsigned long)stats.last_runtime_us,
+               (unsigned long)stats.max_runtime_us);
+    }
 }
 
 /* USER CODE END 4 */
