@@ -1033,49 +1033,17 @@ extern "C" void Scheduler_PostHighPriorityEventFromISR(const uint32_t event)
 }
 
 /**
- * @brief  初始化调度器：计算周期任务 tick 间隔，并调用应用层初始化入口
- *
- * @note   Scheduler_AppSetup() 是独立的应用层初始化扩展点，与调度器自身设置分离。
- *         在 main 中调用一次，先于 Scheduler_Run。
+ * @brief  Legacy 调度器初始化占位（阶段 6D 已停用）。
+ * @note   所有 IMU 运行和调试任务已迁移到 generic Scheduler。阶段 7 删除。
  */
 extern "C" void Scheduler_Setup(void)
 {
-    for (size_t index = 0u; index < TASK_NUM; ++index) {
-        sched_tasks[index].interval_ticks = TICK_PER_SECOND / sched_tasks[index].rate_hz;
-
-        if (sched_tasks[index].interval_ticks < 1) {
-            sched_tasks[index].interval_ticks = 1;
-        }
-    }
-
-    Scheduler_AppSetup();
 }
 
 /**
- * @brief  cooperative 主循环入口，在 main while(1) 中反复调用
- *
- * @note   在每次任务检查前后插入 Scheduler_HighPriorityPoll()，
- *         使 ISR 投递的 IMU data-ready 事件尽快在普通上下文得到处理。
- *         周期任务按 TimeBase_Millis() + interval_ticks 判断是否到期。
- *
- *         调度顺序：
- *         1. 入循环时先 poll 一次，处理积压的高优事件；
- *         2. 对每个周期任务：poll → 检查到期 → poll → 执行 → poll；
- *         3. poll 的 polling 静态标志防止嵌套。
+ * @brief  Legacy 调度器主循环占位（阶段 6D 已停用）。
+ * @note   所有任务已迁移到 generic Scheduler_RunOnce()。阶段 7 删除。
  */
 extern "C" void Scheduler_Run(void)
 {
-    Scheduler_HighPriorityPoll();
-
-    for (size_t index = 0u; index < TASK_NUM; ++index) {
-        Scheduler_HighPriorityPoll();
-        const uint32_t t_now = TimeBase_Millis();
-
-        if (t_now - sched_tasks[index].last_run >= sched_tasks[index].interval_ticks) {
-            sched_tasks[index].last_run = t_now;
-            Scheduler_HighPriorityPoll();
-            sched_tasks[index].task_func();
-            Scheduler_HighPriorityPoll();
-        }
-    }
 }
