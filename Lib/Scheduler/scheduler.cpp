@@ -258,12 +258,11 @@ void Scheduler_HighPriorityPoll()
 // Loop_500Hz ~ Loop_10Hz 及 Loop_0_5Hz ~ Loop_0_1Hz 为预留占位槽，当前空函数。
 
 /**
- * @brief  Legacy 1 kHz 周期 backup 路径（阶段 7 迁移）。
- * @note   即使 EXTI 事件暂时缺失，也能持续推进 IMU 初始化和 watchdog 状态机。
+ * @brief  Legacy 1 kHz 占位槽。
+ * @note   阶段 6C 已停用：IMU 运行已迁移到 generic Scheduler event+deadline task。
  */
 void Loop_1000Hz()
 {
-    icm42688_service::Run();
 }
 
 /**

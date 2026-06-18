@@ -41,9 +41,8 @@ static volatile uint32_t s_imu_drdy_deadline_count = 0u;
 
 /**
  * @brief  阶段 4C/5B 临时 smoke heartbeat task。
- * @note   只做 heartbeat printf，验证 generic Scheduler 周期调度链路存活。
- *         不访问 ICM42688P / SPI / FIFO / 飞控数据链路。
- *         后续可用正式低优先级任务替换或删除。
+ * @note   6C 阶段已禁用 printf：阻塞式 UART 输出会延迟 generic RunOnce 返回，
+ *         导致 ImuDrdyTask 不能及时消费 FIFO。计数器仍正常更新，可通过调试器读取。
  */
 static void SmokeTask(SchedulerRunReason reason, SchedulerEventMask events,
                       uint32_t now_ms, uint64_t now_us, void *context)
@@ -52,8 +51,7 @@ static void SmokeTask(SchedulerRunReason reason, SchedulerEventMask events,
 
     static uint32_t count = 0u;
     ++count;
-
-    printf("[sched] heartbeat count=%lu\r\n", (unsigned long)count);
+    // printf disabled in 6C to avoid blocking main loop during FIFO consumption.
 }
 
 // ============================================================================
@@ -62,9 +60,8 @@ static void SmokeTask(SchedulerRunReason reason, SchedulerEventMask events,
 
 /**
  * @brief  阶段 4C/5B 临时 stats reader task。
- * @note   验证 Scheduler_GetTaskStats() 和多个 generic periodic task 并行调度。
- *         只读取 smoke task 的调度统计并 printf，不访问 ICM42688P / SPI / FIFO。
- *         后续可用正式任务替换或删除。
+ * @note   6C 阶段已禁用 printf：阻塞式 UART 输出会导致 FIFO batch 抖动。
+ *         Scheduler_GetTaskStats 调用保留，可通过调试器观察统计值。
  */
 static void StatsTask(SchedulerRunReason reason, SchedulerEventMask events,
                       uint32_t now_ms, uint64_t now_us, void *context)
@@ -76,13 +73,8 @@ static void StatsTask(SchedulerRunReason reason, SchedulerEventMask events,
     }
 
     SchedulerTaskStats stats;
-    if (Scheduler_GetTaskStats(s_smoke_id, &stats) != 0u) {
-        printf("[sched] stats smoke_run=%lu interval=%lu last_us=%lu max_us=%lu\r\n",
-               (unsigned long)stats.run_count,
-               (unsigned long)stats.interval_run_count,
-               (unsigned long)stats.last_runtime_us,
-               (unsigned long)stats.max_runtime_us);
-    }
+    (void)Scheduler_GetTaskStats(s_smoke_id, &stats);
+    // printf disabled in 6C to avoid blocking main loop during FIFO consumption.
 }
 
 // ============================================================================
@@ -172,18 +164,17 @@ static void ImuDrdyTask(SchedulerRunReason reason, SchedulerEventMask events,
 // ============================================================================
 
 /**
- * @brief  6B 过渡诊断 task：输出 ImuDrdyTask 的 reason 计数。
- * @note   30 秒周期，LOW priority。阶段 6D 删除。
+ * @brief  6B/6C 过渡诊断 task（30 s，阶段 6D 删除）。
+ * @note   6C 阶段已禁用 printf：阻塞式 UART 输出会延迟 RunOnce 返回，导致下一轮
+ *         ImuDrdyTask 无法及时消费 FIFO，引发 batch 抖动和 n>20 异常。
+ *         计数器 s_imu_drdy_*_count 仍由 ImuDrdyTask 正常更新，可通过调试器读取。
  */
 static void ImuDrdyDiagTask(SchedulerRunReason reason, SchedulerEventMask events,
                             uint32_t now_ms, uint64_t now_us, void *context)
 {
     (void)reason; (void)events; (void)now_ms; (void)now_us; (void)context;
-
-    printf("[drdy] total=%lu event=%lu deadline=%lu\r\n",
-           (unsigned long)s_imu_drdy_total_count,
-           (unsigned long)s_imu_drdy_event_count,
-           (unsigned long)s_imu_drdy_deadline_count);
+    // printf disabled in 6C to avoid blocking the main loop during FIFO consumption.
+    // Counters are still updated by ImuDrdyTask and readable via debugger.
 }
 
 } // namespace
