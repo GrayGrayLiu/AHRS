@@ -29,6 +29,7 @@
 /* USER CODE BEGIN Includes */
 #include <stdio.h>
 #include "scheduler.h"
+#include "SystemPort.h"
 #include "Aided_INS_API.h"
 #include "TimeBase.h"
 /* USER CODE END Includes */
@@ -63,7 +64,7 @@ static void MPU_Config(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-
+static void SchedulerSmokeTask(SchedulerRunReason reason, SchedulerEventMask events, uint32_t now_ms, uint64_t now_us, void *context);
 /* USER CODE END 0 */
 
 /**
@@ -107,6 +108,25 @@ int main(void)
   TimeBase_Start();
   // UART output via __io_putchar (Lib/Printf/Printf.c)
   printf("ICM42688P hardware bring-up start\r\n");
+
+  // ── Generic Scheduler 接入（阶段 4A smoke test） ──
+  {
+      static const SchedulerPort scheduler_port = {
+          .get_time_ms    = SystemPort_GetMillis,
+          .get_time_us    = SystemPort_GetMicros,
+          .enter_critical = SystemPort_EnterCritical,
+          .exit_critical  = SystemPort_ExitCritical,
+      };
+
+      Scheduler_Init(&scheduler_port);
+
+      const SchedulerTaskId smoke_id = Scheduler_RegisterPeriodicTask(
+          "scheduler_smoke", 2000u, SchedulerSmokeTask, NULL, SCHEDULER_PRIORITY_LOW);
+
+      if (smoke_id == SCHEDULER_TASK_ID_INVALID) {
+          printf("[sched] smoke register failed\r\n");
+      }
+  }
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -114,6 +134,7 @@ int main(void)
   while (1)
   {
     Scheduler_Run();
+    Scheduler_RunOnce();
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -180,6 +201,26 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
+
+/**
+ * @brief  阶段 4A smoke task：验证 generic Scheduler 周期调度链路。
+ * @note   只做 heartbeat printf，不访问 ICM42688P / SPI / FIFO / 飞控数据链路。
+ *         阶段 4B 后可用正式低优先级任务替换或直接删除。
+ */
+static void SchedulerSmokeTask(SchedulerRunReason reason, SchedulerEventMask events,
+                               uint32_t now_ms, uint64_t now_us, void *context)
+{
+    (void)reason;
+    (void)events;
+    (void)now_ms;
+    (void)now_us;
+    (void)context;
+
+    static uint32_t count = 0u;
+    ++count;
+
+    printf("[sched] heartbeat count=%lu\r\n", (unsigned long)count);
+}
 
 /* USER CODE END 4 */
 
