@@ -183,10 +183,8 @@ typedef struct {
     uint32_t last_run;
 } sched_task_t;
 
-// ── 旧 API（当前仍被 main.c / EXIT.cpp 使用） ──
+// ── Legacy API（阶段 7 逐步移除） ──
 
-void Scheduler_Setup(void);
-void Scheduler_Run(void);
 void Scheduler_PostHighPriorityEventFromISR(uint32_t event);
 
 #ifdef __cplusplus

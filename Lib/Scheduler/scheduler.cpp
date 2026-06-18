@@ -1031,19 +1031,3 @@ extern "C" void Scheduler_PostHighPriorityEventFromISR(const uint32_t event)
     scheduler_hp_events |= event;
     __set_PRIMASK(primask);
 }
-
-/**
- * @brief  Legacy 调度器初始化占位（阶段 6D 已停用）。
- * @note   所有 IMU 运行和调试任务已迁移到 generic Scheduler。阶段 7 删除。
- */
-extern "C" void Scheduler_Setup(void)
-{
-}
-
-/**
- * @brief  Legacy 调度器主循环占位（阶段 6D 已停用）。
- * @note   所有任务已迁移到 generic Scheduler_RunOnce()。阶段 7 删除。
- */
-extern "C" void Scheduler_Run(void)
-{
-}
