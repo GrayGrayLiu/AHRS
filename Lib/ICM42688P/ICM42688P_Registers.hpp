@@ -33,6 +33,38 @@ namespace ICM42688P_Regs
     inline constexpr uint8_t Bit5 = 1u << 5;
     inline constexpr uint8_t Bit6 = 1u << 6;
     inline constexpr uint8_t Bit7 = 1u << 7;
+
+    inline constexpr uint8_t SPI_READ_BIT = Bit7;
+    inline constexpr uint8_t SPI_WRITE_ADDRESS_MASK = static_cast<uint8_t>(~SPI_READ_BIT);
+    inline constexpr uint8_t SPI_DUMMY_BYTE = 0xFF;
+    inline constexpr uint8_t WHO_AM_I_EXPECTED = 0x47;
+
+    inline constexpr uint32_t SPI_TRANSACTION_TIMEOUT_MS = 10u;
+    inline constexpr uint32_t POWER_ON_WAIT_MS = 1u;
+    inline constexpr uint32_t SOFT_RESET_WAIT_MS = 1u;
+    inline constexpr uint32_t SOFT_RESET_TIMEOUT_MS = 10u;
+    inline constexpr uint32_t RESET_POLL_INTERVAL_MS = 1u;
+    // Datasheet requires at least 200 us without register writes after enabling
+    // accel or gyro. HAL_Delay resolution is 1 ms in this project.
+    inline constexpr uint32_t SENSOR_MODE_CHANGE_WAIT_MS = 1u;
+    // Gyroscope must remain enabled for at least 45 ms before data is valid.
+    inline constexpr uint32_t SENSOR_STARTUP_WAIT_MS = 45u;
+
+    inline constexpr uint16_t SPI_COMMAND_LENGTH = 1u;
+    inline constexpr uint16_t REGISTER_VALUE_LENGTH = 1u;
+    inline constexpr uint16_t REGISTER_TRANSACTION_LENGTH = SPI_COMMAND_LENGTH + REGISTER_VALUE_LENGTH;
+    inline constexpr uint16_t MAX_READ_LENGTH = 256u;
+    inline constexpr uint16_t RAW_ACCEL_BURST_LENGTH = 6u;
+    inline constexpr uint16_t RAW_GYRO_BURST_LENGTH = 6u;
+    inline constexpr uint16_t RAW_ACCEL_GYRO_BURST_LENGTH = 12u;
+
+    inline constexpr uint8_t RAW_X_HIGH_INDEX = 0u;
+    inline constexpr uint8_t RAW_X_LOW_INDEX = 1u;
+    inline constexpr uint8_t RAW_Y_HIGH_INDEX = 2u;
+    inline constexpr uint8_t RAW_Y_LOW_INDEX = 3u;
+    inline constexpr uint8_t RAW_Z_HIGH_INDEX = 4u;
+    inline constexpr uint8_t RAW_Z_LOW_INDEX = 5u;
+    inline constexpr uint8_t RAW_HIGH_BYTE_SHIFT = 8u;
     /************************************************************************************************************************************************/
 
 
@@ -618,6 +650,16 @@ namespace ICM42688P_Regs
         ACCEL_ODR_1_5625HZ = Bit3 | Bit2 | Bit1, //1110: 1.5625Hz (LP mode)
         ACCEL_ODR_500HZ = Bit3 | Bit2 | Bit1 | Bit0, //1111: 500Hz (LP or LN mode)
     };
+
+    inline constexpr uint8_t MINIMAL_GYRO_CONFIG0 =
+        static_cast<uint8_t>(GYRO_CONFIG0_BITS::GYRO_FS_SEL_2000DPS) |
+        static_cast<uint8_t>(GYRO_CONFIG0_BITS::GYRO_ODR_1KHZ);
+    inline constexpr uint8_t MINIMAL_ACCEL_CONFIG0 =
+        static_cast<uint8_t>(ACCEL_CONFIG0_BITS::ACCEL_FS_SEL_16G) |
+        static_cast<uint8_t>(ACCEL_CONFIG0_BITS::ACCEL_ODR_1KHZ);
+    inline constexpr uint8_t MINIMAL_PWR_MGMT0 =
+        static_cast<uint8_t>(PWR_MGMT0_BITS::GYRO_MODE_GYRO_LOW_NOISE) |
+        static_cast<uint8_t>(PWR_MGMT0_BITS::ACCEL_MODE_ACC_LOW_NOISE);
 
     /**
      * @Name: GYRO_CONFIG1
@@ -1295,6 +1337,61 @@ namespace ICM42688P_Regs
     {
         ACCEL_Z_OFFUSER_7_0_MASK = Bit7 | Bit6 | Bit5 | Bit4 | Bit3 | Bit2 | Bit1 | Bit0, //Lower bits of Z-accel offset programmed by user.  Max value is ±1g, resolution is 0.5mg.
     };
+    /************************************************************************************************************************************************/
+
+
+    /******************************************************************FIFO描述***********************************************************************/
+    namespace FIFO
+    {
+        static constexpr size_t SIZE = 2048;
+
+        // FIFO_DATA layout when FIFO_CONFIG1 has FIFO_GYRO_EN and FIFO_ACCEL_EN set
+
+        // Packet 4
+        struct DATA {
+            uint8_t FIFO_Header;
+            uint8_t ACCEL_X_19_12; // Accel X [19:12]
+            uint8_t ACCEL_X_11_4;  // Accel X [11:4]
+            uint8_t ACCEL_Y_19_12; // Accel Y [19:12]
+            uint8_t ACCEL_Y_11_4;  // Accel Y [11:4]
+            uint8_t ACCEL_Z_19_12; // Accel Z [19:12]
+            uint8_t ACCEL_Z_11_4;  // Accel Z [11:4]
+            uint8_t GYRO_X_19_12;  // Gyro X [19:12]
+            uint8_t GYRO_X_11_4;   // Gyro X [11:4]
+            uint8_t GYRO_Y_19_12;  // Gyro Y [19:12]
+            uint8_t GYRO_Y_11_4;   // Gyro Y [11:4]
+            uint8_t GYRO_Z_19_12;  // Gyro Z [19:12]
+            uint8_t GYRO_Z_11_4;   // Gyro Z [11:4]
+            uint8_t TEMPERATURE_15_8; // Temperature[15:8]
+            uint8_t TEMPERATURE_7_0;  // Temperature[7:0]
+            uint8_t TIME_STAMP_15_8;  // TimeStamp[15:8]
+            uint8_t TIME_STAMP_7_0;   // TimeStamp[7:0]
+            uint8_t ACCEL_X_3_0_GYRO_X_3_0; // Accel X [3:0] Gyro X [3:0]
+            uint8_t ACCEL_Y_3_0_GYRO_Y_3_0; // Accel Y [3:0] Gyro Y [3:0]
+            uint8_t ACCEL_Z_3_0_GYRO_Z_3_0; // Accel Z [3:0] Gyro Z [3:0]
+        };
+
+        // With FIFO_ACCEL_EN and FIFO_GYRO_EN header should be 8’b_0110_10xx
+        enum FIFO_HEADER_BIT : uint8_t {
+            HEADER_MSG             = Bit7, // 1: FIFO is empty
+                                           // 0: Packet contains sensor data
+            HEADER_ACCEL           = Bit6, // 1: Packet is sized so that accel data have location in the packet, FIFO_ACCEL_EN must be 1
+                                           // 0: Packet does not contain accel sample
+            HEADER_GYRO            = Bit5, // 1: Packet is sized so that gyro data have location in the packet, FIFO_GYRO_EN must be 1
+                                           // 0: Packet does not contain gyro sample
+            HEADER_20              = Bit4, // 1: Packet has a new and valid sample of extended 20-bit data for gyro and/or accel
+                                           // 0: Packet does not contain a new and valid extended 20-bit data
+            HEADER_TIMESTAMP_FSYNC = Bit3 | Bit2, // 00: Packet does not contain timestamp or FSYNC time data
+                                                  // 01: Reserved
+                                                  // 10: Packet contains ODR Timestamp
+                                                  // 11: Packet contains FSYNC time, and this packet is flagged as first ODR after FSYNC (only if FIFO_TMST_FSYNC_EN is 1)
+            HEADER_ODR_ACCEL       = Bit1, // 1: The ODR for accel is different for this accel data packet compared to the previous accel packet
+                                           // 0: The ODR for accel is the same as the previous packet with accel
+            HEADER_ODR_GYRO        = Bit0, // 1: The ODR for gyro is different for this gyro data packet compared to the previous gyro packet
+                                           // 0: The ODR for gyro is the same as the previous packet with gyro
+        };
+
+    }
     /************************************************************************************************************************************************/
 
 

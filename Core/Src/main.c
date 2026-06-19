@@ -21,15 +21,18 @@
 #include "dma.h"
 #include "i2c.h"
 #include "spi.h"
+#include "tim.h"
 #include "usart.h"
 #include "gpio.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include <stdio.h>
 #include "scheduler.h"
-#include "ICM42688_API.h"
+#include "SystemPort.h"
+#include "scheduler_app_tasks.h"
 #include "Aided_INS_API.h"
-#include "IST8310_API.h"
+#include "TimeBase.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -92,7 +95,7 @@ int main(void)
   SystemClock_Config();
 
   /* USER CODE BEGIN SysInit */
-  Scheduler_Setup();
+
   /* USER CODE END SysInit */
 
   /* Initialize all configured peripherals */
@@ -101,17 +104,31 @@ int main(void)
   MX_SPI1_Init();
   MX_USART1_UART_Init();
   MX_I2C1_Init();
+  MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
-  // MotorHandle motor = Motor_Create(1);
-  // Motor_SetSpeed(motor, 1500.0f);
-  // float rpm = Motor_GetSpeed(motor) ;
+  TimeBase_Start();
+  // UART output via __io_putchar (Lib/Printf/Printf.c)
+  printf("ICM42688P hardware bring-up start\r\n");
+
+  // ── Generic Scheduler 接入 ──
+  {
+      static const SchedulerPort scheduler_port = {
+          .get_time_ms    = SystemPort_GetMillis,
+          .get_time_us    = SystemPort_GetMicros,
+          .enter_critical = SystemPort_EnterCritical,
+          .exit_critical  = SystemPort_ExitCritical,
+      };
+
+      Scheduler_Init(&scheduler_port);
+      SchedulerAppTasks_RegisterAll();
+  }
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-    Scheduler_Run();
+    Scheduler_RunOnce();
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */

@@ -57,6 +57,8 @@ include_directories(${includes}
                     Lib/Printf
                     Lib/RGB
                     Lib/Scheduler
+                    Lib/SystemPort
+                    Lib/TimeBase
                     Lib/Timer
                     Lib/Uart
                     ThirdPartyLib/eigen)
@@ -72,6 +74,8 @@ file(GLOB_RECURSE SOURCES ${sources}
     Lib/Printf/*.*
     Lib/RGB/*.*
     Lib/Scheduler/*.*
+    Lib/SystemPort/*.*
+    Lib/TimeBase/*.*
     Lib/Timer/*.*
     Lib/Uart/*.*
     ThirdPartyLib/eigen/*.*)
