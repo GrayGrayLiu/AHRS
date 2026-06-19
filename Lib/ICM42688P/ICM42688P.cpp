@@ -17,6 +17,7 @@
 
 #include "ICM42688P.hpp"
 #include "TimeBase.h"
+#include "CriticalSectionGuard.hpp"
 #include <cstring>
 
 using ICM42688P_Regs::RegsAdd::BANK0;
@@ -37,7 +38,7 @@ constexpr uint32_t RESET_CHECK_INTERVAL_MS{10u};
 constexpr uint32_t RESET_RETRY_DELAY_MS{100u};
 constexpr uint32_t CONFIGURE_RETRY_DELAY_MS{100u};
 constexpr uint32_t DRIVER_RESET_TIMEOUT_MS{1000u};
-constexpr uint32_t FIFO_WATCHDOG_INTERVAL_MS{100u};
+constexpr uint32_t FIFO_BACKUP_INTERVAL_MS{5u};   // ≈ 2 × FIFO batch 周期（20 / 8000 Hz），与 Scheduler event+deadline 对齐
 constexpr uint32_t FAILURE_RESET_THRESHOLD{10u};
 constexpr float MICROSECONDS_TO_SECONDS{1.0e-6F};
 constexpr float MEASURED_BATCH_DT_MIN_RATIO{0.5F};
@@ -396,12 +397,12 @@ ICM42688P::Status ICM42688P::ConfigureInterrupt()
     }
 
     // 2. 在临界区内原子清空 data-ready pending 和时间戳，避免中断与普通上下文竞争。
-    const uint32_t primask = __get_PRIMASK();
-    __disable_irq();
-    data_ready_pending_ = 0u;
-    data_ready_interrupt_count_ = 0u;
-    last_data_ready_timestamp_us_ = 0u;
-    __set_PRIMASK(primask);
+    {
+        const CriticalSectionGuard lock;
+        data_ready_pending_ = 0u;
+        data_ready_interrupt_count_ = 0u;
+        last_data_ready_timestamp_us_ = 0u;
+    }
 
     return Status::Ok;
 }
@@ -424,10 +425,10 @@ ICM42688P::Status ICM42688P::FIFOReset()
 
     // 2. 临界区内只清 data_ready_pending_（避免竞争），其他软件状态在普通上下文清零。
     HAL_Delay(1u);
-    const uint32_t primask = __get_PRIMASK();
-    __disable_irq();
-    data_ready_pending_ = 0u;
-    __set_PRIMASK(primask);
+    {
+        const CriticalSectionGuard lock;
+        data_ready_pending_ = 0u;
+    }
 
     // 3. 清空软件侧 FIFO 字节计数、batch 解码缓存和跨 batch 梯形积分边界。
     last_fifo_count_bytes_ = 0u;
@@ -629,7 +630,7 @@ ICM42688P::Status ICM42688P::RunImpl()
         failure_count_ = 0u;
         state_ = DriverState::FIFO_READ;
         last_status_ = Status::NoData;
-        ScheduleDelayed(now, FIFO_WATCHDOG_INTERVAL_MS);
+        ScheduleDelayed(now, FIFO_BACKUP_INTERVAL_MS);
         return Status::NoData;
     }
 
@@ -641,13 +642,13 @@ ICM42688P::Status ICM42688P::RunImpl()
 
         // 中断只锁存事件和时间戳。SPI 访问及 FIFO 处理始终留在普通上下文的
         // FIFO_READ 状态中执行。
-        // 没有 data-ready 事件时，只安排 watchdog 兜底调度。
+        // 没有 data-ready 事件时，只安排 backup 兜底调度。
         if (!ConsumeDataReady(timestamp_sample_us)) {
-            ScheduleDelayed(now, FIFO_WATCHDOG_INTERVAL_MS);
+            ScheduleDelayed(now, FIFO_BACKUP_INTERVAL_MS);
             return Status::NoData;
         }
 
-        ScheduleDelayed(now, FIFO_WATCHDOG_INTERVAL_MS);
+        ScheduleDelayed(now, FIFO_BACKUP_INTERVAL_MS);
         const Status status = FIFORead(timestamp_sample_us);
 
         // 读取成功时降低失败计数，失败过多时触发 Reset()。
@@ -1398,17 +1399,18 @@ void ICM42688P::DataReady(const uint64_t timestamp_us)
 bool ICM42688P::ConsumeDataReady(uint64_t& timestamp_sample_us)
 {
     // 临界区内原子读取 pending + timestamp 并清零，避免 ISR 在中间插入写入。
-    const uint32_t primask = __get_PRIMASK();
-    __disable_irq();
+    bool pending = false;
 
-    const bool pending = data_ready_pending_ != 0u;
+    {
+        const CriticalSectionGuard lock;
+        pending = data_ready_pending_ != 0u;
 
-    if (pending) {
-        timestamp_sample_us = last_data_ready_timestamp_us_;
-        data_ready_pending_ = 0u;
+        if (pending) {
+            timestamp_sample_us = last_data_ready_timestamp_us_;
+            data_ready_pending_ = 0u;
+        }
     }
 
-    __set_PRIMASK(primask);
     return pending;
 }
 
