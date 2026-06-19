@@ -12,6 +12,7 @@
 
 #include "scheduler_app_tasks.h"
 #include "scheduler.h"
+#include "scheduler_app_events.h"
 #include "ICM42688_Service.hpp"
 #include <stdio.h>
 
@@ -213,7 +214,7 @@ extern "C" void SchedulerAppTasks_RegisterAll(void)
     }
 
     s_imu_drdy_id = Scheduler_RegisterEventDeadlineTask(
-        "imu_drdy", SCHED_HP_EVENT_IMU_DRDY, IMU_DRDY_DEADLINE_MS,
+        "imu_drdy", scheduler_app_events::IMU_DRDY, IMU_DRDY_DEADLINE_MS,
         ImuDrdyTask, NULL, SCHEDULER_PRIORITY_HIGH);
 
     if (s_imu_drdy_id == SCHEDULER_TASK_ID_INVALID) {

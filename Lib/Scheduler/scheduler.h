@@ -167,11 +167,6 @@ void    Scheduler_ClearTaskStats(SchedulerTaskId task_id);
 void    Scheduler_ClearAllTaskStats(void);
 uint8_t Scheduler_GetTaskCount(void);
 
-// ============================================================================
-// 事件宏（被 ICM42688_Service / scheduler_app_tasks 引用）
-// ============================================================================
-
-#define SCHED_HP_EVENT_IMU_DRDY (1u << 0)
 
 #ifdef __cplusplus
 }

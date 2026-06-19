@@ -23,6 +23,7 @@
 #include "TimeBase.h"
 #include "main.h"
 #include "scheduler.h"
+#include "scheduler_app_events.h"
 
 // ============================================================================
 // 编译开关和 Service 参数
@@ -259,7 +260,7 @@ void icm42688_service::NotifyDataReadyFromISR(const uint64_t timestamp_us)
         icm42688->DataReady(timestamp_us);
     }
 
-    Scheduler_PostEventFromISR(SCHED_HP_EVENT_IMU_DRDY);
+    Scheduler_PostEventFromISR(scheduler_app_events::IMU_DRDY);
 }
 
 /**
