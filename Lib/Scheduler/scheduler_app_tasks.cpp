@@ -16,6 +16,7 @@
 namespace
 {
 
+constexpr uint32_t IMU_DEBUG_PERIOD_MS = 1000u;
 constexpr uint32_t IMU_DRDY_DEADLINE_MS = 5u;
 
 // ============================================================================
@@ -93,6 +94,38 @@ void ImuDrdyTask(SchedulerRunReason reason, SchedulerEventMask events,
     icm42688_service::Run();
 }
 
+// ============================================================================
+// 统一应用任务注册表
+// ============================================================================
+
+// 所有挂载到 generic Scheduler 的应用任务集中在此表中定义。
+// 新增任务只需添加一条 SchedulerTaskConfig 配置，不需要修改注册循环。
+// 表内顺序即注册顺序；运行调度顺序由 Scheduler core 根据 priority、event/deadline/period 决定。
+constexpr SchedulerTaskConfig kAppTasks[] = {
+    {
+        "imu_debug",
+        ImuDebugTask,
+        nullptr,
+        SCHEDULER_PRIORITY_LOW,
+        0u,
+        IMU_DEBUG_PERIOD_MS,
+        0u,
+        0u,
+        1u,
+    },
+    {
+        "imu_drdy",
+        ImuDrdyTask,
+        nullptr,
+        SCHEDULER_PRIORITY_HIGH,
+        scheduler_app_events::IMU_DRDY,
+        0u,
+        0u,
+        IMU_DRDY_DEADLINE_MS,
+        1u,
+    },
+};
+
 } // namespace
 
 // ============================================================================
@@ -100,23 +133,19 @@ void ImuDrdyTask(SchedulerRunReason reason, SchedulerEventMask events,
 // ============================================================================
 
 /**
- * @brief  注册所有应用任务到 generic Scheduler。
+ * @brief  遍历 kAppTasks[] 表并向 generic Scheduler 注册所有应用任务。
  * @note   必须在 Scheduler_Init() 成功后调用。注册失败只打印错误，不进入 Error_Handler。
  */
 extern "C" void SchedulerAppTasks_RegisterAll(void)
 {
-    const SchedulerTaskId imu_debug_id = Scheduler_RegisterPeriodicTask(
-        "imu_debug", 1000u, ImuDebugTask, NULL, SCHEDULER_PRIORITY_LOW);
+    constexpr size_t kAppTaskCount = sizeof(kAppTasks) / sizeof(kAppTasks[0]);
 
-    if (imu_debug_id == SCHEDULER_TASK_ID_INVALID) {
-        printf("[sched] imu_debug register failed\r\n");
-    }
+    for (size_t i = 0u; i < kAppTaskCount; ++i) {
+        const SchedulerTaskId id = Scheduler_RegisterTask(&kAppTasks[i]);
 
-    const SchedulerTaskId imu_drdy_id = Scheduler_RegisterEventDeadlineTask(
-        "imu_drdy", scheduler_app_events::IMU_DRDY, IMU_DRDY_DEADLINE_MS,
-        ImuDrdyTask, NULL, SCHEDULER_PRIORITY_HIGH);
-
-    if (imu_drdy_id == SCHEDULER_TASK_ID_INVALID) {
-        printf("[sched] imu_drdy register failed\r\n");
+        if (id == SCHEDULER_TASK_ID_INVALID) {
+            printf("[sched] %s register failed\r\n",
+                   kAppTasks[i].name != nullptr ? kAppTasks[i].name : "<unnamed>");
+        }
     }
 }
