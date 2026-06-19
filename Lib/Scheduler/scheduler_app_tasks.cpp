@@ -3,11 +3,8 @@
  * @brief   Generic Scheduler 应用/调试任务实现
  *
  * @details
- * 本文件实现所有挂载到 generic Scheduler 的应用级任务 callback 和注册逻辑。
- * 当前包含 IMU debug print task 和 ICM42688P event+deadline task；
- * 后续可在此新增 LED 管理等低优先级任务。
- *
- * 不依赖 SPI / FIFO / EXIT / TimeBase。不实现任何调度核心逻辑。
+ * 本文件实现挂载到 generic Scheduler 的应用级任务 callback 和注册逻辑。
+ * 不实现任何调度核心逻辑。
  */
 
 #include "scheduler_app_tasks.h"

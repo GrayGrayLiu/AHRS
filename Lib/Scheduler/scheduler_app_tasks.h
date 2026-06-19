@@ -18,10 +18,9 @@ extern "C" {
 #endif
 
 /**
- * @brief  注册所有挂载到 generic Scheduler 的应用/调试任务。
- * @note   必须在 Scheduler_Init() 成功之后调用。
- *         当前注册：smoke heartbeat task（2000 ms）、stats reader task（5000 ms）。
- *         后续可在此继续注册 IMU debug print / LED 等低优先级任务。
+ * @brief  注册应用层任务到 generic Scheduler。
+ * @note   必须在 Scheduler_Init() 成功之后调用。具体任务集合、周期、事件绑定、
+ *         deadline 和优先级由 scheduler_app_tasks.cpp 维护，不在此头文件中枚举。
  */
 void SchedulerAppTasks_RegisterAll(void);
 

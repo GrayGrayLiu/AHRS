@@ -3,13 +3,10 @@
  * @brief   通用裸机协作式 WorkQueue-like 调度器接口（C ABI）
  *
  * @details
- * 新 Scheduler 参考 PX4 WorkQueue / ScheduledWorkItem 思想，但不引入 RTOS
- * 线程、独立任务栈、抢占、时间片、阻塞等待、信号量、互斥锁、动态内存。
+ * 调度器核心不依赖具体业务模块、外设驱动或平台 HAL。
+ * 时间和临界区能力通过 SchedulerPort 回调注入，核心代码不直接访问平台接口。
  *
- * 调度器核心不依赖任何业务模块（ICM42688P、IMU、FIFO、EXIT、TimeBase、UART、
- * HAL_SPI、HAL_TIM 等）。时间和临界区能力通过 SchedulerPort 回调注入。
- *
- * 本头文件 C/C++ 均可 include。所有公开类型使用 C-compatible 声明。
+ * C/C++ 均可 include。所有公开类型使用 C-compatible 声明。
  */
 
 #ifndef ELECTROMAGNETICARTILLERY_SCHEDULER_H
@@ -40,7 +37,7 @@ typedef uint32_t SchedulerRunReason;
 #define SCHEDULER_REASON_INTERVAL  (1u << 2)
 #define SCHEDULER_REASON_MANUAL    (1u << 3)
 
-// ── 优先级（当前阶段三档） ──
+// ── 优先级（三档） ──
 typedef enum {
     SCHEDULER_PRIORITY_LOW    = 0,
     SCHEDULER_PRIORITY_NORMAL = 1,
