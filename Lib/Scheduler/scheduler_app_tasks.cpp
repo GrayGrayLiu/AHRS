@@ -21,9 +21,6 @@ namespace
 
 constexpr uint32_t IMU_DRDY_DEADLINE_MS = 5u;
 
-static SchedulerTaskId s_imu_debug_id = SCHEDULER_TASK_ID_INVALID;
-static SchedulerTaskId s_imu_drdy_id = SCHEDULER_TASK_ID_INVALID;
-
 // ============================================================================
 // IMU debug print task — 低优先级 IMU 状态输出
 // ============================================================================
@@ -33,8 +30,8 @@ static SchedulerTaskId s_imu_drdy_id = SCHEDULER_TASK_ID_INVALID;
  * @note   只读取 Service 缓存，不访问 SPI / FIFO / EXIT，不修改 ICM42688P 驱动状态机。
  *         自行维护 sample_counter 去重，避免相同数据重复输出。
  */
-static void ImuDebugTask(SchedulerRunReason reason, SchedulerEventMask events,
-                         uint32_t now_ms, uint64_t now_us, void *context)
+void ImuDebugTask(SchedulerRunReason reason, SchedulerEventMask events,
+                  uint32_t now_ms, uint64_t now_us, void *context)
 {
     (void)reason; (void)events; (void)now_ms; (void)now_us; (void)context;
 
@@ -91,8 +88,8 @@ static void ImuDebugTask(SchedulerRunReason reason, SchedulerEventMask events,
  * @brief  ICM42688P data-ready event+deadline task（HIGH priority）。
  * @note   不直接访问 SPI/FIFO，只调用 icm42688_service::Run()。
  */
-static void ImuDrdyTask(SchedulerRunReason reason, SchedulerEventMask events,
-                        uint32_t now_ms, uint64_t now_us, void *context)
+void ImuDrdyTask(SchedulerRunReason reason, SchedulerEventMask events,
+                 uint32_t now_ms, uint64_t now_us, void *context)
 {
     (void)reason; (void)events; (void)now_ms; (void)now_us; (void)context;
 
@@ -111,18 +108,18 @@ static void ImuDrdyTask(SchedulerRunReason reason, SchedulerEventMask events,
  */
 extern "C" void SchedulerAppTasks_RegisterAll(void)
 {
-    s_imu_debug_id = Scheduler_RegisterPeriodicTask(
+    const SchedulerTaskId imu_debug_id = Scheduler_RegisterPeriodicTask(
         "imu_debug", 1000u, ImuDebugTask, NULL, SCHEDULER_PRIORITY_LOW);
 
-    if (s_imu_debug_id == SCHEDULER_TASK_ID_INVALID) {
+    if (imu_debug_id == SCHEDULER_TASK_ID_INVALID) {
         printf("[sched] imu_debug register failed\r\n");
     }
 
-    s_imu_drdy_id = Scheduler_RegisterEventDeadlineTask(
+    const SchedulerTaskId imu_drdy_id = Scheduler_RegisterEventDeadlineTask(
         "imu_drdy", scheduler_app_events::IMU_DRDY, IMU_DRDY_DEADLINE_MS,
         ImuDrdyTask, NULL, SCHEDULER_PRIORITY_HIGH);
 
-    if (s_imu_drdy_id == SCHEDULER_TASK_ID_INVALID) {
+    if (imu_drdy_id == SCHEDULER_TASK_ID_INVALID) {
         printf("[sched] imu_drdy register failed\r\n");
     }
 }
