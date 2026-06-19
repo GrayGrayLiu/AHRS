@@ -168,24 +168,10 @@ void    Scheduler_ClearAllTaskStats(void);
 uint8_t Scheduler_GetTaskCount(void);
 
 // ============================================================================
-// 第三部分：Legacy Compatibility（阶段 7 移除）
+// 事件宏（被 ICM42688_Service / scheduler_app_tasks 引用）
 // ============================================================================
 
-// ── 旧高优先级事件位定义 ──
 #define SCHED_HP_EVENT_IMU_DRDY (1u << 0)
-#define TICK_PER_SECOND 1000
-
-// ── 旧周期轮询任务表项 ──
-typedef struct {
-    void (*task_func)(void);
-    float rate_hz;
-    uint16_t interval_ticks;
-    uint32_t last_run;
-} sched_task_t;
-
-// ── Legacy API（阶段 7 逐步移除） ──
-
-void Scheduler_PostHighPriorityEventFromISR(uint32_t event);
 
 #ifdef __cplusplus
 }
