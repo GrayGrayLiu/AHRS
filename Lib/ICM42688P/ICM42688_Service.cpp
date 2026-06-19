@@ -66,6 +66,7 @@ uint32_t icm42688_last_debug_service_tick = 0u;     // 上次 PrintLatest 调试
 uint32_t icm42688_last_print_tick = 0u;             // 上次实际 printf 输出时间（节流用）
 ICM42688P::Status icm42688_last_status = ICM42688P::Status::Ok; // 最近一次 Update() 返回码
 uint8_t icm42688_service_polling = 0u;              // Run() 重入保护标志
+SchedulerTaskId icm42688_scheduler_task_id = SCHEDULER_TASK_ID_INVALID; // imu_drdy task id，用于 Run() 调用 Scheduler_Schedule*
 
 // ============================================================================
 // 通用小工具函数
@@ -241,11 +242,40 @@ void PrintLatest()
            gyro_z_milli);
 }
 
+// 读取 driver 留下的 next-run hint，并通过 Scheduler 安排下次运行。
+// 只在普通上下文调用，不在 ISR 中调用。
+void ApplyRunScheduleHint()
+{
+    if (icm42688 == nullptr || icm42688_scheduler_task_id == SCHEDULER_TASK_ID_INVALID) {
+        return;
+    }
+
+    const ICM42688P::RunScheduleHint hint = icm42688->ConsumeRunHint();
+
+    if (!hint.valid) {
+        return;
+    }
+
+    if (hint.delay_ms == 0u) {
+        Scheduler_ScheduleNow(icm42688_scheduler_task_id);
+    } else {
+        Scheduler_ScheduleDelayed(icm42688_scheduler_task_id, hint.delay_ms);
+    }
+}
+
 } // namespace
 
 // ============================================================================
 // 对外 Service 接口
 // ============================================================================
+
+/**
+ * @brief  向 Service 注入 Scheduler task ID，用于 Run() 调用 Scheduler_Schedule*。
+ */
+void icm42688_service::SetSchedulerTaskId(const SchedulerTaskId task_id)
+{
+    icm42688_scheduler_task_id = task_id;
+}
 
 /**
  * @brief  EXTI ISR 桥接入口：将 MCU 时间戳转发到 driver 并投递高优先级事件
@@ -291,12 +321,18 @@ void icm42688_service::Run()
             ServiceInit(now);
         }
 
+        // Init() 成功后 icm42688_started 变为 true，内部 RequestRunNow() 的 hint 需要在此消费。
+        if (icm42688_started) {
+            ApplyRunScheduleHint();
+        }
+
         icm42688_service_polling = 0u;
         return;
     }
 
     // 阶段 2：推进底层驱动状态机。
     Update();
+    ApplyRunScheduleHint();
 
     // 阶段 3：按独立节拍触发调试输出（默认由编译开关关闭）。
     if (TickReached(now, icm42688_last_debug_service_tick + ICM42688_DEBUG_SERVICE_INTERVAL_MS)) {

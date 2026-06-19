@@ -11,6 +11,7 @@
 #include "scheduler.h"
 #include "scheduler_app_events.h"
 #include "ICM42688_Service.hpp"
+#include <cstring>
 #include <stdio.h>
 
 namespace
@@ -146,6 +147,9 @@ extern "C" void SchedulerAppTasks_RegisterAll(void)
         if (id == SCHEDULER_TASK_ID_INVALID) {
             printf("[sched] %s register failed\r\n",
                    kAppTasks[i].name != nullptr ? kAppTasks[i].name : "<unnamed>");
+        } else if (kAppTasks[i].name != nullptr && std::strcmp(kAppTasks[i].name, "imu_drdy") == 0) {
+            // 仅在注册成功时将 imu_drdy task id 注入 Service，使其能在 Run() 中调用 Scheduler_Schedule*
+            icm42688_service::SetSchedulerTaskId(id);
         }
     }
 }

@@ -123,7 +123,7 @@ ICM42688P::Status ICM42688P::Init()
     state_ = DriverState::RESET;
     last_status_ = Status::Ok;
     latest_.error_counter = error_count_;
-    ScheduleNow(TimeBase_Millis());
+    RequestRunNow();
     return Status::Ok;
 }
 
@@ -175,7 +175,7 @@ ICM42688P::Status ICM42688P::Reset()
     last_fifo_timestamp_sample_valid_ = false;
     initialized_ = true;
     state_ = DriverState::RESET;
-    ScheduleNow(TimeBase_Millis());
+    RequestRunNow();
     return Status::Ok;
 }
 
@@ -484,10 +484,10 @@ ICM42688P::Status ICM42688P::Update()
  * @retval 其他状态表示 reset、配置、FIFO 或 SPI 访问阶段失败
  *
  * @details
- * Service 层只提供高优先级事件路径和 1 kHz 周期兜底执行机会；
+ * Service 层只通过 Scheduler event+deadline 机制提供运行机会；
  * 具体 reset、configure、FIFO reset 和 FIFO read 状态转换均在本函数内完成。
- * next_run_ms_ 只表达"下一次允许运行的时间"，并不主动唤醒代码；
- * data-ready pending 可使 FIFO_READ 跳过该毫秒延时门限。
+ * 每次进入时清空上次的调度 hint；状态分支根据需要重新设置 hint。
+ * 是否再次运行由 service 根据 ConsumeRunHint() 结果通过 Scheduler 控制。
  */
 ICM42688P::Status ICM42688P::RunImpl()
 {
@@ -496,14 +496,9 @@ ICM42688P::Status ICM42688P::RunImpl()
         return Status::InvalidArgument;
     }
 
-    // 2. 判断当前是否由 data-ready 事件触发，或是否到达调度时间。
+    // 2. 清空上次调度 hint；后续各状态分支设置实际需求。
+    run_schedule_hint_ = {false, 0u};
     const uint32_t now = TimeBase_Millis();
-    const bool data_ready_scheduled =
-        state_ == DriverState::FIFO_READ && data_ready_pending_ != 0u;
-
-    if (!data_ready_scheduled && !TickReached(now, next_run_ms_)) {
-        return Status::NoData;
-    }
 
     switch (state_) {
 
@@ -523,7 +518,7 @@ ICM42688P::Status ICM42688P::RunImpl()
             ++error_count_;
             ++failure_count_;
             last_status_ = status;
-            ScheduleDelayed(now, RESET_RETRY_DELAY_MS);
+            RequestRunDelayed(RESET_RETRY_DELAY_MS);
             return status;
         }
 
@@ -532,7 +527,7 @@ ICM42688P::Status ICM42688P::RunImpl()
         reset_timestamp_ms_ = now;
         state_ = DriverState::WAIT_FOR_RESET;
         last_status_ = Status::NoData;
-        ScheduleDelayed(now, ICM42688P_Regs::SOFT_RESET_WAIT_MS);
+        RequestRunDelayed(ICM42688P_Regs::SOFT_RESET_WAIT_MS);
         return Status::NoData;
     }
 
@@ -546,7 +541,7 @@ ICM42688P::Status ICM42688P::RunImpl()
         if (status == Status::Ok) {
             state_ = DriverState::CONFIGURE;
             last_status_ = Status::NoData;
-            ScheduleNow(now);
+            RequestRunNow();
             return Status::NoData;
         }
 
@@ -558,7 +553,7 @@ ICM42688P::Status ICM42688P::RunImpl()
                 ? Status::WrongDeviceId
                 : Status::ResetTimeout;
             state_ = DriverState::RESET;
-            ScheduleDelayed(now, RESET_RETRY_DELAY_MS);
+            RequestRunDelayed(RESET_RETRY_DELAY_MS);
             return last_status_;
         }
 
@@ -569,7 +564,7 @@ ICM42688P::Status ICM42688P::RunImpl()
 
         // 未完成复位，安排下一次检查。
         last_status_ = status;
-        ScheduleDelayed(now, RESET_CHECK_INTERVAL_MS);
+        RequestRunDelayed(RESET_CHECK_INTERVAL_MS);
         return Status::NoData;
     }
 
@@ -587,7 +582,7 @@ ICM42688P::Status ICM42688P::RunImpl()
         if (status == Status::Ok) {
             state_ = DriverState::FIFO_RESET;
             last_status_ = Status::NoData;
-            ScheduleDelayed(now, ICM42688P_Regs::SOFT_RESET_WAIT_MS);
+            RequestRunDelayed(ICM42688P_Regs::SOFT_RESET_WAIT_MS);
             return Status::NoData;
         }
 
@@ -602,7 +597,7 @@ ICM42688P::Status ICM42688P::RunImpl()
             state_ = DriverState::RESET;
         }
 
-        ScheduleDelayed(now, CONFIGURE_RETRY_DELAY_MS);
+        RequestRunDelayed(CONFIGURE_RETRY_DELAY_MS);
         return status;
     }
 
@@ -621,7 +616,7 @@ ICM42688P::Status ICM42688P::RunImpl()
                 state_ = DriverState::RESET;
             }
 
-            ScheduleDelayed(now, RESET_RETRY_DELAY_MS);
+            RequestRunDelayed(RESET_RETRY_DELAY_MS);
             return status;
         }
 
@@ -630,7 +625,7 @@ ICM42688P::Status ICM42688P::RunImpl()
         failure_count_ = 0u;
         state_ = DriverState::FIFO_READ;
         last_status_ = Status::NoData;
-        ScheduleDelayed(now, FIFO_BACKUP_INTERVAL_MS);
+        RequestRunDelayed(FIFO_BACKUP_INTERVAL_MS);
         return Status::NoData;
     }
 
@@ -644,11 +639,11 @@ ICM42688P::Status ICM42688P::RunImpl()
         // FIFO_READ 状态中执行。
         // 没有 data-ready 事件时，只安排 backup 兜底调度。
         if (!ConsumeDataReady(timestamp_sample_us)) {
-            ScheduleDelayed(now, FIFO_BACKUP_INTERVAL_MS);
+            RequestRunDelayed(FIFO_BACKUP_INTERVAL_MS);
             return Status::NoData;
         }
 
-        ScheduleDelayed(now, FIFO_BACKUP_INTERVAL_MS);
+        RequestRunDelayed(FIFO_BACKUP_INTERVAL_MS);
         const Status status = FIFORead(timestamp_sample_us);
 
         // 读取成功时降低失败计数，失败过多时触发 Reset()。

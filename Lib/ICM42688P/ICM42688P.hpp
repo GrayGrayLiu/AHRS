@@ -109,6 +109,19 @@ public:
     // 拷贝最新有效缓存，不访问 SPI，也不消费 sample。
     [[nodiscard]] Status GetLatest(Sample& sample) const;
 
+    // ── 调度 hint：driver 通过 RunScheduleHint 向 service 表达"下次何时运行"的建议 ──
+    struct RunScheduleHint {
+        bool     valid;       // 本次需要再次调度的建议
+        uint32_t delay_ms;    // 建议延迟（0 = 立即）
+    };
+    // Service 调用，读取并消费本次 RunImpl 留下的调度建议。
+    [[nodiscard]] RunScheduleHint ConsumeRunHint()
+    {
+        const RunScheduleHint hint = run_schedule_hint_;
+        run_schedule_hint_ = {false, 0u};
+        return hint;
+    }
+
     // 硬件调试和初期联调访问接口，不属于正常 FIFO 主运行链路。
     [[nodiscard]] Status RegisterRead(ICM42688P_Regs::RegsAdd::BANK0 reg, uint8_t& value);
     [[nodiscard]] Status RegisterWrite(ICM42688P_Regs::RegsAdd::BANK0 reg, uint8_t value);
@@ -236,11 +249,6 @@ private:
     // ========================================================================
     // G. 静态小工具函数
     // ========================================================================
-    [[nodiscard]] static constexpr bool TickReached(const uint32_t now, const uint32_t target)
-    {
-        return static_cast<int32_t>(now - target) >= 0;
-    }
-
     [[nodiscard]] static constexpr uint8_t ComposeRegisterValue(const uint8_t old_value, const uint8_t set_bits, const uint8_t mask)
     {
         return static_cast<uint8_t>((old_value & static_cast<uint8_t>(~mask)) | (set_bits & mask));
@@ -312,18 +320,17 @@ private:
     }
 
     // ========================================================================
-    // H. 调度节拍 helper
+    // H. 调度 next-run hint（内部 helper）
     // ========================================================================
-    // ScheduleNow/ScheduleDelayed 不是 RTOS 或工作队列调度，只更新驱动内部
-    // 下一次允许执行的毫秒时间。真正的运行机会始终由 Service::Run() 提供。
-    void ScheduleNow(const uint32_t now)
+    void RequestRunNow()
     {
-        next_run_ms_ = now;
+        run_schedule_hint_.valid    = true;
+        run_schedule_hint_.delay_ms = 0u;
     }
-
-    void ScheduleDelayed(const uint32_t now, const uint32_t delay_ms)
+    void RequestRunDelayed(const uint32_t delay_ms)
     {
-        next_run_ms_ = now + delay_ms;
+        run_schedule_hint_.valid    = true;
+        run_schedule_hint_.delay_ms = delay_ms;
     }
 
     // ========================================================================
@@ -530,10 +537,8 @@ private:
     volatile DriverState state_{DriverState::RESET};
     Status last_status_{Status::Ok};                    // RunImpl() 最新返回码
 
-    // ── 调度节拍与错误计数 ──
-    // next_run_ms_ 为 ScheduleDelayed() / ScheduleNow() 的目标时间，data-ready
-    // pending 可使其在 FIFO_READ 下被跳过。
-    volatile uint32_t next_run_ms_{0};
+    // ── 调度 hint 与错误计数 ──
+    RunScheduleHint run_schedule_hint_{false, 0u};         // 本次 RunImpl 留下的下一次调度建议
     uint32_t failure_count_{0};                         // 连续失败计数，超阈值触发 state_ = RESET
     uint32_t reset_timestamp_ms_{0};                    // 最近一次进入 RESET 的毫秒时间戳
     uint32_t sample_count_{0};                          // 累计成功输出 FIFO sample 数

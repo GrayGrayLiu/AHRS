@@ -20,6 +20,7 @@
 #include <cstdint>
 
 #include "ICM42688P.hpp"
+#include "scheduler.h"
 
 namespace icm42688_service
 {
@@ -54,6 +55,12 @@ void NotifyDataReadyFromISR(uint64_t timestamp_us);
  *         内部 polling 标志防止嵌套重入。
  */
 void Run();
+
+/**
+ * @brief  向 Service 注入 imu_drdy 等关键任务的 Scheduler task ID。
+ * @note   由 scheduler_app_tasks 注册成功后调用，用于 Run() 后续调用 Scheduler_ScheduleNow/Delayed。
+ */
+void SetSchedulerTaskId(SchedulerTaskId task_id);
 
 /**
  * @brief  读取驱动缓存中的完整最新 Sample，不访问 SPI，不消费缓存
