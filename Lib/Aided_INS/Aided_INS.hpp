@@ -36,6 +36,12 @@ public:
     int Init();
 
     /**
+     * @brief  注入外部 IMU 增量数据，供后续 GetImuData() 和 Run() 消费。
+     * @param  imu  已聚合到 200 Hz 的 IMU delta 数据，坐标系为应用机体系 b 系/FRD，单位匹配 INS 输入要求。
+     */
+    void SetImuData(const Aided_INS_Space::IMU &imu);
+
+    /**
       * @brief 运行导航算法
       * @param
       * @retval
@@ -228,6 +234,7 @@ private:
     // IMU、磁力计和GNSS原始数据
     IMU imuPre_;
     IMU imuCur_;
+    bool imuReady_{false};
     Mag magData_;
     GNSS gnssData_;
 

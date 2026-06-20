@@ -199,14 +199,21 @@ int Aided_INS::InitialAlignment()
     return 1;
 }
 
+void Aided_INS::SetImuData(const Aided_INS_Space::IMU &imu)
+{
+    imuCur_ = imu;
+    imuReady_ = true;
+}
+
 bool Aided_INS::GetImuData()
 {
-    // if ()
-    // {
-    //     return true;
-    // }
+    if (!imuReady_)
+    {
+        return false;
+    }
 
-    return false;
+    imuReady_ = false;
+    return true;
 }
 
 bool Aided_INS::GetMagData()
