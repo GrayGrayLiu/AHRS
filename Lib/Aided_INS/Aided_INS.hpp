@@ -218,6 +218,7 @@ private:
 
 
     Config config_;
+    uint8_t id_{0};
 
     double timestamp_{0.0};
 

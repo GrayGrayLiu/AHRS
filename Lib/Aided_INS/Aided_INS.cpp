@@ -26,6 +26,9 @@
 #include "INS_Mechanization.hpp"
 #include "stm32h7xx.h"
 
+#include <cassert>
+#include <cmath>
+
 using Eigen::Vector3d;
 using Eigen::Vector2d;
 using Eigen::Matrix3d;
@@ -50,9 +53,18 @@ using Angle::Deg2Rad;
 using Aided_INS_Space::Config;
 
 Aided_INS::Aided_INS(const uint8_t id)
+    : id_(id)
 {
     config_ = LoadConfig();
     Initialize();
+}
+
+int Aided_INS::Init()
+{
+    config_ = LoadConfig();
+    Initialize();
+    status_ = InsStatus::Unaligned;
+    return 0;
 }
 
 int Aided_INS::Run()
@@ -80,7 +92,7 @@ int Aided_INS::Run()
         case InsStatus::Running:
         {
             const bool imuReady = GetImuData();
-            const bool magReady = GetMagData();
+            (void)GetMagData();
 
             if (imuReady)
             {
@@ -117,7 +129,7 @@ int Aided_INS::InitialAlignment()
     }
 
     constexpr float ALIGN_ACCELERATION_MPS2 = 0.2; //载体运动角速度过大，退出初始对准
-    if (fabs(acc.norm() - Gravity(config_.initState.pos)) > ALIGN_ACCELERATION_MPS2)
+    if (std::fabs(acc.norm() - Gravity(config_.initState.pos)) > ALIGN_ACCELERATION_MPS2)
     {
         status_ = InsStatus::Unaligned;
         return -1;
@@ -526,7 +538,7 @@ bool Aided_INS::AccUpdate(const IMU& imuData, const PVA& pvaCur, const Config& c
     {
         const double cos_gn_gb = f_b.dot(g_b_ByImu) / ( f_b.norm() * g_b_ByImu.norm() ); //重力测量值与理论值的夹角，如果不是1，说明测量值与理论值方向不重合
 
-        if ( fabs(f_b.norm() - gravity) < 0.8 && cos_gn_gb > 0.95) //运动加速度如果太大，则不用加速度计更新姿态
+        if ( std::fabs(f_b.norm() - gravity) < 0.8 && cos_gn_gb < -0.95) // 比力方向与重力方向相反；运动加速度过大则不用加速度计更新姿态
         {
             //构造输入加速度计观测方程的测量误差
             const Vector3d f_b_ByImu = -g_b_ByImu; //IMU测量到的重力加速度（假设没有运动加速度）产生的比力
@@ -667,10 +679,10 @@ void Aided_INS::StateFeedback()
 Aided_INS::KfUpdateType Aided_INS::IsToUpdate(const double imuTime1, const double imuTime2,
                                               const double updateTime) const
 {
-    if (fabs(imuTime1 - updateTime) < TIME_ALIGN_ERR_)
+    if (std::fabs(imuTime1 - updateTime) < TIME_ALIGN_ERR_)
         return KfUpdateType::Prev; //更新时间靠近imuTime1
 
-    if (fabs(imuTime2 - updateTime) <= TIME_ALIGN_ERR_)
+    if (std::fabs(imuTime2 - updateTime) <= TIME_ALIGN_ERR_)
         return KfUpdateType::Curr; //更新时间靠近imuTime2
 
     if (imuTime1 < updateTime && updateTime < imuTime2)
