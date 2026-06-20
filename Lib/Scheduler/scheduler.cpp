@@ -864,8 +864,6 @@ extern "C" void Scheduler_RunOnce(void)
         SchedulerTaskId best_id;
         SchedulerRunReason reason;
         SchedulerEventMask events;
-        bool should_run = false;
-
         {
             const SchedulerCriticalState state = scheduler_port->enter_critical();
             best_id = SelectBestReadyTaskLocked(dispatched_mask);
@@ -881,7 +879,6 @@ extern "C" void Scheduler_RunOnce(void)
             // 取出 pending 状态并标记 in_progress
             reason = slot.pending_reason;
             events = slot.pending_events;
-            should_run = true;
 
             slot.pending_reason = SCHEDULER_REASON_NONE;
             slot.pending_events = 0u;
@@ -910,7 +907,7 @@ extern "C" void Scheduler_RunOnce(void)
         }
 
         // 4. 在临界区外执行任务 callback。
-        if (should_run) {
+        {
             TaskSlot &slot = scheduler_tasks[best_id];
             const uint64_t before_us = scheduler_port->get_time_us();
             slot.fn(reason, events, now_ms, now_us, slot.context);
