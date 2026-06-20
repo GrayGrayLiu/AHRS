@@ -17,21 +17,17 @@
  *     不创建线程，不分配独立栈，不抢占正在运行的 task。
  *     callback 必须 run-to-completion，不能在 callback 内 while 等待或长时间阻塞。
  *
- * 二、main.c 典型用法
+ * 二、main.c 典型调用顺序
  *     Scheduler_Init(&scheduler_port);
+ *     App_Init();
  *     SchedulerAppTasks_RegisterAll();
  *     while (1) { Scheduler_RunOnce(); }
  *
- * 三、初始化分层
- *     Scheduler_Init() 只初始化 scheduler core。
- *     驱动、服务、算法等业务模块初始化由 App_Init() 或对应模块自身负责；
- *     scheduler core 不负责业务模块初始化。
- *
- * 四、任务注册
+ * 三、任务注册
  *     Scheduler_RegisterTask(&config) 是完整注册接口。
  *     Scheduler_RegisterPeriodicTask / RegisterEventTask / RegisterEventDeadlineTask 是便捷接口。
- *     scheduler core 只负责调度机制，不应依赖具体驱动、传感器或算法模块；
- *     具体业务任务应由 app 层 scheduler registry 统一注册。
+ *     推荐应用任务集中放在 scheduler_app_tasks.cpp 的 kAppTasks[] 注册表中。
+ *     scheduler core 不应包含具体业务知识；业务任务应放在 app 层注册表中。
  *
  * 四、最大任务数与事件数
  *     最大任务容量由 SCHEDULER_MAX_TASKS 决定（当前 32）。
@@ -49,7 +45,8 @@
  * 六、同优先级选择规则
  *     1. priority 数值小者优先；
  *     2. priority 相同，ready_since_ms 更早者优先；
- *     3. ready_since_ms 也相同，task_id 更小者优先（注册顺序越早 task_id 越小）。
+ *     3. ready_since_ms 也相同，task_id 更小者优先；
+ *        在当前注册表顺序注册方式下，可理解为先注册者优先。
  *
  * 七、callback 统一参数
  *     void callback(SchedulerRunReason reason, SchedulerEventMask events,
@@ -73,16 +70,16 @@
  *         不清 DEADLINE/INTERVAL/EVENT/pending_events。disabled task 下 no-op。
  *
  *     Scheduler_ScheduleDelayed / ScheduleAt / FromISR:
- *         只用于 non-periodic task。retarget 下一次 DEADLINE target。
- *         event_deadline task 用它们 retarget backup deadline。不新增独立 timer。
- *         拒绝 periodic task。retarget 只清 DEADLINE，保留 MANUAL/EVENT/pending_events。
- *         disabled task 下 no-op。
+ *         只用于 non-periodic task。对 event_deadline task retarget backup deadline；
+ *         对其他 non-periodic task 设置一次性 delayed DEADLINE trigger。
+ *         不新增独立 timer。拒绝 periodic task。
+ *         设置/retarget 时只清 DEADLINE，保留 MANUAL/EVENT/pending_events。disabled task 下 no-op。
  *
  *     Scheduler_ScheduleOnInterval:
- *         只用于 periodic task。设置或修改 period_ms。
+ *         只用于已注册的 periodic task。设置或修改 period_ms。
  *         initial_delay_ms 用于调整下一次触发相位。
- *         设置 interval 时清 DEADLINE|INTERVAL，保留 MANUAL|EVENT。
- *         拒绝 event_deadline task。disabled task 下 no-op。
+ *         只清 INTERVAL pending，保留 MANUAL/EVENT/pending_events。
+ *         不把 non-periodic task 动态改成 periodic。拒绝 event_deadline task。disabled no-op。
  *
  *     Scheduler_Cancel / CancelFromISR:
  *         full clear 该 task 内部当前 pending/scheduled work。
@@ -90,23 +87,31 @@
  *         不改变 enabled/config。不阻止未来再次触发。
  *         不清尚未分发的全局 scheduler_pending_events bit。
  *
- * 十一、启用/禁用与统计接口
+ * 十、启用/禁用与统计接口
  *     Scheduler_EnableTask / DisableTask / IsTaskEnabled 是任务运行控制接口，
  *     可由上层系统按需调用。
  *     Scheduler_GetTaskStats / ClearTaskStats / ClearAllTaskStats / GetTaskCount
  *     是调试和运行观测接口，不应在高频路径中频繁调用。
  *
- * 十一、period + event_deadline 不支持混用
- *     Scheduler_RegisterTask() 拒绝同时设置 period_ms 和 event_deadline_ms。
- *     ScheduleOnInterval() 拒绝 event_deadline task。
+ * 十一、任务触发类型
+ *     自动触发类型包括 Periodic、Event、Event+Deadline，三者互斥。
+ *     Periodic task 不应同时订阅 event 或 event_deadline。
+ *     Event + Deadline task 要求 event_mask 和 deadline_ms 均非 0，
+ *     使用 event 作为主触发源，deadline 作为备份/兜底触发源。
+ *     不支持 pure deadline repeating task（event_deadline_ms 非 0 时 event_mask 必须非 0）。
+ *     period_ms/event_mask/event_deadline_ms 均为 0 的任务不会自动触发，
+ *     但可由 ScheduleNow/ScheduleDelayed/ScheduleAt 手动调度。
+ *     Scheduler_RegisterTask() 拒绝 period_ms 与 event_mask/event_deadline_ms 混用，
+ *     同时拒绝 event_deadline_ms 非 0 但 event_mask 为 0 的 pure deadline 配置。
+ *     Scheduler_RegisterEventDeadlineTask() 要求 event_mask 和 deadline_ms 均非 0。
+ *     ScheduleOnInterval() 只允许已注册的 periodic task 调整周期。
  *     ScheduleDelayed/ScheduleAt 拒绝 periodic task。
- *     每个 task 只有一个 next_run_ms 时间槽，period/deadline 互斥。
  *
  * 十二、内部实现边界
- *     内部数组、selection helper、stats 更新、pending state 等
- *     属于内部实现。用户不应直接访问内部数组或 helper。
- *     用户可用的 public API 为本文件声明的函数，以及 app 层的
- *     SchedulerAppTasks_RegisterAll() / scheduler_app_events::*。
+ *     内部数组、selection helper、stats 更新、pending state 等属于内部实现。
+ *     用户不应直接访问内部数组或 helper。
+ *     用户可用的 scheduler core API 为本文件声明的函数。
+ *     app 层入口由 scheduler_app_tasks.h 和 scheduler_app_events.h 声明。
  */
 
 #ifndef ELECTROMAGNETICARTILLERY_SCHEDULER_H

@@ -1,13 +1,14 @@
 /**
  * @file    scheduler_app_tasks.h
- * @brief   Generic Scheduler 应用/调试任务注册接口（C ABI）
+ * @brief   Generic Scheduler 应用任务注册与业务初始化接口（C ABI）
  *
  * @details
- * 本文件声明挂载到 generic Scheduler 的应用任务注册入口。
- * 所有应用级 task callback 和注册逻辑放在 scheduler_app_tasks.cpp 中，
- * 不污染 Scheduler 核心也不堆积在 main.c。
+ * 本文件声明应用层 scheduler task 注册入口和业务模块初始化入口。
+ * main.c 在 Scheduler_Init() 成功后先调用 App_Init() 完成业务初始化，
+ * 再调用 SchedulerAppTasks_RegisterAll() 注册 scheduler task。
  *
- * main.c 只需在 Scheduler_Init() 成功后调用 SchedulerAppTasks_RegisterAll()。
+ * App_Init() 负责业务模块初始化；
+ * SchedulerAppTasks_RegisterAll() 负责 scheduler task 注册和元数据绑定。
  */
 
 #ifndef ELECTROMAGNETICARTILLERY_SCHEDULER_APP_TASKS_H
@@ -18,18 +19,18 @@ extern "C" {
 #endif
 
 /**
- * @brief  注册应用层任务到 generic Scheduler。
- * @note   必须在 Scheduler_Init() 成功之后调用。具体任务集合、周期、事件绑定、
- *         deadline 和优先级由 scheduler_app_tasks.cpp 维护，不在此头文件中枚举。
- */
-/**
  * @brief  应用/业务模块初始化入口。
- * @note   负责 ICM42688P、IST8310 等驱动、服务和算法模块的初始化；
- *         scheduler core 不负责业务模块初始化。
+ * @note   当前暂无额外初始化动作；该入口用于以后集中放置 scheduler task
+ *         运行前必须完成的驱动、服务或算法模块初始化。
  *         本函数不注册 scheduler task；任务注册由 SchedulerAppTasks_RegisterAll() 负责。
  */
 void App_Init(void);
 
+/**
+ * @brief  注册应用层任务到 generic Scheduler。
+ * @note   必须在 Scheduler_Init() 和 App_Init() 之后调用。具体任务集合、周期、
+ *         事件绑定、deadline 和优先级由 scheduler_app_tasks.cpp 维护。
+ */
 void SchedulerAppTasks_RegisterAll(void);
 
 #ifdef __cplusplus

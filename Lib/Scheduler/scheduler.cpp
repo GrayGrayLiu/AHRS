@@ -33,6 +33,15 @@ struct TaskSlot
     SchedulerEventMask pending_events;
     // 本任务已就绪但尚未被 dispatcher 取出执行的原因位掩码。
     // 可同时包含 EVENT / DEADLINE / INTERVAL / MANUAL 的任意组合。
+    // EVENT / MANUAL 主要用于让 task ready，并传递给 callback / stats。
+    // INTERVAL 表示 periodic time trigger，运行后按 period_ms re-arm。
+    // DEADLINE 表示 non-periodic time trigger：
+    //   - 对 Event+Deadline task，是 backup deadline，运行后按 event_deadline_ms re-arm；
+    //   - 对 Manual/Delayed-only 或 Event task 的 ScheduleDelayed/ScheduleAt，
+    //     是 one-shot delayed trigger，运行后清 scheduled。
+    // ScheduleOnInterval() 只负责 INTERVAL reason bit。
+    // ScheduleDelayed() / ScheduleAt() 只负责 DEADLINE reason bit。
+    // 不同触发来源不应互相清除 pending_reason 中不属于自己的 bit。
     SchedulerRunReason pending_reason;
 
     // 任务从 not-ready 变为 ready 时记录该时刻，用于同优先级 tie-breaking。
@@ -50,11 +59,11 @@ struct TaskSlot
 };
 
 // 调度器全局状态
-const SchedulerPort *scheduler_port = nullptr;           // 平台适配回调表
-bool scheduler_initialized = false;                      // Init() 是否成功
-TaskSlot scheduler_tasks[SCHEDULER_MAX_TASKS];           // 静态任务槽位数组
-uint8_t scheduler_task_count = 0;                        // 已注册任务数
-volatile SchedulerEventMask scheduler_pending_events = 0u;          // 全局待处理事件位图（ISR 可写）
+const SchedulerPort *scheduler_port = nullptr;                     // 平台适配回调表
+bool scheduler_initialized = false;                                // Init() 是否成功
+TaskSlot scheduler_tasks[SCHEDULER_MAX_TASKS];                     // 静态任务槽位数组
+uint8_t scheduler_task_count = 0u;                                 // 已注册任务数
+volatile SchedulerEventMask scheduler_pending_events = 0u;         // 全局待处理事件位图（ISR 可写）
 
 // ############################################################################
 // Generic WorkQueue-like Scheduler Core — 内部 helper
@@ -71,14 +80,24 @@ bool TimeReached(const uint32_t now, const uint32_t target)
     return static_cast<int32_t>(now - target) >= 0;
 }
 
-// wrap-safe 判断 a 是否早于 b（用于同优先级 ready_since_ms 比较）。
+/**
+ * @brief  wrap-safe 时间比较，判断 a 是否早于 b。
+ * @param  a  第一个时间戳（32-bit 毫秒）。
+ * @param  b  第二个时间戳。
+ * @retval true  a 早于 b（通过 int32_t 有符号差值处理 32-bit 回绕）。
+ * @note   主要用于同优先级任务 ready_since_ms tie-break。
+ */
 bool TimeEarlier(const uint32_t a, const uint32_t b)
 {
     return static_cast<int32_t>(a - b) < 0;
 }
 
-// task 从 not-ready 首次变为 ready 时，记录 ready_since_ms。
-// 如果已经 ready，不刷新 ready_since_ms（保留最早 ready 时刻）。
+/**
+ * @brief  task 从 not-ready 首次变为 ready 时记录 ready_since_ms。
+ * @note   Locked：调用方必须持有 scheduler critical section。
+ *         task 已经 ready 时不刷新 ready_since_ms（保留最早 ready 时刻），
+ *         避免重复触发改变同优先级排序结果。
+ */
 void MarkTaskReadyLocked(TaskSlot &slot, const uint32_t now_ms)
 {
     if (slot.pending_reason == SCHEDULER_REASON_NONE) {
@@ -86,7 +105,10 @@ void MarkTaskReadyLocked(TaskSlot &slot, const uint32_t now_ms)
     }
 }
 
-// 如果 task 不再有任何 pending reason，清除 ready_since_ms。
+/**
+ * @brief  如果 task 不再有任何 pending reason，清除 ready_since_ms。
+ * @note   Locked：调用方必须持有 scheduler critical section。
+ */
 void ClearReadySinceIfNotReadyLocked(TaskSlot &slot)
 {
     if (slot.pending_reason == SCHEDULER_REASON_NONE) {
@@ -203,6 +225,7 @@ extern "C" void Scheduler_Init(const SchedulerPort *port)
         || port->get_time_us  == nullptr
         || port->enter_critical == nullptr
         || port->exit_critical  == nullptr) {
+        scheduler_port = nullptr;
         scheduler_initialized = false;
         return;
     }
@@ -225,8 +248,10 @@ extern "C" void Scheduler_Init(const SchedulerPort *port)
  * @brief  按完整配置注册一个任务（底层通用接口）。
  * @param  config  任务配置；fn 字段不可为 nullptr。
  * @retval 成功时返回任务 ID，失败时返回 SCHEDULER_TASK_ID_INVALID。
- * @note   只做 initialized / config / fn / capacity 基本检查。便捷注册接口在此基础上
- *         做更严格的参数语义检查。
+ * @note   面向初始化阶段的静态任务注册，不支持调度运行期间动态注册。
+ *         拒绝 period_ms 与 event_mask/event_deadline_ms 同时非 0。
+ *         拒绝 event_deadline_ms 非 0 但 event_mask 为 0（不支持 pure deadline repeating task）。
+ *         period_ms/event_mask/event_deadline_ms 全为 0 的 manual/delayed-only task 仍允许。
  */
 extern "C" SchedulerTaskId Scheduler_RegisterTask(const SchedulerTaskConfig *config)
 {
@@ -240,10 +265,15 @@ extern "C" SchedulerTaskId Scheduler_RegisterTask(const SchedulerTaskConfig *con
         return SCHEDULER_TASK_ID_INVALID;
     }
 
-    // 当前不支持 period_ms 和 event_deadline_ms 混用：二者共用 next_run_ms 时间槽。
-    if (config->period_ms != 0u && config->event_deadline_ms != 0u) {
-        return SCHEDULER_TASK_ID_INVALID;
-    }
+    // Periodic、Event、Event+Deadline 是互斥的调度类型。
+    // 不支持 pure deadline repeating task（event_deadline_ms 非 0 时必须同时有 event_mask）。
+    const bool has_period          = (config->period_ms != 0u);
+    const bool has_event           = (config->event_mask != 0u);
+    const bool has_event_deadline  = (config->event_deadline_ms != 0u);
+
+    if (has_period && (has_event || has_event_deadline)) { return SCHEDULER_TASK_ID_INVALID; }
+    if (has_event_deadline && !has_event)                 { return SCHEDULER_TASK_ID_INVALID; }
+    // period/event/event_deadline 全为 0 的 manual/delayed-only task 仍允许注册。
 
     const SchedulerTaskId id = scheduler_task_count;
     TaskSlot &slot = scheduler_tasks[id];
@@ -326,20 +356,20 @@ extern "C" SchedulerTaskId Scheduler_RegisterEventTask(const char *name, const S
 }
 
 /**
- * @brief  注册事件 + deadline 任务（便捷接口）。
- * @param  event_mask  订阅的事件掩码；可为 0（此时仅靠 deadline 触发）。
- * @param  deadline_ms deadline 最大等待时间，ms；可为 0（此时仅靠 event 触发）。
- * @param  fn          任务回调，不可为 nullptr。
+ * @brief  注册事件 + deadline 任务。
+ * @param  event_mask   主触发事件掩码；不可为 0。
+ * @param  deadline_ms  event backup deadline，ms；不可为 0。
+ * @param  fn           任务回调，不可为 nullptr。
  * @return 成功时返回任务 ID，失败时返回 SCHEDULER_TASK_ID_INVALID。
- * @note   可作为纯 deadline task（event_mask==0）、纯 event task（deadline_ms==0）或两者兼备。
- *         event_mask 和 deadline_ms 同时为 0 时拒绝注册（无任何触发源）。
+ * @note   event 是主触发源，deadline 是备份/兜底触发源。
+ *         纯 event task 请使用 Scheduler_RegisterEventTask()。
+ *         周期 task 请使用 Scheduler_RegisterPeriodicTask()。
  */
 extern "C" SchedulerTaskId Scheduler_RegisterEventDeadlineTask(const char *name, const SchedulerEventMask event_mask,
                                                                const uint32_t deadline_ms, const SchedulerTaskFn fn,
                                                                void *context, const SchedulerPriority priority)
 {
-    if (fn == nullptr)                         { return SCHEDULER_TASK_ID_INVALID; }
-    if (event_mask == 0u && deadline_ms == 0u) { return SCHEDULER_TASK_ID_INVALID; }
+    if (fn == nullptr || event_mask == 0u || deadline_ms == 0u) { return SCHEDULER_TASK_ID_INVALID; }
 
     const SchedulerTaskConfig config = { name, fn, context, priority, event_mask, 0u, 0u, deadline_ms, 1u };
     return Scheduler_RegisterTask(&config);
@@ -412,9 +442,9 @@ extern "C" void Scheduler_ScheduleNow(const SchedulerTaskId task_id)
 
 /**
  * @brief  retarget non-periodic task 的下一次 DEADLINE target。
- * @note   periodic task 被拒绝；event_deadline task 使用本函数 retarget backup deadline。
- *         不新增独立 timer；retarget 时只清旧 DEADLINE，保留 MANUAL/EVENT/pending_events。
- *         disabled task 下 no-op。
+ * @note   periodic task 被拒绝；对 event_deadline task retarget backup deadline，
+ *         对其他 non-periodic task 设置一次性 delayed DEADLINE trigger。
+ *         retarget 时只清旧 DEADLINE，保留 MANUAL/EVENT/pending_events。disabled task 下 no-op。
  */
 extern "C" void Scheduler_ScheduleDelayed(const SchedulerTaskId task_id, const uint32_t delay_ms)
 {
@@ -448,7 +478,8 @@ extern "C" void Scheduler_ScheduleDelayed(const SchedulerTaskId task_id, const u
 
 /**
  * @brief  retarget non-periodic task 的下一次 DEADLINE target（绝对时间版本）。
- * @note   periodic task 被拒绝；event_deadline task 使用它 retarget backup deadline。
+ * @note   periodic task 被拒绝；event_deadline task retarget backup deadline；
+ *         其他 non-periodic task 设置一次性 delayed DEADLINE trigger。
  *         只清旧 DEADLINE，保留 MANUAL/EVENT/pending_events。disabled task 下 no-op。
  */
 extern "C" void Scheduler_ScheduleAt(const SchedulerTaskId task_id, const uint32_t target_ms)
@@ -484,7 +515,8 @@ extern "C" void Scheduler_ScheduleAt(const SchedulerTaskId task_id, const uint32
  * @brief  设置或修改 periodic interval。
  * @param  interval_ms       周期时间，ms；为 0 时拒绝。
  * @param  initial_delay_ms  相位调整：0 表示等一个 interval_ms；非 0 表示首次延迟为 initial_delay_ms，之后按 interval_ms。
- * @note   设置 interval 时清 DEADLINE|INTERVAL pending，保留 MANUAL|EVENT。
+ * @note   只用于已注册的 periodic task；只清 INTERVAL pending，保留 MANUAL/EVENT/pending_events。
+ *         不把 non-periodic 动态改成 periodic。
  *         event_deadline task 被拒绝。disabled task 下 no-op。
  */
 extern "C" void Scheduler_ScheduleOnInterval(const SchedulerTaskId task_id,
@@ -503,7 +535,12 @@ extern "C" void Scheduler_ScheduleOnInterval(const SchedulerTaskId task_id,
         scheduler_port->exit_critical(state);
         return;
     }
-    // 不支持 period + event_deadline 混用（共用 next_run_ms 时间槽）。
+    // 只允许已注册为 periodic 的 task 调整 interval；不把 non-periodic 动态改成 periodic。
+    if (slot.period_ms == 0u) {
+        scheduler_port->exit_critical(state);
+        return;
+    }
+    // 不支持 period + event_deadline 混用。
     if (slot.event_deadline_ms != 0u) {
         scheduler_port->exit_critical(state);
         return;
@@ -513,15 +550,16 @@ extern "C" void Scheduler_ScheduleOnInterval(const SchedulerTaskId task_id,
     slot.period_ms  = interval_ms;
     slot.next_run_ms = now_ms + ((initial_delay_ms != 0u) ? initial_delay_ms : interval_ms);
     slot.scheduled  = 1u;
-    // 清理旧 time-triggered pending: DEADLINE / INTERVAL。保留 MANUAL / EVENT。
-    slot.pending_reason &= ~(SCHEDULER_REASON_DEADLINE | SCHEDULER_REASON_INTERVAL);
+    // 只清理旧 INTERVAL pending reason；保留 MANUAL/EVENT/pending_events。
+    slot.pending_reason &= ~SCHEDULER_REASON_INTERVAL;
     ClearReadySinceIfNotReadyLocked(slot);
     scheduler_port->exit_critical(state);
 }
 
 /**
- * @brief  full clear 当前 pending/scheduled work。
+ * @brief  full clear 本 task slot 内部 pending/scheduled work。
  * @note   清除 scheduled、pending_reason、pending_events、ready_since_ms。
+ *         不清全局 scheduler_pending_events；尚未被 RunOnce 分发的旧全局事件后续仍可能匹配。
  *         不改变 registered/enabled/config。未来新的 PostEvent/Schedule 仍可触发。
  *         如需长期阻止 task 运行，请用 Scheduler_DisableTask()。
  */
@@ -569,8 +607,10 @@ extern "C" void Scheduler_ScheduleNowFromISR(const SchedulerTaskId task_id)
 }
 
 /**
- * @brief  retarget non-periodic task（ISR 上下文版本）。语义同普通版本。
- * @note   disabled task 下 no-op。
+ * @brief  retarget non-periodic task 的下一次 DEADLINE target（ISR 上下文版本）。
+ * @note   语义同 Scheduler_ScheduleDelayed()。periodic task 被拒绝；event_deadline task retarget
+ *         backup deadline；其他 non-periodic task 设置一次性 delayed DEADLINE trigger。
+ *         只清旧 DEADLINE，保留 MANUAL/EVENT/pending_events。disabled task 下 no-op。
  */
 extern "C" void Scheduler_ScheduleDelayedFromISR(const SchedulerTaskId task_id, const uint32_t delay_ms)
 {
@@ -600,7 +640,10 @@ extern "C" void Scheduler_ScheduleDelayedFromISR(const SchedulerTaskId task_id, 
 }
 
 /**
- * @brief  在绝对时间点调度任务（ISR 上下文版本，仅 non-periodic task）。语义同普通版本。
+ * @brief  retarget non-periodic task 的下一次 DEADLINE target（ISR 绝对时间版本）。
+ * @note   语义同 Scheduler_ScheduleAt()。periodic task 被拒绝；event_deadline task retarget backup
+ *         deadline；其他 non-periodic task 设置一次性 delayed DEADLINE trigger。
+ *         只清旧 DEADLINE，保留 MANUAL/EVENT/pending_events。disabled task 下 no-op。
  */
 extern "C" void Scheduler_ScheduleAtFromISR(const SchedulerTaskId task_id, const uint32_t target_ms)
 {
@@ -629,7 +672,8 @@ extern "C" void Scheduler_ScheduleAtFromISR(const SchedulerTaskId task_id, const
 }
 
 /**
- * @brief  full clear 当前 task 内部 pending/scheduled work（ISR 上下文版本）。语义同 Scheduler_Cancel()。
+ * @brief  full clear 当前 task 内部 pending/scheduled work（ISR 上下文版本）。
+ * @note   语义同 Scheduler_Cancel()；同样不清全局 scheduler_pending_events。
  */
 extern "C" void Scheduler_CancelFromISR(const SchedulerTaskId task_id)
 {
@@ -650,9 +694,11 @@ extern "C" void Scheduler_CancelFromISR(const SchedulerTaskId task_id)
 // ── F. 启用 / 禁用 ──
 
 /**
- * @brief  启用任务：允许 RunOnce 调度该任务。
- * @note   只设 enabled 标志，不恢复之前的 pending state，不自动重新 arm period 或 deadline。
- *         如需重新 arm，调用 ScheduleOnInterval() / ScheduleDelayed() / ScheduleAt()。
+ * @brief  启用任务：只设 enabled 标志，不恢复之前清除的 pending/scheduled state。
+ * @note   Event task 后续收到新 event 仍可触发。
+ *         Periodic task 如需恢复周期调度，应调用 Scheduler_ScheduleOnInterval()。
+ *         Event+Deadline task 如需恢复 backup deadline，应调用
+ *         Scheduler_ScheduleDelayed() 或 Scheduler_ScheduleAt()。
  */
 extern "C" void Scheduler_EnableTask(const SchedulerTaskId task_id)
 {
@@ -667,6 +713,8 @@ extern "C" void Scheduler_EnableTask(const SchedulerTaskId task_id)
 
 /**
  * @brief  禁用任务：清除所有 pending 状态并从 RunOnce 调度中排除。
+ * @note   只清本 task slot 内部状态，不清全局 scheduler_pending_events。
+ *         如果任务很快重新 enable，尚未被 RunOnce 分发的旧全局事件仍可能匹配该任务。
  */
 extern "C" void Scheduler_DisableTask(const SchedulerTaskId task_id)
 {
@@ -703,9 +751,15 @@ extern "C" uint8_t Scheduler_IsTaskEnabled(const SchedulerTaskId task_id)
 
 // ── G. 调度器入口 ──
 
-// 在临界区内选择当前最优 ready task（未 in_progress、有 pending_reason、本轮未 dispatched）。
-// 返回 task_id，如果无 ready task 则返回 SCHEDULER_TASK_ID_INVALID。
-// 选择规则：priority 小者优先；同 priority 则 ready_since_ms 早者优先；同 ready_since_ms 则 task_id 小者优先。
+/**
+ * @brief  在临界区内选择当前最优 ready task。
+ * @param  dispatched_mask  本轮已经 dispatched 的 task 位掩码（防止同一 task 在单次 RunOnce 内自旋）。
+ * @retval 最优 ready task 的 task_id；无 ready task 时返回 SCHEDULER_TASK_ID_INVALID。
+ * @note   Locked：调用方必须持有 scheduler critical section。
+ *         选择规则：priority 数值小者优先 → ready_since_ms 早者优先 → task_id 小者优先。
+ *         跳过 registered==0、enabled==0、pending_reason==NONE、in_progress 的 task。
+ *         遇到 in_progress 且 ready 的 task 时递增 reentry_block_count。
+ */
 SchedulerTaskId SelectBestReadyTaskLocked(const uint32_t dispatched_mask)
 {
     bool best_found = false;
@@ -714,9 +768,11 @@ SchedulerTaskId SelectBestReadyTaskLocked(const uint32_t dispatched_mask)
     uint32_t best_ready_ms = 0u;
 
     for (uint8_t i = 0; i < scheduler_task_count; ++i) {
+        // 本轮已经 dispatched 的 task 不再选择，避免同一 task 在一次 RunOnce() 内自旋。
         if ((dispatched_mask & (static_cast<uint32_t>(1u) << i)) != 0u) { continue; }
         TaskSlot &slot = scheduler_tasks[i];
 
+        // 只选择 registered、enabled、ready 且未 in_progress 的 task。
         if (slot.registered == 0u || slot.enabled == 0u) { continue; }
         if (slot.pending_reason == SCHEDULER_REASON_NONE) { continue; }
         if (slot.in_progress != 0u) {
@@ -724,11 +780,16 @@ SchedulerTaskId SelectBestReadyTaskLocked(const uint32_t dispatched_mask)
             continue;
         }
 
+        // 比较顺序：priority 数值更小者优先；同 priority 下 ready_since_ms 更早者优先；
+        // 若 ready_since_ms 也相同，则 task_id 更小者优先。
         if (!best_found
             || slot.priority < best_prio
             || (slot.priority == best_prio && TimeEarlier(slot.ready_since_ms, best_ready_ms))
             || (slot.priority == best_prio && slot.ready_since_ms == best_ready_ms && i < best_id)) {
-            best_id = i; best_found = true; best_prio = slot.priority; best_ready_ms = slot.ready_since_ms;
+            best_id        = i;
+            best_found     = true;
+            best_prio      = slot.priority;
+            best_ready_ms  = slot.ready_since_ms;
         }
     }
 

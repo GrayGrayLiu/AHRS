@@ -26,7 +26,7 @@ constexpr uint32_t IMU_DRDY_DEADLINE_MS = 5u;
 
 /**
  * @brief  IMU delta 状态 print task（1 Hz，priority=200）。
- * @note   只读取 Service 缓存，不访问 SPI / FIFO / EXIT，不修改 ICM42688P 驱动状态机。
+ * @note   只读取 Service 缓存，不访问 SPI / FIFO / EXTI，不修改 ICM42688P 驱动状态机。
  *         自行维护 sample_counter 去重，避免相同数据重复输出。
  */
 void ImuDebugTask(SchedulerRunReason reason, SchedulerEventMask events,
@@ -136,7 +136,8 @@ constexpr SchedulerTaskConfig kAppTasks[] = {
 
 /**
  * @brief  应用/业务模块初始化入口。
- * @note   负责 ICM42688P、IST8310 等驱动、服务和算法模块的初始化。
+ * @note   当前暂无额外初始化动作；该入口用于以后集中放置 scheduler task
+ *         运行前必须完成的驱动、服务或算法模块初始化。
  *         本函数不注册 scheduler task；任务注册由 SchedulerAppTasks_RegisterAll() 负责。
  */
 extern "C" void App_Init(void)
@@ -147,7 +148,7 @@ extern "C" void App_Init(void)
 
 /**
  * @brief  遍历 kAppTasks[] 表并向 generic Scheduler 注册所有应用任务。
- * @note   必须在 Scheduler_Init() 成功后调用。注册失败只打印错误，不进入 Error_Handler。
+ * @note   必须在 Scheduler_Init() 和 App_Init() 之后调用。注册失败只打印错误，不进入 Error_Handler。
  */
 extern "C" void SchedulerAppTasks_RegisterAll(void)
 {
