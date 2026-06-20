@@ -120,6 +120,7 @@ int main(void)
       };
 
       Scheduler_Init(&scheduler_port);
+      App_Init();
       SchedulerAppTasks_RegisterAll();
   }
   /* USER CODE END 2 */

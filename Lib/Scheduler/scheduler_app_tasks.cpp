@@ -21,11 +21,11 @@ constexpr uint32_t IMU_DEBUG_PERIOD_MS = 1000u;
 constexpr uint32_t IMU_DRDY_DEADLINE_MS = 5u;
 
 // ============================================================================
-// IMU debug print task — 低优先级 IMU 状态输出
+// IMU debug print task — IMU 状态输出
 // ============================================================================
 
 /**
- * @brief  IMU delta 状态 print task（1 Hz，LOW priority）。
+ * @brief  IMU delta 状态 print task（1 Hz，priority=200）。
  * @note   只读取 Service 缓存，不访问 SPI / FIFO / EXIT，不修改 ICM42688P 驱动状态机。
  *         自行维护 sample_counter 去重，避免相同数据重复输出。
  */
@@ -84,7 +84,7 @@ void ImuDebugTask(SchedulerRunReason reason, SchedulerEventMask events,
 // ============================================================================
 
 /**
- * @brief  ICM42688P data-ready event+deadline task（HIGH priority）。
+ * @brief  ICM42688P data-ready event+deadline task（priority=10）。
  * @note   不直接访问 SPI/FIFO，只调用 icm42688_service::Run()。
  */
 void ImuDrdyTask(SchedulerRunReason reason, SchedulerEventMask events,
@@ -103,11 +103,12 @@ void ImuDrdyTask(SchedulerRunReason reason, SchedulerEventMask events,
 // 新增任务只需添加一条 SchedulerTaskConfig 配置，不需要修改注册循环。
 // 表内顺序即注册顺序；运行调度顺序由 Scheduler core 根据 priority、event/deadline/period 决定。
 constexpr SchedulerTaskConfig kAppTasks[] = {
+    // priority: 0=highest, 255=lowest
     {
-        "imu_debug",
+        "imu_debug",                        // 低优先级 IMU 状态输出（1 Hz）
         ImuDebugTask,
         nullptr,
-        SCHEDULER_PRIORITY_LOW,
+        200u,                               // priority: 低优先级，不影响 data-ready
         0u,
         IMU_DEBUG_PERIOD_MS,
         0u,
@@ -115,10 +116,10 @@ constexpr SchedulerTaskConfig kAppTasks[] = {
         1u,
     },
     {
-        "imu_drdy",
+        "imu_drdy",                         // ICM42688P data-ready 主处理路径
         ImuDrdyTask,
         nullptr,
-        SCHEDULER_PRIORITY_HIGH,
+        10u,                                // priority: 高优先级，接近 data-ready 响应
         scheduler_app_events::IMU_DRDY,
         0u,
         0u,
@@ -130,7 +131,18 @@ constexpr SchedulerTaskConfig kAppTasks[] = {
 } // namespace
 
 // ============================================================================
-// 对外注册入口
+// 对外入口
+// ============================================================================
+
+/**
+ * @brief  应用/业务模块初始化入口。
+ * @note   负责 ICM42688P、IST8310 等驱动、服务和算法模块的初始化。
+ *         本函数不注册 scheduler task；任务注册由 SchedulerAppTasks_RegisterAll() 负责。
+ */
+extern "C" void App_Init(void)
+{
+}
+
 // ============================================================================
 
 /**
