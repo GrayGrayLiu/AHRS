@@ -144,6 +144,7 @@ constexpr SchedulerTaskConfig kAppTasks[] = {
  */
 extern "C" void App_Init(void)
 {
+    (void)aided_ins_service::Init();
 }
 
 // ============================================================================
