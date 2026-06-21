@@ -78,7 +78,8 @@ int Aided_INS::Run()
             alignGyroSum_.setZero();
             alignAccSum_.setZero();
             alignMagSum_.setZero();
-            alignCount_ = 0;
+            alignCount_    = 0;
+            alignMagCount_ = 0;
 
             status_ = InsStatus::Aligning;
             return 0;
@@ -113,13 +114,12 @@ int Aided_INS::InitialAlignment()
     const bool imuReady = GetImuData();
     const bool magReady = GetMagData();
 
-    if (!imuReady || !magReady)
+    if (!imuReady)
         return 0;
 
     // 当前瞬时值
     const Vector3d gyro = imuCur_.deltaTheta / imuCur_.dt;
     const Vector3d acc  = imuCur_.deltaVel   / imuCur_.dt;
-    const Vector3d mag  = magData_.mag;
 
     constexpr float ALIGN_ANGLE_SPEED_DEG_S = 1.0;
     if (gyro.norm() > Deg2Rad(ALIGN_ANGLE_SPEED_DEG_S)) //载体角速度过大，退出初始对准
@@ -138,8 +138,13 @@ int Aided_INS::InitialAlignment()
     // 累积
     alignGyroSum_ += gyro;
     alignAccSum_  += acc;
-    alignMagSum_  += mag;
     alignCount_++;
+
+    if (magReady)
+    {
+        alignMagSum_ += magData_.mag;
+        alignMagCount_++;
+    }
 
     const uint32_t elapsed = HAL_GetTick() - alignStartTime_;
 
@@ -155,7 +160,6 @@ int Aided_INS::InitialAlignment()
     // 平均
     const Vector3d gyroMean = alignGyroSum_ / static_cast<double>(alignCount_);
     const Vector3d accMean  = alignAccSum_  / static_cast<double>(alignCount_);
-    const Vector3d magMean  = alignMagSum_  / static_cast<double>(alignCount_);
 
     const double ax = accMean(0);
     const double ay = accMean(1);
@@ -165,16 +169,22 @@ int Aided_INS::InitialAlignment()
     const double roll  = std::atan2(-ay, -az);
     const double pitch = std::atan2(ax, std::sqrt(ay * ay + az * az));
 
-    // 磁力计倾斜补偿，当前未补偿当地磁偏角，yaw为磁北航向
-    const double mx = magMean(0);
-    const double my = magMean(1);
-    const double mz = magMean(2);
+    // yaw：有磁力计时使用倾斜补偿磁航向，否则使用配置初值。
+    double yaw = config_.initState.euler[2];
 
-    const double mx_h = mx * std::cos(pitch) + my * std::sin(roll) * std::sin(pitch) + mz * std::cos(roll) * std::sin(pitch);
+    if (alignMagCount_ > 0u)
+    {
+        const Vector3d magMean = alignMagSum_ / static_cast<double>(alignMagCount_);
 
-    const double my_h = my * std::cos(roll) - mz * std::sin(roll);
+        const double mx = magMean(0);
+        const double my = magMean(1);
+        const double mz = magMean(2);
 
-    const double yaw = std::atan2(-my_h, mx_h);
+        const double mx_h = mx * std::cos(pitch) + my * std::sin(roll) * std::sin(pitch) + mz * std::cos(roll) * std::sin(pitch);
+        const double my_h = my * std::cos(roll) - mz * std::sin(roll);
+
+        yaw = std::atan2(-my_h, mx_h);
+    }
 
     // 初始化姿态
     pvaCur_.att.euler << roll, pitch, yaw;

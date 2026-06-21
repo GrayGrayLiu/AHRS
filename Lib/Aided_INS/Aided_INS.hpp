@@ -71,6 +71,7 @@ private:
     Vector3d alignAccSum_  = Vector3d::Zero();
     Vector3d alignMagSum_  = Vector3d::Zero();
     uint32_t alignCount_{0};
+    uint32_t alignMagCount_{0};
 
     /**
      * @brief 初始对准
