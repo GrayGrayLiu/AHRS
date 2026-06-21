@@ -24,6 +24,8 @@ namespace aided_ins_service
 
     namespace
     {
+        constexpr bool kRunInsInDrdyForProfiling = true;  // 临时诊断开关：true=聚合后调用 INS Run 测耗时
+
         bool      pending_{false};
         IMU       pending_imu_{};
         uint64_t  last_timestamp_us_{0u};
@@ -149,15 +151,62 @@ namespace aided_ins_service
 
         ++stats_.aggregated_samples;
 
-        // 7. 缓存聚合后的 200 Hz IMU（临时：暂不调用 Aided_INS::Run，避免阻塞 IMU DRDY 链路）。
-        if (has_imu200_)
+        // 7. 临时诊断开关：选择聚合后的行为。
+        if (kRunInsInDrdyForProfiling)
         {
-            ++stats_.dropped_imu_samples;
+            // 临时：重新调用 Aided_INS::Run() 以测量 hard-float 下 INS 耗时。
+            InsInstance().SetImuData(pending_imu_);
+
+            const uint64_t t_ins_start = SystemPort_GetMicros();
+            InsInstance().Run();
+            const uint64_t t_ins_end = SystemPort_GetMicros();
+
+            const uint32_t ins_elapsed = static_cast<uint32_t>(t_ins_end - t_ins_start);
+            stats_.ins_run_last_us = ins_elapsed;
+
+            if (ins_elapsed > stats_.ins_run_max_us)
+            {
+                stats_.ins_run_max_us = ins_elapsed;
+            }
+
+            ++stats_.ins_run_calls;
+
+            // [PROFILE] 读取分段耗时并更新 stats last/max
+            const InsProfile &p = InsInstance().GetLastProfile();
+            stats_.pnd_us = p.process_new_data_us;
+            if (p.process_new_data_us > stats_.pnd_max) { stats_.pnd_max = p.process_new_data_us; }
+            stats_.prp_us = p.ins_propagation_us;
+            if (p.ins_propagation_us > stats_.prp_max) { stats_.prp_max = p.ins_propagation_us; }
+            stats_.mec_us = p.ins_mech_us;
+            if (p.ins_mech_us > stats_.mec_max) { stats_.mec_max = p.ins_mech_us; }
+            stats_.fmx_us = p.phi_f_q_g_us;
+            if (p.phi_f_q_g_us > stats_.fmx_max) { stats_.fmx_max = p.phi_f_q_g_us; }
+            stats_.ekf_us = p.ekf_predict_us;
+            if (p.ekf_predict_us > stats_.ekf_max) { stats_.ekf_max = p.ekf_predict_us; }
+            stats_.afb_us = p.acc_feedback_us;
+            if (p.acc_feedback_us > stats_.afb_max) { stats_.afb_max = p.acc_feedback_us; }
+            // [PROFILE] Phase-2: fmx 子段
+            stats_.alc_us = p.fmx_alc_us;
+            if (p.fmx_alc_us > stats_.alc_max) { stats_.alc_max = p.fmx_alc_us; }
+            stats_.fill_us = p.fmx_fill_us;
+            if (p.fmx_fill_us > stats_.fill_max) { stats_.fill_max = p.fmx_fill_us; }
+            stats_.q1_us = p.fmx_q1_us;
+            if (p.fmx_q1_us > stats_.q1_max) { stats_.q1_max = p.fmx_q1_us; }
+            stats_.q2_us = p.fmx_q2_us;
+            if (p.fmx_q2_us > stats_.q2_max) { stats_.q2_max = p.fmx_q2_us; }
         }
-        latest_imu200_ = pending_imu_;
-        has_imu200_ = true;
-        ++stats_.queued_imu_samples;
-        ++stats_.ins_run_disabled;
+        else
+        {
+            // 保留 producer-only 缓存逻辑。
+            if (has_imu200_)
+            {
+                ++stats_.dropped_imu_samples;
+            }
+            latest_imu200_ = pending_imu_;
+            has_imu200_ = true;
+            ++stats_.queued_imu_samples;
+            ++stats_.ins_run_disabled;
+        }
 
         pending_ = false;
 

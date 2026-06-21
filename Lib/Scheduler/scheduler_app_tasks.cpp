@@ -112,6 +112,32 @@ void InsDebugTask(SchedulerRunReason reason, SchedulerEventMask events,
            static_cast<unsigned long>(stats.ins_run_max_us),
            static_cast<unsigned long>(stats.service_run_last_us),
            static_cast<unsigned long>(stats.service_run_max_us));
+
+    // [PROFILE] 临时分段耗时输出
+    printf("[INS_PROF] pnd=%lu %lu prp=%lu %lu mec=%lu %lu fmx=%lu %lu ekf=%lu %lu afb=%lu %lu\r\n",
+           static_cast<unsigned long>(stats.pnd_us),
+           static_cast<unsigned long>(stats.pnd_max),
+           static_cast<unsigned long>(stats.prp_us),
+           static_cast<unsigned long>(stats.prp_max),
+           static_cast<unsigned long>(stats.mec_us),
+           static_cast<unsigned long>(stats.mec_max),
+           static_cast<unsigned long>(stats.fmx_us),
+           static_cast<unsigned long>(stats.fmx_max),
+           static_cast<unsigned long>(stats.ekf_us),
+           static_cast<unsigned long>(stats.ekf_max),
+           static_cast<unsigned long>(stats.afb_us),
+           static_cast<unsigned long>(stats.afb_max));
+
+    // [PROFILE] Phase-2: fmx 子段耗时输出
+    printf("[INS_PROF2] alc=%lu %lu fill=%lu %lu q1=%lu %lu q2=%lu %lu\r\n",
+           static_cast<unsigned long>(stats.alc_us),
+           static_cast<unsigned long>(stats.alc_max),
+           static_cast<unsigned long>(stats.fill_us),
+           static_cast<unsigned long>(stats.fill_max),
+           static_cast<unsigned long>(stats.q1_us),
+           static_cast<unsigned long>(stats.q1_max),
+           static_cast<unsigned long>(stats.q2_us),
+           static_cast<unsigned long>(stats.q2_max));
 }
 
 // ============================================================================

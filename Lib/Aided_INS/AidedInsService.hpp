@@ -38,6 +38,29 @@ namespace aided_ins_service
         uint32_t queued_imu_samples{0};      // 完成 200 Hz 聚合并缓存次数
         uint32_t dropped_imu_samples{0};     // 缓存覆盖次数（消费者未及时取走）
         uint32_t ins_run_disabled{0};        // 聚合完成但跳过 INS Run 的次数
+
+        // [PROFILE] 临时分段耗时统计
+        uint32_t pnd_us{0};      // ProcessNewData last
+        uint32_t pnd_max{0};     // ProcessNewData max
+        uint32_t prp_us{0};      // InsPropagation last
+        uint32_t prp_max{0};     // InsPropagation max
+        uint32_t mec_us{0};      // INS_Mech last
+        uint32_t mec_max{0};     // INS_Mech max
+        uint32_t fmx_us{0};      // Phi/F/Q/G last
+        uint32_t fmx_max{0};     // Phi/F/Q/G max
+        uint32_t ekf_us{0};      // EKFPredict last
+        uint32_t ekf_max{0};     // EKFPredict max
+        uint32_t afb_us{0};      // AccUpdate+StateFeedback last
+        uint32_t afb_max{0};     // AccUpdate+StateFeedback max
+        // [PROFILE] Phase-2: fmx 子段统计
+        uint32_t alc_us{0};      // Matrix create+resize+init last
+        uint32_t alc_max{0};     // Matrix create+resize+init max
+        uint32_t fill_us{0};     // 地理参数+F/G 填充+Phi 更新 last
+        uint32_t fill_max{0};    // 地理参数+F/G 填充+Phi 更新 max
+        uint32_t q1_us{0};       // 第一次 Q = Phi*G*q_*G'*Phi' last
+        uint32_t q1_max{0};      // 第一次 Q max
+        uint32_t q2_us{0};       // G 更新 + 第二次 Q last
+        uint32_t q2_max{0};      // G 更新 + 第二次 Q max
     };
 
     /**

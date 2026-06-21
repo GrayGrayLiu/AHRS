@@ -23,6 +23,22 @@
 #include <Eigen/Dense>
 #include "Aided_INS_Types.hpp"
 
+// [PROFILE] 临时：分段耗时诊断结构体
+struct InsProfile
+{
+    uint32_t process_new_data_us{0};
+    uint32_t ins_propagation_us{0};
+    uint32_t ins_mech_us{0};
+    uint32_t phi_f_q_g_us{0};
+    uint32_t ekf_predict_us{0};
+    uint32_t acc_feedback_us{0};
+    // [PROFILE] Phase-2: fmx 子段
+    uint32_t fmx_alc_us{0};
+    uint32_t fmx_fill_us{0};
+    uint32_t fmx_q1_us{0};
+    uint32_t fmx_q2_us{0};
+};
+
 class Aided_INS
 {
 public:
@@ -48,6 +64,9 @@ public:
       */
     int Run();
 
+    // [PROFILE] 临时：获取最近一次 Run() 的分段耗时
+    const InsProfile &GetLastProfile() const { return profile_; }
+
 private:
     using NavState = Aided_INS_Space::NavState;
     using IMU      = Aided_INS_Space::IMU;
@@ -56,8 +75,26 @@ private:
     using ImuError = Aided_INS_Space::ImuError;
     using Mag      = Aided_INS_Space::Mag;
     using Config   = Aided_INS_Space::Config;
-    using MatrixXd = Eigen::MatrixXd;
+    using Matrix3d = Eigen::Matrix3d;
     using Vector3d = Eigen::Vector3d;
+
+    // 固定尺寸矩阵实验：用编译期常量替代动态 MatrixXd
+    static constexpr int kStateRank = 21;
+    static constexpr int kNoiseRank = 18;
+
+    using StateVector      = Eigen::Matrix<double, kStateRank, 1>;
+    using StateMatrix      = Eigen::Matrix<double, kStateRank, kStateRank>;
+    using NoiseMatrix      = Eigen::Matrix<double, kNoiseRank, kNoiseRank>;
+    using NoiseDriveMatrix = Eigen::Matrix<double, kStateRank, kNoiseRank>;
+
+    template<int MeasDim>
+    using MeasurementVector = Eigen::Matrix<double, MeasDim, 1>;
+
+    template<int MeasDim>
+    using MeasurementMatrix = Eigen::Matrix<double, MeasDim, kStateRank>;
+
+    template<int MeasDim>
+    using MeasurementNoise = Eigen::Matrix<double, MeasDim, MeasDim>;
 
     enum class InsStatus : uint8_t
     {
@@ -141,6 +178,43 @@ private:
     void ImuCompensate(IMU &imu) const;
 
     /**
+     * @brief 结构化构造 Qbase（接受显式 q 参数，供验证和正式路径共用）
+     */
+    static void BuildGQGtFromNoise(const Matrix3d &Cbn,
+                                   const NoiseMatrix &q,
+                                   StateMatrix &Qbase);
+
+    /**
+     * @brief 结构化构造 Qbase = G * q_ * Gᵀ（薄封装，调用 BuildGQGtFromNoise）
+     */
+    void BuildGQGt(const Matrix3d &Cbn, StateMatrix &Qbase) const;
+
+    /**
+     * @brief 块累加：Qout += Phi(*,k) * Qbase(k,k) * Phi(*,k)ᵀ 对于单个 k 列
+     */
+    static void AccumulatePhiQbaseColumn(const StateMatrix &Phi,
+                                         const StateMatrix &Qbase,
+                                         int k_id,
+                                         const int *rows,
+                                         int row_count,
+                                         StateMatrix &Qout);
+
+    /**
+     * @brief 结构化 Q = Phi * Qbase * Phiᵀ
+     *        利用 Qbase 仅 6 个对角 3×3 块非零和 Phi 的块稀疏结构。
+     */
+    static void BuildPhiQbasePhiT(const StateMatrix &Phi,
+                                  const StateMatrix &Qbase,
+                                  StateMatrix &Qout);
+
+#if 1  // 验证用：确认后改为 #if 0 即可关闭
+    /**
+     * @brief 数值验证（调用 BuildGQGtFromNoise，确保验证和正式路径共用同一实现）
+     */
+    static void VerifyStructuredQ();
+#endif
+
+    /**
      * @brief 进行INS状态更新(IMU机械编排算法), 并计算IMU状态转移矩阵和噪声阵
      *        do INS state update(INS mechanization), and compute state transition matrix and noise matrix
      * @param [in,out] imuPre 前一时刻IMU数据
@@ -158,42 +232,30 @@ private:
      * @param [in,out] Q  传播噪声矩阵
      *                     propagation noise matrix
      */
-    void EKFPredict(const MatrixXd &Phi, const MatrixXd &Q);
+    void EKFPredict(const StateMatrix &Phi, const StateMatrix &Q);
 
     /**
      * @brief 加速度计观测方程
-     * @param imuData IMU的采样数据
-     * @param pvaCur 当前时刻IMU的导航解
-     * @param config 初始配置
      */
     bool AccUpdate(const IMU& imuData, const PVA& pvaCur, const Config& config);
 
     /**
      * @brief 磁力计观测方程
-     * @param magData 磁力计的采样数据
-     * @param pvaCur 当前时刻IMU的导航解
-     * @param config 初始配置
      */
     void MagUpdate(const Mag &magData, const PVA &pvaCur, const Config &config);
 
     /**
      * @brief 使用GNSS位置观测更新系统状态
-     *        update state using gnss position
-     * @param [in,out] gnssData
      */
     void GnssUpdate(GNSS &gnssData);
 
     /**
-     * @brief Kalman 更新
-     *        Kalman Filter Update process
-     * @param [in] dz 观测新息
-     *                measurement innovation
-     * @param [in] H  观测矩阵
-     *                measurement matrix
-     * @param [in] R  观测噪声阵
-     *                measurement noise matrix
+     * @brief Kalman 更新（固定测量维度模板）
      */
-    void EkfUpdate(const MatrixXd &dz, MatrixXd &H, const MatrixXd &R);
+    template<int MeasDim>
+    void EkfUpdate(const MeasurementVector<MeasDim> &dz,
+                   const MeasurementMatrix<MeasDim> &H,
+                   const MeasurementNoise<MeasDim> &R);
 
     /**
      * @brief 反馈误差状态到当前状态
@@ -245,16 +307,24 @@ private:
     ImuError imuError_;
 
     // Kalman滤波相关
-    MatrixXd P_;  //协方差矩阵
-    MatrixXd q_;  //系统噪声矩阵
-    MatrixXd dx_; //误差状态向量
-
-    const int RANK_       = 21;
-    const int NOISE_RANK_ = 18;
+    StateMatrix P_;  //协方差矩阵
+    NoiseMatrix q_;  //系统噪声矩阵
+    StateVector dx_; //误差状态向量
 
     // 状态ID和噪声ID
     enum StateID { P_ID = 0, V_ID = 3, PHI_ID = 6, GB_ID = 9, AB_ID = 12, GS_ID = 15, AS_ID = 18 };
     enum NoiseID { VRW_ID = 0, ARW_ID = 3, GBSTD_ID = 6, ABSTD_ID = 9, GSSTD_ID = 12, ASSTD_ID = 15 };
+
+    // [PROFILE] 临时：分段耗时快照
+    InsProfile profile_;
+
+    // 固定尺寸 scratch buffer：避免每次调用 InsPropagation/EkfUpdate 都 malloc
+    StateMatrix      Phi_scratch_;   // 状态转移矩阵（复用）
+    StateMatrix      F_scratch_;     // F 矩阵（复用）
+    StateMatrix      Q_scratch_;     // Q 传播噪声矩阵（复用）
+    StateMatrix      I_scratch_;     // EkfUpdate 临时 I 矩阵（复用）
+    StateMatrix      Qbase_pre_scratch_; // BuildGQGt(pre-Cbn) 输出（复用）
+    StateMatrix      Qbase_cur_scratch_; // BuildGQGt(cur-Cbn) 输出（复用）
 
     //传感器驱动类
     // ImuDriver& imu_;

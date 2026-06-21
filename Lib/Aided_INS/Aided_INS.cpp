@@ -24,6 +24,7 @@
 #include "EarthUtilities.hpp"
 #include "RotationUtilities.hpp"
 #include "INS_Mechanization.hpp"
+#include "SystemPort.h"  // [PROFILE]
 #include "stm32h7xx.h"
 
 #include <cassert>
@@ -64,6 +65,11 @@ int Aided_INS::Init()
     config_ = LoadConfig();
     Initialize();
     status_ = InsStatus::Unaligned;
+
+#if 1  // 验证 BuildGQGt 等价性（通过后改为 #if 0 关闭）
+    VerifyStructuredQ();
+#endif
+
     return 0;
 }
 
@@ -354,10 +360,7 @@ void Aided_INS::Initialize()
 {
     timestamp_ = 0;
 
-    //设置协方差矩阵Cov，系统噪声阵q和系统误差状态矩阵dx大小
-    P_.resize(RANK_, RANK_);
-    q_.resize(NOISE_RANK_, NOISE_RANK_);
-    dx_.resize(RANK_, 1);
+    //设置协方差矩阵Cov，系统噪声阵q和系统误差状态矩阵dx（固定尺寸，不需要 resize）
     P_.setZero();
     q_.setZero();
     dx_.setZero();
@@ -417,26 +420,254 @@ void Aided_INS::ImuCompensate(IMU &imu) const
     imu.deltaVel   = imu.deltaVel.cwiseProduct(accScale.cwiseInverse());
 }
 
+// ============================================================================
+// AccumulatePhiQbaseColumn — 对单个 k 列累加 Qout += Σ_i,j Phi(i,k)*Qkk*Phi(j,k)ᵀ
+// ============================================================================
+
+void Aided_INS::AccumulatePhiQbaseColumn(const StateMatrix &Phi,
+                                          const StateMatrix &Qbase,
+                                          const int k_id,
+                                          const int *rows,
+                                          const int row_count,
+                                          StateMatrix &Qout)
+{
+    const Eigen::Matrix3d Qkk = Qbase.template block<3, 3>(k_id, k_id);
+
+    for (int a = 0; a < row_count; ++a)
+    {
+        const int i_id = rows[a];
+
+        Eigen::Matrix3d tmp;
+        tmp.noalias() = Phi.template block<3, 3>(i_id, k_id) * Qkk;
+
+        for (int b = 0; b < row_count; ++b)
+        {
+            const int j_id = rows[b];
+
+            Qout.template block<3, 3>(i_id, j_id).noalias() +=
+                tmp * Phi.template block<3, 3>(j_id, k_id).transpose();
+        }
+    }
+}
+
+// ============================================================================
+// BuildPhiQbasePhiT — 结构化 Q = Phi * Qbase * Phiᵀ
+// ============================================================================
+
+void Aided_INS::BuildPhiQbasePhiT(const StateMatrix &Phi,
+                                   const StateMatrix &Qbase,
+                                   StateMatrix &Qout)
+{
+    Qout.setZero();
+
+    // Phi 的非零行块按 k 列分组（基于 F/Phi 固有块稀疏结构）
+    const int rows_v[]   = {P_ID,   V_ID,   PHI_ID};
+    const int rows_phi[] = {V_ID,   PHI_ID};
+    const int rows_gb[]  = {PHI_ID, GB_ID};
+    const int rows_ab[]  = {V_ID,   AB_ID};
+    const int rows_gs[]  = {PHI_ID, GS_ID};
+    const int rows_as[]  = {V_ID,   AS_ID};
+
+    AccumulatePhiQbaseColumn(Phi, Qbase, V_ID,   rows_v,   3, Qout);
+    AccumulatePhiQbaseColumn(Phi, Qbase, PHI_ID, rows_phi, 2, Qout);
+    AccumulatePhiQbaseColumn(Phi, Qbase, GB_ID,  rows_gb,  2, Qout);
+    AccumulatePhiQbaseColumn(Phi, Qbase, AB_ID,  rows_ab,  2, Qout);
+    AccumulatePhiQbaseColumn(Phi, Qbase, GS_ID,  rows_gs,  2, Qout);
+    AccumulatePhiQbaseColumn(Phi, Qbase, AS_ID,  rows_as,  2, Qout);
+}
+
+// ============================================================================
+// BuildGQGtFromNoise — 结构化 G*q*Gᵀ（共享实现，接受显式 q 参数）
+// ============================================================================
+
+void Aided_INS::BuildGQGtFromNoise(const Matrix3d &Cbn,
+                                    const NoiseMatrix &q,
+                                    StateMatrix &Qbase)
+{
+    Qbase.setZero();
+
+    Qbase.template block<3, 3>(V_ID, V_ID) =
+        Cbn * q.template block<3, 3>(VRW_ID, VRW_ID) * Cbn.transpose();
+
+    Qbase.template block<3, 3>(PHI_ID, PHI_ID) =
+        Cbn * q.template block<3, 3>(ARW_ID, ARW_ID) * Cbn.transpose();
+
+    Qbase.template block<3, 3>(GB_ID, GB_ID) =
+        q.template block<3, 3>(GBSTD_ID, GBSTD_ID);
+
+    Qbase.template block<3, 3>(AB_ID, AB_ID) =
+        q.template block<3, 3>(ABSTD_ID, ABSTD_ID);
+
+    Qbase.template block<3, 3>(GS_ID, GS_ID) =
+        q.template block<3, 3>(GSSTD_ID, GSSTD_ID);
+
+    Qbase.template block<3, 3>(AS_ID, AS_ID) =
+        q.template block<3, 3>(ASSTD_ID, ASSTD_ID);
+}
+
+// ============================================================================
+// BuildGQGt — 薄封装（正式运行路径调用）
+// ============================================================================
+
+void Aided_INS::BuildGQGt(const Matrix3d &Cbn, StateMatrix &Qbase) const
+{
+    BuildGQGtFromNoise(Cbn, q_, Qbase);
+}
+
+// ============================================================================
+// VerifyStructuredQ — 调用 BuildGQGtFromNoise，确保与正式路径共用同一实现
+// ============================================================================
+
+#if 1  // 验证：确认等价后改为 #if 0 关闭
+
+void Aided_INS::VerifyStructuredQ()
+{
+    // 构造非零 q_test：6 个 3×3 块各填不同非零值，覆盖对角和非对角
+    NoiseMatrix q_test;
+    q_test.setZero();
+
+    for (int b = 0; b < 6; ++b)
+    {
+        const int id = b * 3; // VRW=0, ARW=3, GBSTD=6, ABSTD=9, GSSTD=12, ASSTD=15
+        Eigen::Matrix3d blk;
+        blk << 1.0 + b,  0.1,        0.2,
+               0.1,       2.0 + b,    0.3,
+               0.2,       0.3,        3.0 + b;
+        q_test.template block<3, 3>(id, id) = blk;
+    }
+
+    // 构造非平凡 Cbn（30° roll 旋转）和 Cbn_cur（-20° pitch）
+    const double angle_pre = 0.5235987756;   // 30°
+    const double angle_cur = -0.3490658504;  // -20°
+    const Matrix3d Cbn_pre = (Eigen::AngleAxisd(angle_pre, Vector3d::UnitX())).toRotationMatrix();
+    const Matrix3d Cbn_cur = (Eigen::AngleAxisd(angle_cur, Vector3d::UnitY())).toRotationMatrix();
+
+    // -------------------------------
+    // 验证 1: Qbase 结构化 vs 稠密
+    // -------------------------------
+    NoiseDriveMatrix G_test;
+    G_test.setZero();
+    G_test.template block<3, 3>(V_ID,   VRW_ID)   = Cbn_pre;
+    G_test.template block<3, 3>(PHI_ID, ARW_ID)   = Cbn_pre;
+    G_test.template block<3, 3>(GB_ID,  GBSTD_ID) = Matrix3d::Identity();
+    G_test.template block<3, 3>(AB_ID,  ABSTD_ID) = Matrix3d::Identity();
+    G_test.template block<3, 3>(GS_ID,  GSSTD_ID) = Matrix3d::Identity();
+    G_test.template block<3, 3>(AS_ID,  ASSTD_ID) = Matrix3d::Identity();
+
+    const StateMatrix Qbase_ref = G_test * q_test * G_test.transpose();
+
+    StateMatrix Qbase_opt;
+    BuildGQGtFromNoise(Cbn_pre, q_test, Qbase_opt);  // 调用正式实现
+
+    const double qbase_err = (Qbase_ref - Qbase_opt).cwiseAbs().maxCoeff();
+
+    // -------------------------------
+    // 验证 2: Q1 = Phi * Qbase * Phiᵀ（使用 BuildPhiQbasePhiT）
+    // -------------------------------
+
+    // 构造 MakeTestBlock 辅助 lambda：根据 seed 生成不同的 3×3 非平凡矩阵
+    auto MakeTestBlock = [](double s) -> Eigen::Matrix3d {
+        Eigen::Matrix3d m;
+        m << s,       s*0.1,   s*0.2,
+             s*0.3,   s,       s*0.4,
+             s*0.5,   s*0.6,   s;
+        return m;
+    };
+
+    // Phi_test：覆盖所有允许的非零 3×3 块
+    StateMatrix Phi_test = StateMatrix::Identity();
+    // 对角线块（用不同 seed 覆盖 I 的默认值）
+    Phi_test.template block<3, 3>(P_ID,   P_ID)   = MakeTestBlock(1.0);
+    Phi_test.template block<3, 3>(V_ID,   V_ID)   = MakeTestBlock(1.1);
+    Phi_test.template block<3, 3>(PHI_ID, PHI_ID) = MakeTestBlock(1.2);
+    Phi_test.template block<3, 3>(GB_ID,  GB_ID)  = MakeTestBlock(1.3);
+    Phi_test.template block<3, 3>(AB_ID,  AB_ID)  = MakeTestBlock(1.4);
+    Phi_test.template block<3, 3>(GS_ID,  GS_ID)  = MakeTestBlock(1.5);
+    Phi_test.template block<3, 3>(AS_ID,  AS_ID)  = MakeTestBlock(1.6);
+    // 非对角块（基于当前 F/Phi 固有块稀疏结构）
+    Phi_test.template block<3, 3>(P_ID,   V_ID)   = MakeTestBlock(0.02);
+    Phi_test.template block<3, 3>(V_ID,   P_ID)   = MakeTestBlock(0.03);
+    Phi_test.template block<3, 3>(V_ID,   PHI_ID) = MakeTestBlock(0.04);
+    Phi_test.template block<3, 3>(V_ID,   AB_ID)  = MakeTestBlock(0.05);
+    Phi_test.template block<3, 3>(V_ID,   AS_ID)  = MakeTestBlock(0.06);
+    Phi_test.template block<3, 3>(PHI_ID, P_ID)   = MakeTestBlock(0.07);
+    Phi_test.template block<3, 3>(PHI_ID, V_ID)   = MakeTestBlock(0.08);
+    Phi_test.template block<3, 3>(PHI_ID, GB_ID)  = MakeTestBlock(0.09);
+    Phi_test.template block<3, 3>(PHI_ID, GS_ID)  = MakeTestBlock(0.10);
+
+    // 稠密参考
+    const StateMatrix Q1_ref = Phi_test * (G_test * q_test * G_test.transpose()) * Phi_test.transpose();
+
+    // 结构化计算（调用正式运行路径使用的 BuildPhiQbasePhiT）
+    StateMatrix Q1_opt;
+    BuildPhiQbasePhiT(Phi_test, Qbase_opt, Q1_opt);
+    const double q1_err = (Q1_ref - Q1_opt).cwiseAbs().maxCoeff();
+
+    // -------------------------------
+    // 验证 3: Q2 = (Q1 + Qbase_cur) * dt * 0.5
+    // -------------------------------
+    NoiseDriveMatrix G_cur_test;
+    G_cur_test.setZero();
+    G_cur_test.template block<3, 3>(V_ID,   VRW_ID)   = Cbn_cur;
+    G_cur_test.template block<3, 3>(PHI_ID, ARW_ID)   = Cbn_cur;
+    G_cur_test.template block<3, 3>(GB_ID,  GBSTD_ID) = Matrix3d::Identity();
+    G_cur_test.template block<3, 3>(AB_ID,  ABSTD_ID) = Matrix3d::Identity();
+    G_cur_test.template block<3, 3>(GS_ID,  GSSTD_ID) = Matrix3d::Identity();
+    G_cur_test.template block<3, 3>(AS_ID,  ASSTD_ID) = Matrix3d::Identity();
+
+    StateMatrix Qbase_cur_opt;
+    BuildGQGtFromNoise(Cbn_cur, q_test, Qbase_cur_opt);  // 共用同一实现
+
+    constexpr double dt = 0.005;  // 200 Hz
+    const StateMatrix Q2_ref = (Q1_ref + G_cur_test * q_test * G_cur_test.transpose()) * dt * 0.5;
+    const StateMatrix Q2_opt = (Q1_opt + Qbase_cur_opt) * dt * 0.5;
+    const double q2_err = (Q2_ref - Q2_opt).cwiseAbs().maxCoeff();
+
+    // -------------------------------
+    // 输出
+    // -------------------------------
+    printf("[Q_VERIFY] qbase_err=%.6e  q1_err=%.6e  q2_err=%.6e\r\n",
+           qbase_err, q1_err, q2_err);
+
+    constexpr double kQVerifyThreshold = 1.0e-12;  // Stage 2 块累加顺序不同，允许略大舍入
+    if (qbase_err > kQVerifyThreshold || q1_err > kQVerifyThreshold || q2_err > kQVerifyThreshold)
+    {
+        printf("[Q_VERIFY] *** WARNING: structured Q differs from dense reference ***\r\n");
+    }
+    else
+    {
+        printf("[Q_VERIFY] all 3 checks pass (err < 1e-12)\r\n");
+    }
+}
+
+#endif // 验证开关
+
 void Aided_INS::InsPropagation(const IMU &imuPre, IMU &imuCur)
 {
+    // [PROFILE] InsPropagation 总耗时起点
+    const uint64_t t_prop_start = SystemPort_GetMicros();
+
     //对当前IMU数据(imuCur)补偿误差, 上一IMU数据(imupre)已经补偿过了
     ImuCompensate(imuCur);
 
+    // [PROFILE] INS_Mech 起点
+    const uint64_t t_before_mech = SystemPort_GetMicros();
     //IMU状态更新(机械编排算法)
     INS_Mechanization::INS_Mech(pvaPre_, pvaCur_, imuPre, imuCur);
+    // [PROFILE] INS_Mech 终点，Phi/F/Q/G 构造起点
+    const uint64_t t_after_mech = SystemPort_GetMicros();
 
-    //系统噪声传播，姿态误差采用phi角误差模型
-    MatrixXd Phi, F, Q, G;
+    //系统噪声传播，姿态误差采用phi角误差模型（固定尺寸 scratch buffer，避免 malloc）
+    StateMatrix &Phi = Phi_scratch_;
+    StateMatrix &F   = F_scratch_;
+    StateMatrix &Q   = Q_scratch_;
 
-    //初始化Phi阵(状态转移矩阵)，F阵，Q阵(传播噪声阵)，G阵(噪声驱动阵)
-    Phi.resizeLike(P_);
-    F.resizeLike(P_);
-    Q.resizeLike(P_);
-    G.resize(RANK_, NOISE_RANK_);
+    //初始化Phi阵(状态转移矩阵)，F阵，Q阵(传播噪声阵)
     Phi.setIdentity();
     F.setZero();
     Q.setZero();
-    G.setZero();
+    // [PROFILE] 矩阵创建+初始化终点，alc 子段
+    const uint64_t t_after_alc = SystemPort_GetMicros();
 
     //使用上一历元状态计算状态转移矩阵F(k-1)
     //计算地理参数，地球自转角速度投影到n系，n系相对于e系转动角速度投影到n系，重力加速度，子午圈半径，卯酉圈半径，加速度（fb），转动角速度
@@ -509,32 +740,43 @@ void Aided_INS::InsPropagation(const IMU &imuPre, IMU &imuCur)
     F.block(GS_ID, GS_ID, 3, 3) = -1 / config_.imuNoise.corr_time * Matrix3d::Identity();
     F.block(AS_ID, AS_ID, 3, 3) = -1 / config_.imuNoise.corr_time * Matrix3d::Identity();
 
-    //系统噪声驱动矩阵G(k-1)
-    G.block(V_ID, VRW_ID, 3, 3)    = pvaPre_.att.Cbn;
-    G.block(PHI_ID, ARW_ID, 3, 3)  = pvaPre_.att.Cbn;
-    G.block(GB_ID, GBSTD_ID, 3, 3) = Matrix3d::Identity();
-    G.block(AB_ID, ABSTD_ID, 3, 3) = Matrix3d::Identity();
-    G.block(GS_ID, GSSTD_ID, 3, 3) = Matrix3d::Identity();
-    G.block(AS_ID, ASSTD_ID, 3, 3) = Matrix3d::Identity();
-
     //状态转移矩阵
     Phi.setIdentity();
     Phi = Phi + F * imuCur.dt;
+    // [PROFILE] F 填充+Phi 更新终点，fill 子段
+    const uint64_t t_after_fill = SystemPort_GetMicros();
 
-    //计算系统传播噪声矩阵Q(k)
-    // Q = G * q_ * G.transpose() * imuCur.dt;
-    // Q = (Phi * Q * Phi.transpose() + Q) * 0.5;
-    Q = Phi * G * q_ * G.transpose() * Phi.transpose();
-    //用IMU预测的姿态近似得到G(k)
-    G.block(V_ID, VRW_ID, 3, 3)    = pvaCur_.att.Cbn;
-    G.block(PHI_ID, ARW_ID, 3, 3)  = pvaCur_.att.Cbn;
-    Q = (Q + G * q_ * G.transpose()) * imuCur.dt * 0.5;
+    //计算系统传播噪声矩阵Q(k)（结构化 BuildGQGt + BuildPhiQbasePhiT）
+    StateMatrix &QbasePre = Qbase_pre_scratch_;
+    StateMatrix &QbaseCur = Qbase_cur_scratch_;
+    BuildGQGt(pvaPre_.att.Cbn, QbasePre);
+    BuildPhiQbasePhiT(Phi, QbasePre, Q);
+    // [PROFILE] 第一次 Q 终点，q1 子段（含 BuildGQGt(pre) + BuildPhiQbasePhiT）
+    const uint64_t t_after_q1 = SystemPort_GetMicros();
 
+    BuildGQGt(pvaCur_.att.Cbn, QbaseCur);
+    Q = (Q + QbaseCur) * imuCur.dt * 0.5;
+
+    // [PROFILE] Phi/F/Q/G 构造终点，EKFPredict 起点
+    const uint64_t t_before_ekf = SystemPort_GetMicros();
     //EKF预测传播系统误差状态和系统协方差
     EKFPredict(Phi, Q);
+    // [PROFILE] EKFPredict 终点
+    const uint64_t t_after_ekf = SystemPort_GetMicros();
+
+    // [PROFILE] 写入 InsPropagation 分段耗时
+    profile_.ins_propagation_us = static_cast<uint32_t>(t_after_ekf - t_prop_start);
+    profile_.ins_mech_us        = static_cast<uint32_t>(t_after_mech - t_before_mech);
+    profile_.phi_f_q_g_us       = static_cast<uint32_t>(t_before_ekf - t_after_mech);
+    profile_.ekf_predict_us     = static_cast<uint32_t>(t_after_ekf - t_before_ekf);
+    // [PROFILE] Phase-2: fmx 子段
+    profile_.fmx_alc_us  = static_cast<uint32_t>(t_after_alc  - t_after_mech);
+    profile_.fmx_fill_us = static_cast<uint32_t>(t_after_fill - t_after_alc);
+    profile_.fmx_q1_us   = static_cast<uint32_t>(t_after_q1   - t_after_fill);
+    profile_.fmx_q2_us   = static_cast<uint32_t>(t_before_ekf - t_after_q1);
 }
 
-void Aided_INS::EKFPredict(const MatrixXd &Phi, const MatrixXd &Q)
+void Aided_INS::EKFPredict(const StateMatrix &Phi, const StateMatrix &Q)
 {
     assert(Phi.rows() == P_.rows());
     assert(Q.rows() == P_.rows());
@@ -559,21 +801,20 @@ bool Aided_INS::AccUpdate(const IMU& imuData, const PVA& pvaCur, const Config& c
         {
             //构造输入加速度计观测方程的测量误差
             const Vector3d f_b_ByImu = -g_b_ByImu; //IMU测量到的重力加速度（假设没有运动加速度）产生的比力
-            const MatrixXd dz = f_b_ByImu - f_b;
+            const MeasurementVector<3> dz = f_b_ByImu - f_b;
 
             //构造加速度计观测矩阵
-            MatrixXd H_acc;
-            H_acc.resize(3, P_.rows());
+            MeasurementMatrix<3> H_acc;
             H_acc.setZero();
-            H_acc.block(0, PHI_ID, 3, 3) = SkewSymmetric(-f_b_ByImu);
-            H_acc.block(0, AB_ID, 3, 3)  = -Matrix3d::Identity();
-            H_acc.block(0,AS_ID, 3, 3)   = (-f_b_ByImu).asDiagonal();
+            H_acc.template block<3, 3>(0, PHI_ID) = SkewSymmetric(-f_b_ByImu);
+            H_acc.template block<3, 3>(0, AB_ID)  = -Matrix3d::Identity();
+            H_acc.template block<3, 3>(0, AS_ID)  = (-f_b_ByImu).asDiagonal();
 
             //加速度计观测噪声矩阵
-            const MatrixXd R_acc = (config.imuNoise.accVrw.cwiseProduct(config.imuNoise.accVrw)  / imuData.dt).asDiagonal();
+            const MeasurementNoise<3> R_acc = (config.imuNoise.accVrw.cwiseProduct(config.imuNoise.accVrw)  / imuData.dt).asDiagonal();
 
             // EKF更新协方差和误差状态
-            EkfUpdate(dz, H_acc, R_acc);
+            EkfUpdate<3>(dz, H_acc, R_acc);
 
             return true;
         }
@@ -592,21 +833,20 @@ void Aided_INS::MagUpdate(const Mag &magData, const PVA &pvaCur, const Config &c
     Vector3d h_n = pvaCur.att.Cbn * magData.mag;
 
     //构造输入磁力计观测方程的测量误差（先不修正磁偏角）
-    MatrixXd dz(1,1);
+    MeasurementVector<1> dz;
     dz(0, 0) = -atan2(-h_n(1), h_n(0)); //磁力计测得的航向误差 = 偏航角误差 + 磁偏角
 
     //构造磁力计观测矩阵
-    MatrixXd H_mag;
-    H_mag.resize(1, P_.rows());
+    MeasurementMatrix<1> H_mag;
     H_mag.setZero();
     H_mag(0, PHI_ID+2) = 1;
 
     //磁力计观测噪声矩阵
-    MatrixXd R_mag(1,1);
+    MeasurementNoise<1> R_mag;
     R_mag(0, 0) = config.magMeasureYawStd * config.magMeasureYawStd;
 
     // EKF更新协方差和误差状态
-    EkfUpdate(dz, H_mag, R_mag);
+    EkfUpdate<1>(dz, H_mag, R_mag);
 
     //磁力计更新之后设置为不可用
     magData_.isUpdate = false;
@@ -620,45 +860,61 @@ void Aided_INS::GnssUpdate(GNSS &gnssData)
     const Vector3d antennaPosByImu = pvaCur_.pos + Dr_inv * pvaCur_.att.Cbn * config_.antennaLever;
 
     //GNSS位置测量新息
-    const MatrixXd dz = Dr * (antennaPosByImu - gnssData.blh);
+    const MeasurementVector<3> dz = Dr * (antennaPosByImu - gnssData.blh);
 
     //构造GNSS位置观测矩阵
-    MatrixXd H_gnssPos;
-    H_gnssPos.resize(3, P_.rows());
+    MeasurementMatrix<3> H_gnssPos;
     H_gnssPos.setZero();
-    H_gnssPos.block(0, P_ID, 3, 3)   = Matrix3d::Identity();
-    H_gnssPos.block(0, PHI_ID, 3, 3) = SkewSymmetric(pvaCur_.att.Cbn * config_.antennaLever);
+    H_gnssPos.template block<3, 3>(0, P_ID)   = Matrix3d::Identity();
+    H_gnssPos.template block<3, 3>(0, PHI_ID) = SkewSymmetric(pvaCur_.att.Cbn * config_.antennaLever);
 
     //位置观测噪声阵
-    const MatrixXd R_gnssPos = gnssData.std.cwiseProduct(gnssData.std).asDiagonal();
+    const MeasurementNoise<3> R_gnssPos = gnssData.std.cwiseProduct(gnssData.std).asDiagonal();
 
     //EKF更新协方差和误差状态
-    EkfUpdate(dz, H_gnssPos, R_gnssPos);
+    EkfUpdate<3>(dz, H_gnssPos, R_gnssPos);
 
     //GNSS更新之后设置为不可用
     gnssData.isUpdate = false;
 }
 
-void Aided_INS::EkfUpdate(const MatrixXd &dz, MatrixXd &H, const MatrixXd &R)
+template<int MeasDim>
+void Aided_INS::EkfUpdate(const MeasurementVector<MeasDim> &dz,
+                           const MeasurementMatrix<MeasDim> &H,
+                           const MeasurementNoise<MeasDim> &R)
 {
-    assert(H.cols()  == P_.rows());
-    assert(dz.rows() == H.rows());
-    assert(dz.rows() == R.rows());
+    assert(H.cols()  == kStateRank);
+    assert(dz.rows() == MeasDim);
+    assert(R.rows() == MeasDim);
     assert(dz.cols() == 1);
 
-    //计算Kalman增益
-    const auto temp = H * P_ * H.transpose() + R;
-    MatrixXd K = P_ * H.transpose() * temp.inverse();
+    //计算Kalman增益：K(state×meas) = P * H^T * inv(H * P * H^T + R)
+    const Eigen::Matrix<double, MeasDim, MeasDim> temp = H * P_ * H.transpose() + R;
+    const Eigen::Matrix<double, kStateRank, MeasDim> K = P_ * H.transpose() * temp.inverse();
 
-    //更新系统误差状态和协方差
-    MatrixXd I;
-    I.resizeLike(P_);
+    //更新系统误差状态和协方差（I_scratch_ 复用，避免 21×21 栈分配）
+    StateMatrix &I = I_scratch_;
     I.setIdentity();
-    I = I - K * H;
+    I -= K * H;
     //如果每次更新后都进行状态反馈，则更新前dx_一直为0，下式可以简化为：dx_ = K * dz;
-    dx_  = dx_ + K * (dz - H * dx_);
-    P_ = I * P_ * I.transpose() + K * R * K.transpose();
+    const MeasurementVector<MeasDim> innovation = dz - H * dx_;
+    dx_ += K * innovation;
+
+    // P_ 出现在右边，不能对 P_ 用 noalias；用局部 StateMatrix 做新协方差再写回
+    StateMatrix P_new;
+    P_new.noalias() = I * P_ * I.transpose();
+    P_new.noalias() += K * R * K.transpose();
+    P_ = P_new;
 }
+
+// 显式实例化：当前用到的测量维度
+template void Aided_INS::EkfUpdate<1>(const MeasurementVector<1>&,
+                                       const MeasurementMatrix<1>&,
+                                       const MeasurementNoise<1>&);
+
+template void Aided_INS::EkfUpdate<3>(const MeasurementVector<3>&,
+                                       const MeasurementMatrix<3>&,
+                                       const MeasurementNoise<3>&);
 
 void Aided_INS::StateFeedback()
 {
@@ -710,6 +966,9 @@ Aided_INS::KfUpdateType Aided_INS::IsToUpdate(const double imuTime1, const doubl
 
 void Aided_INS::ProcessNewData()
 {
+    // [PROFILE] ProcessNewData 总耗时起点
+    const uint64_t t_pnd_start = SystemPort_GetMicros();
+
     //当前IMU时间作为系统当前状态时间
     timestamp_ = imuCur_.time;
 
@@ -723,10 +982,17 @@ void Aided_INS::ProcessNewData()
     {
         //只传播导航状态、加速度计更新
         InsPropagation(imuPre_, imuCur_);
+
+        // [PROFILE] AccUpdate + StateFeedback 合计起点
+        const uint64_t t_after_prop = SystemPort_GetMicros();
+
         if (AccUpdate(imuCur_, pvaCur_, config_))
         {
             StateFeedback();
         }
+
+        // [PROFILE] 写入 acc_feedback_us
+        profile_.acc_feedback_us = static_cast<uint32_t>(SystemPort_GetMicros() - t_after_prop);
     }
     else if (res == KfUpdateType::Prev)
     {
@@ -782,4 +1048,7 @@ void Aided_INS::ProcessNewData()
     //更新上一时刻的状态和IMU数据
     pvaPre_ = pvaCur_;
     imuPre_ = imuCur_;
+
+    // [PROFILE] ProcessNewData 总耗时终点
+    profile_.process_new_data_us = static_cast<uint32_t>(SystemPort_GetMicros() - t_pnd_start);
 }
