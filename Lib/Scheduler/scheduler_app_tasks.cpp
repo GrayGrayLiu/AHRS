@@ -11,6 +11,7 @@
 #include "scheduler.h"
 #include "scheduler_app_events.h"
 #include "ICM42688_Service.hpp"
+#include "AidedInsService.hpp"
 #include <cstring>
 #include <stdio.h>
 
@@ -93,6 +94,7 @@ void ImuDrdyTask(SchedulerRunReason reason, SchedulerEventMask events,
     (void)reason; (void)events; (void)now_ms; (void)now_us; (void)context;
 
     icm42688_service::Run();
+    (void)aided_ins_service::Run();
 }
 
 // ============================================================================
