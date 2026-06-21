@@ -14,6 +14,7 @@
 #include "AidedInsService.hpp"
 #include "Aided_INS.hpp"
 #include "ICM42688_Service.hpp"
+#include "SystemPort.h"
 
 #include <cstdint>
 
@@ -30,6 +31,13 @@ namespace aided_ins_service
         Stats     stats_{};
 
         void ResetStats() { stats_ = Stats{}; }
+
+        void RecordServiceRunElapsed(const uint64_t start_us)
+        {
+            const uint32_t elapsed_us = static_cast<uint32_t>(SystemPort_GetMicros() - start_us);
+            stats_.service_run_last_us = elapsed_us;
+            if (elapsed_us > stats_.service_run_max_us) { stats_.service_run_max_us = elapsed_us; }
+        }
 
         void ResetAggregationState()
         {
@@ -60,6 +68,7 @@ namespace aided_ins_service
 
     int Run()
     {
+        const uint64_t t_total_start = SystemPort_GetMicros();
         ++stats_.run_calls;
 
         // 1. 读取最新 driver sample。
@@ -69,6 +78,7 @@ namespace aided_ins_service
         if (status != ICM42688P::Status::Ok) {
             ++stats_.get_latest_failures;
             pending_ = false;
+            RecordServiceRunElapsed(t_total_start);
             return 0;
         }
 
@@ -76,12 +86,14 @@ namespace aided_ins_service
         if (!sample.data_valid || sample.delta_time_s <= 0.0f || sample.delta_samples == 0u) {
             ++stats_.invalid_samples;
             pending_ = false;
+            RecordServiceRunElapsed(t_total_start);
             return 0;
         }
 
         // 3. 利用 timestamp_us 去重（重复调用 Service，不清 pending）。
         if (has_last_timestamp_ && sample.timestamp_us == last_timestamp_us_) {
             ++stats_.duplicate_samples;
+            RecordServiceRunElapsed(t_total_start);
             return 0;
         }
 
@@ -122,6 +134,7 @@ namespace aided_ins_service
         if (!pending_) {
             pending_     = true;
             pending_imu_ = raw;
+            RecordServiceRunElapsed(t_total_start);
             return 0;
         }
 
@@ -134,10 +147,20 @@ namespace aided_ins_service
 
         // 7. 注入 INS 并推进导航解算。
         InsInstance().SetImuData(pending_imu_);
+
+        const uint64_t t_ins_start = SystemPort_GetMicros();
         InsInstance().Run();
+        const uint64_t t_ins_end = SystemPort_GetMicros();
+
+        const uint32_t ins_elapsed = static_cast<uint32_t>(t_ins_end - t_ins_start);
+        stats_.ins_run_last_us = ins_elapsed;
+        if (ins_elapsed > stats_.ins_run_max_us) { stats_.ins_run_max_us = ins_elapsed; }
+
         ++stats_.ins_run_calls;
 
         pending_ = false;
+
+        RecordServiceRunElapsed(t_total_start);
         return 1;
     }
 } // namespace aided_ins_service

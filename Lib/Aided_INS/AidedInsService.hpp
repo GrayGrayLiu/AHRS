@@ -31,6 +31,10 @@ namespace aided_ins_service
         uint32_t valid_samples{0};           // 有效 sample 次数
         uint32_t aggregated_samples{0};      // 完成 400 Hz×2→200 Hz 聚合次数
         uint32_t ins_run_calls{0};           // Aided_INS::Run() 调用次数
+        uint32_t ins_run_last_us{0};         // Aided_INS::Run() 最近一次执行时间，us
+        uint32_t ins_run_max_us{0};          // Aided_INS::Run() 单次最大执行时间，us
+        uint32_t service_run_last_us{0};     // Run() 最近一次总耗时，us
+        uint32_t service_run_max_us{0};      // Run() 单次最大总耗时，us
     };
 
     /**
