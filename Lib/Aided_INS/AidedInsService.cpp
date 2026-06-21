@@ -27,6 +27,9 @@ namespace aided_ins_service
         IMU       pending_imu_{};
         uint64_t  last_timestamp_us_{0u};
         bool      has_last_timestamp_{false};
+        Stats     stats_{};
+
+        void ResetStats() { stats_ = Stats{}; }
 
         void ResetAggregationState()
         {
@@ -46,28 +49,39 @@ namespace aided_ins_service
     int Init()
     {
         ResetAggregationState();
+        ResetStats();
         return InsInstance().Init();
+    }
+
+    Stats GetStats()
+    {
+        return stats_;
     }
 
     int Run()
     {
+        ++stats_.run_calls;
+
         // 1. 读取最新 driver sample。
         ICM42688P::Sample sample{};
         const ICM42688P::Status status = icm42688_service::GetLatest(&sample);
 
         if (status != ICM42688P::Status::Ok) {
+            ++stats_.get_latest_failures;
             pending_ = false;
             return 0;
         }
 
         // 2. 跳过无效或异常数据，同时清空 pending（避免跨中断聚合）。
         if (!sample.data_valid || sample.delta_time_s <= 0.0f || sample.delta_samples == 0u) {
+            ++stats_.invalid_samples;
             pending_ = false;
             return 0;
         }
 
         // 3. 利用 timestamp_us 去重（重复调用 Service，不清 pending）。
         if (has_last_timestamp_ && sample.timestamp_us == last_timestamp_us_) {
+            ++stats_.duplicate_samples;
             return 0;
         }
 
@@ -76,11 +90,13 @@ namespace aided_ins_service
             const uint64_t expected_us = static_cast<uint64_t>(sample.delta_time_s * 1.0e6F);
 
             if (sample.timestamp_us < last_timestamp_us_) {
+                ++stats_.timestamp_errors;
                 pending_ = false;
             } else if (expected_us != 0u) {
                 const uint64_t max_allowed_gap_us = expected_us * 3u;
 
                 if (sample.timestamp_us - last_timestamp_us_ > max_allowed_gap_us) {
+                    ++stats_.timestamp_errors;
                     pending_     = false;
                 }
             }
@@ -100,6 +116,8 @@ namespace aided_ins_service
                                           sample.delta_velocity_m_s[1],
                                           sample.delta_velocity_m_s[2]);
 
+        ++stats_.valid_samples;
+
         // 6. 两样本聚合（400 Hz ×2 → 200 Hz）。
         if (!pending_) {
             pending_     = true;
@@ -112,9 +130,12 @@ namespace aided_ins_service
         pending_imu_.dt         += raw.dt;
         pending_imu_.time       = raw.time;
 
+        ++stats_.aggregated_samples;
+
         // 7. 注入 INS 并推进导航解算。
         InsInstance().SetImuData(pending_imu_);
         InsInstance().Run();
+        ++stats_.ins_run_calls;
 
         pending_ = false;
         return 1;

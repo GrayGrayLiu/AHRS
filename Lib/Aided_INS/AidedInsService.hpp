@@ -9,13 +9,30 @@
  *   3. 每两个连续 400 Hz IMU delta 聚合成一个 200 Hz IMU delta；
  *   4. 聚合完成后注入 Aided_INS 并调用 Run()。
  *
- * 当前为最小骨架，尚未接入 scheduler。后续在 imu_drdy 路径中接入。
+ * 当前 Service 已由 IMU DRDY 路径调用；本文件仅提供初始化、运行和统计读取接口。
  */
 
 #pragma once
 
+#include <cstdint>
+
 namespace aided_ins_service
 {
+    /**
+     * @brief  运行统计（用于 debugger 或低频 debug task 观察 IMU→INS 数据链路）。
+     */
+    struct Stats
+    {
+        uint32_t run_calls{0};              // Run() 被调用次数
+        uint32_t get_latest_failures{0};     // GetLatest 非 Ok 次数
+        uint32_t invalid_samples{0};         // data_valid/dt/delta_samples 异常次数
+        uint32_t duplicate_samples{0};       // timestamp 重复次数
+        uint32_t timestamp_errors{0};        // 逆序或间隔异常次数
+        uint32_t valid_samples{0};           // 有效 sample 次数
+        uint32_t aggregated_samples{0};      // 完成 400 Hz×2→200 Hz 聚合次数
+        uint32_t ins_run_calls{0};           // Aided_INS::Run() 调用次数
+    };
+
     /**
      * @brief  初始化 Service（创建 Aided_INS 实例并调用 Init()）。
      * @retval 0 成功，-1 失败。
@@ -28,4 +45,9 @@ namespace aided_ins_service
      *         内部每两个 400 Hz 有效 sample 聚合成一个 200 Hz INS 输入。
      */
     int Run();
+
+    /**
+     * @brief  返回运行统计快照（只读，如需清零则调用 Init()）。
+     */
+    Stats GetStats();
 } // namespace aided_ins_service
