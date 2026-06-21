@@ -96,7 +96,7 @@ void InsDebugTask(SchedulerRunReason reason, SchedulerEventMask events,
     (void)reason; (void)events; (void)now_ms; (void)now_us; (void)context;
 
     const auto stats = aided_ins_service::GetStats();
-    printf("[INS_SVC] run=%lu valid=%lu agg=%lu ins=%lu fail=%lu inv=%lu dup=%lu ts_err=%lu ins_us=%lu max=%lu srv_us=%lu max=%lu\r\n",
+    printf("[INS_SVC] run=%lu valid=%lu agg=%lu ins=%lu fail=%lu inv=%lu dup=%lu ts_err=%lu que=%lu drop=%lu dis=%lu ins_us=%lu max=%lu srv_us=%lu max=%lu\r\n",
            static_cast<unsigned long>(stats.run_calls),
            static_cast<unsigned long>(stats.valid_samples),
            static_cast<unsigned long>(stats.aggregated_samples),
@@ -105,6 +105,9 @@ void InsDebugTask(SchedulerRunReason reason, SchedulerEventMask events,
            static_cast<unsigned long>(stats.invalid_samples),
            static_cast<unsigned long>(stats.duplicate_samples),
            static_cast<unsigned long>(stats.timestamp_errors),
+           static_cast<unsigned long>(stats.queued_imu_samples),
+           static_cast<unsigned long>(stats.dropped_imu_samples),
+           static_cast<unsigned long>(stats.ins_run_disabled),
            static_cast<unsigned long>(stats.ins_run_last_us),
            static_cast<unsigned long>(stats.ins_run_max_us),
            static_cast<unsigned long>(stats.service_run_last_us),

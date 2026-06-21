@@ -8,7 +8,7 @@
  *   2. 判断 sample 有效性：data_valid、delta_time_s、delta_samples；
  *   3. 利用 timestamp_us 去重（跳过与上一 sample 相同时间戳的 sample）；
  *   4. 每两个有效 400 Hz sample 聚合成一个 200 Hz IMU delta；
- *   5. 聚合完成后 SetImuData() + InsInstance().Run()。
+ *   5. 聚合完成后缓存 200 Hz IMU；当前诊断阶段暂不调用 Aided_INS::Run()。
  */
 
 #include "AidedInsService.hpp"
@@ -28,6 +28,8 @@ namespace aided_ins_service
         IMU       pending_imu_{};
         uint64_t  last_timestamp_us_{0u};
         bool      has_last_timestamp_{false};
+        IMU       latest_imu200_{};
+        bool      has_imu200_{false};
         Stats     stats_{};
 
         void ResetStats() { stats_ = Stats{}; }
@@ -45,6 +47,8 @@ namespace aided_ins_service
             pending_imu_ = IMU{};
             last_timestamp_us_ = 0u;
             has_last_timestamp_ = false;
+            latest_imu200_ = IMU{};
+            has_imu200_ = false;
         }
 
         Aided_INS &InsInstance()
@@ -145,18 +149,15 @@ namespace aided_ins_service
 
         ++stats_.aggregated_samples;
 
-        // 7. 注入 INS 并推进导航解算。
-        InsInstance().SetImuData(pending_imu_);
-
-        const uint64_t t_ins_start = SystemPort_GetMicros();
-        InsInstance().Run();
-        const uint64_t t_ins_end = SystemPort_GetMicros();
-
-        const uint32_t ins_elapsed = static_cast<uint32_t>(t_ins_end - t_ins_start);
-        stats_.ins_run_last_us = ins_elapsed;
-        if (ins_elapsed > stats_.ins_run_max_us) { stats_.ins_run_max_us = ins_elapsed; }
-
-        ++stats_.ins_run_calls;
+        // 7. 缓存聚合后的 200 Hz IMU（临时：暂不调用 Aided_INS::Run，避免阻塞 IMU DRDY 链路）。
+        if (has_imu200_)
+        {
+            ++stats_.dropped_imu_samples;
+        }
+        latest_imu200_ = pending_imu_;
+        has_imu200_ = true;
+        ++stats_.queued_imu_samples;
+        ++stats_.ins_run_disabled;
 
         pending_ = false;
 
