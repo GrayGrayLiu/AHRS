@@ -19,6 +19,7 @@ namespace
 {
 
 constexpr uint32_t IMU_DEBUG_PERIOD_MS = 1000u;
+constexpr uint32_t INS_DEBUG_PERIOD_MS = 1000u;
 constexpr uint32_t IMU_DRDY_DEADLINE_MS = 5u;
 
 // ============================================================================
@@ -81,6 +82,32 @@ void ImuDebugTask(SchedulerRunReason reason, SchedulerEventMask events,
 }
 
 // ============================================================================
+// Aided INS stats debug task（1 Hz，用于验证 IMU→INS 数据链路）
+// ============================================================================
+
+/**
+ * @brief  Aided INS Service 低频统计 print task（1 Hz，priority=210）。
+ * @note   只读取 aided_ins_service::GetStats() 并 printf；
+ *         不访问 SPI/FIFO/EXTI，不修改驱动或算法状态。
+ */
+void InsDebugTask(SchedulerRunReason reason, SchedulerEventMask events,
+                  uint32_t now_ms, uint64_t now_us, void *context)
+{
+    (void)reason; (void)events; (void)now_ms; (void)now_us; (void)context;
+
+    const auto stats = aided_ins_service::GetStats();
+    printf("[INS_SVC] run=%lu valid=%lu agg=%lu ins=%lu fail=%lu inv=%lu dup=%lu ts_err=%lu\r\n",
+           static_cast<unsigned long>(stats.run_calls),
+           static_cast<unsigned long>(stats.valid_samples),
+           static_cast<unsigned long>(stats.aggregated_samples),
+           static_cast<unsigned long>(stats.ins_run_calls),
+           static_cast<unsigned long>(stats.get_latest_failures),
+           static_cast<unsigned long>(stats.invalid_samples),
+           static_cast<unsigned long>(stats.duplicate_samples),
+           static_cast<unsigned long>(stats.timestamp_errors));
+}
+
+// ============================================================================
 // ICM42688P event+deadline task — IMU data-ready 主处理路径
 // ============================================================================
 
@@ -107,15 +134,15 @@ void ImuDrdyTask(SchedulerRunReason reason, SchedulerEventMask events,
 constexpr SchedulerTaskConfig kAppTasks[] = {
     // priority: 0=highest, 255=lowest
     {
-        "imu_debug",                        // 低优先级 IMU 状态输出（1 Hz）
+        "imu_debug",                        // IMU 状态 print（1 Hz），暂时关闭以验证 INS Service
         ImuDebugTask,
         nullptr,
-        200u,                               // priority: 低优先级，不影响 data-ready
+        200u,
         0u,
         IMU_DEBUG_PERIOD_MS,
         0u,
         0u,
-        1u,
+        0u,                                 // 暂时关闭：验证 Aided INS Service 统计输出
     },
     {
         "imu_drdy",                         // ICM42688P data-ready 主处理路径
@@ -128,6 +155,17 @@ constexpr SchedulerTaskConfig kAppTasks[] = {
         IMU_DRDY_DEADLINE_MS,
         1u,
     },
+    {
+        "ins_debug",                        // Aided INS Service 统计 print（1 Hz）
+        InsDebugTask,
+        nullptr,
+        210u,                               // priority: 低于 IMU driver debug
+        0u,
+        INS_DEBUG_PERIOD_MS,
+        0u,
+        0u,
+        1u,
+    },
 };
 
 } // namespace
@@ -137,9 +175,9 @@ constexpr SchedulerTaskConfig kAppTasks[] = {
 // ============================================================================
 
 /**
+/**
  * @brief  应用/业务模块初始化入口。
- * @note   当前暂无额外初始化动作；该入口用于以后集中放置 scheduler task
- *         运行前必须完成的驱动、服务或算法模块初始化。
+ * @note   当前用于初始化 Aided INS Service；
  *         本函数不注册 scheduler task；任务注册由 SchedulerAppTasks_RegisterAll() 负责。
  */
 extern "C" void App_Init(void)
