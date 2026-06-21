@@ -421,100 +421,6 @@ void Aided_INS::ImuCompensate(IMU &imu) const
 }
 
 // ============================================================================
-// AccumulatePhiQbaseColumn — 对单个 k 列累加 Qout += Σ_i,j Phi(i,k)*Qkk*Phi(j,k)ᵀ
-// ============================================================================
-
-void Aided_INS::AccumulatePhiQbaseColumn(const StateMatrix &Phi,
-                                          const StateMatrix &Qbase,
-                                          const int k_id,
-                                          const int *rows,
-                                          const int row_count,
-                                          StateMatrix &Qout)
-{
-    const Eigen::Matrix3d Qkk = Qbase.template block<3, 3>(k_id, k_id);
-
-    for (int a = 0; a < row_count; ++a)
-    {
-        const int i_id = rows[a];
-
-        Eigen::Matrix3d tmp;
-        tmp.noalias() = Phi.template block<3, 3>(i_id, k_id) * Qkk;
-
-        for (int b = 0; b < row_count; ++b)
-        {
-            const int j_id = rows[b];
-
-            Qout.template block<3, 3>(i_id, j_id).noalias() +=
-                tmp * Phi.template block<3, 3>(j_id, k_id).transpose();
-        }
-    }
-}
-
-// ============================================================================
-// BuildPhiQbasePhiT — 结构化 Q = Phi * Qbase * Phiᵀ
-// ============================================================================
-
-void Aided_INS::BuildPhiQbasePhiT(const StateMatrix &Phi,
-                                   const StateMatrix &Qbase,
-                                   StateMatrix &Qout)
-{
-    Qout.setZero();
-
-    // Phi 的非零行块按 k 列分组（基于 F/Phi 固有块稀疏结构）
-    const int rows_v[]   = {P_ID,   V_ID,   PHI_ID};
-    const int rows_phi[] = {V_ID,   PHI_ID};
-    const int rows_gb[]  = {PHI_ID, GB_ID};
-    const int rows_ab[]  = {V_ID,   AB_ID};
-    const int rows_gs[]  = {PHI_ID, GS_ID};
-    const int rows_as[]  = {V_ID,   AS_ID};
-
-    AccumulatePhiQbaseColumn(Phi, Qbase, V_ID,   rows_v,   3, Qout);
-    AccumulatePhiQbaseColumn(Phi, Qbase, PHI_ID, rows_phi, 2, Qout);
-    AccumulatePhiQbaseColumn(Phi, Qbase, GB_ID,  rows_gb,  2, Qout);
-    AccumulatePhiQbaseColumn(Phi, Qbase, AB_ID,  rows_ab,  2, Qout);
-    AccumulatePhiQbaseColumn(Phi, Qbase, GS_ID,  rows_gs,  2, Qout);
-    AccumulatePhiQbaseColumn(Phi, Qbase, AS_ID,  rows_as,  2, Qout);
-}
-
-// ============================================================================
-// BuildGQGtFromNoise — 结构化 G*q*Gᵀ（共享实现，接受显式 q 参数）
-// ============================================================================
-
-void Aided_INS::BuildGQGtFromNoise(const Matrix3d &Cbn,
-                                    const NoiseMatrix &q,
-                                    StateMatrix &Qbase)
-{
-    Qbase.setZero();
-
-    Qbase.template block<3, 3>(V_ID, V_ID) =
-        Cbn * q.template block<3, 3>(VRW_ID, VRW_ID) * Cbn.transpose();
-
-    Qbase.template block<3, 3>(PHI_ID, PHI_ID) =
-        Cbn * q.template block<3, 3>(ARW_ID, ARW_ID) * Cbn.transpose();
-
-    Qbase.template block<3, 3>(GB_ID, GB_ID) =
-        q.template block<3, 3>(GBSTD_ID, GBSTD_ID);
-
-    Qbase.template block<3, 3>(AB_ID, AB_ID) =
-        q.template block<3, 3>(ABSTD_ID, ABSTD_ID);
-
-    Qbase.template block<3, 3>(GS_ID, GS_ID) =
-        q.template block<3, 3>(GSSTD_ID, GSSTD_ID);
-
-    Qbase.template block<3, 3>(AS_ID, AS_ID) =
-        q.template block<3, 3>(ASSTD_ID, ASSTD_ID);
-}
-
-// ============================================================================
-// BuildGQGt — 薄封装（正式运行路径调用）
-// ============================================================================
-
-void Aided_INS::BuildGQGt(const Matrix3d &Cbn, StateMatrix &Qbase) const
-{
-    BuildGQGtFromNoise(Cbn, q_, Qbase);
-}
-
-// ============================================================================
 // VerifyStructuredQ — 调用 BuildGQGtFromNoise，确保与正式路径共用同一实现
 // ============================================================================
 
@@ -624,19 +530,55 @@ void Aided_INS::VerifyStructuredQ()
     const double q2_err = (Q2_ref - Q2_opt).cwiseAbs().maxCoeff();
 
     // -------------------------------
+    // 验证 4: Stage 3a — M = Phi * P 结构化 vs 稠密
+    // -------------------------------
+
+    // 构造非平凡对称满矩阵 P_test
+    StateMatrix P_test;
+    P_test.setZero();
+    for (int i = 0; i < kStateRank; ++i)
+    {
+        for (int j = i; j < kStateRank; ++j)
+        {
+            const double val = 1.0 + 0.1 * static_cast<double>(i + j);
+            P_test(i, j) = val;
+            P_test(j, i) = val;
+        }
+    }
+
+    // 稠密参考
+    const StateMatrix M_ref = Phi_test * P_test;
+
+    // 结构化：BuildPhiTimesP
+    StateMatrix M_opt;
+    BuildPhiTimesP(Phi_test, P_test, M_opt);
+    const double m_err = (M_ref - M_opt).cwiseAbs().maxCoeff();
+
+    // 进一步：完整 EKFPredict 后的 P（M * Phiᵀ + Q 第二步暂保留稠密）
+    // 用 Q1_opt 作为非零 Q_test（Q1_opt 已在前面验证为正确）
+    const StateMatrix P_ref = Phi_test * P_test * Phi_test.transpose() + Q1_opt;
+    const StateMatrix P_opt = M_opt * Phi_test.transpose() + Q1_opt;
+    const double p_err = (P_ref - P_opt).cwiseAbs().maxCoeff();
+
+    // -------------------------------
     // 输出
     // -------------------------------
     printf("[Q_VERIFY] qbase_err=%.6e  q1_err=%.6e  q2_err=%.6e\r\n",
            qbase_err, q1_err, q2_err);
 
-    constexpr double kQVerifyThreshold = 1.0e-12;  // Stage 2 块累加顺序不同，允许略大舍入
-    if (qbase_err > kQVerifyThreshold || q1_err > kQVerifyThreshold || q2_err > kQVerifyThreshold)
+    printf("[EKF_VERIFY] m_err=%.6e  p_err=%.6e\r\n", m_err, p_err);
+
+    constexpr double kQVerifyThreshold = 1.0e-12;  // 块累加顺序不同，允许略大舍入
+    bool q_fail = (qbase_err > kQVerifyThreshold || q1_err > kQVerifyThreshold || q2_err > kQVerifyThreshold);
+    bool ekf_fail = (m_err > kQVerifyThreshold || p_err > kQVerifyThreshold);
+
+    if (q_fail || ekf_fail)
     {
-        printf("[Q_VERIFY] *** WARNING: structured Q differs from dense reference ***\r\n");
+        printf("[VERIFY] *** WARNING: structured differs from dense reference ***\r\n");
     }
     else
     {
-        printf("[Q_VERIFY] all 3 checks pass (err < 1e-12)\r\n");
+        printf("[VERIFY] all checks pass (err < 1e-12)\r\n");
     }
 }
 
@@ -781,9 +723,24 @@ void Aided_INS::EKFPredict(const StateMatrix &Phi, const StateMatrix &Q)
     assert(Phi.rows() == P_.rows());
     assert(Q.rows() == P_.rows());
 
-    //传播系统误差状态和系统协方差
+    /**
+     * 经典教材公式（Kalman 预测步）：
+     *     dx = Phi * dx
+     *     P  = Phi * P * Phi^T + Q
+     *
+     * Stage 3a 实现（保留第二阶段 M*Phi^T 为稠密乘法）：
+     *     M  = Phi * P        // BuildPhiTimesP：利用 Phi 的 3×3 块稀疏结构
+     *     P  = M * Phi^T + Q  // 第二阶段暂保留 Eigen 稠密表达式
+     *
+     * BuildPhiTimesP() 基于 Phi 的固有块稀疏结构（16 个非零 3×3 块），
+     * 不假设 P 稀疏，不改变数学结果。
+     */
     dx_ = Phi * dx_;
-    P_  = Phi * P_ * Phi.transpose() + Q;
+
+    StateMatrix &M = M_scratch_;
+    BuildPhiTimesP(Phi, P_, M);
+
+    P_ = M * Phi.transpose() + Q;
 }
 
 bool Aided_INS::AccUpdate(const IMU& imuData, const PVA& pvaCur, const Config& config)
@@ -879,8 +836,7 @@ void Aided_INS::GnssUpdate(GNSS &gnssData)
 }
 
 template<int MeasDim>
-void Aided_INS::EkfUpdate(const MeasurementVector<MeasDim> &dz,
-                           const MeasurementMatrix<MeasDim> &H,
+void Aided_INS::EkfUpdate(const MeasurementVector<MeasDim> &dz, const MeasurementMatrix<MeasDim> &H,
                            const MeasurementNoise<MeasDim> &R)
 {
     assert(H.cols()  == kStateRank);
@@ -908,12 +864,9 @@ void Aided_INS::EkfUpdate(const MeasurementVector<MeasDim> &dz,
 }
 
 // 显式实例化：当前用到的测量维度
-template void Aided_INS::EkfUpdate<1>(const MeasurementVector<1>&,
-                                       const MeasurementMatrix<1>&,
+template void Aided_INS::EkfUpdate<1>(const MeasurementVector<1>&, const MeasurementMatrix<1>&,
                                        const MeasurementNoise<1>&);
-
-template void Aided_INS::EkfUpdate<3>(const MeasurementVector<3>&,
-                                       const MeasurementMatrix<3>&,
+template void Aided_INS::EkfUpdate<3>(const MeasurementVector<3>&, const MeasurementMatrix<3>&,
                                        const MeasurementNoise<3>&);
 
 void Aided_INS::StateFeedback()
@@ -1051,4 +1004,163 @@ void Aided_INS::ProcessNewData()
 
     // [PROFILE] ProcessNewData 总耗时终点
     profile_.process_new_data_us = static_cast<uint32_t>(SystemPort_GetMicros() - t_pnd_start);
+}
+
+// ============================================================================
+// 结构化传播辅助函数
+// ============================================================================
+//
+// 下列 helper 是对教材/论文中 Kalman 传播公式的等价块结构实现。
+//
+// 原始公式：
+//   Qbase = G * q * G^T
+//   Q     = (Phi * Qbase_pre * Phi^T + Qbase_cur) * dt / 2
+//   P     = Phi * P * Phi^T + Q
+//
+// 为降低 MCU 上 21×18 / 21×21 稠密矩阵乘法开销，当前实现没有在运行时完整构造
+// G，也没有直接调用所有稠密乘法，而是利用 G、Phi、Qbase 的固定 3×3 块结构。
+// 这些 helper 只改变计算组织形式，不改变数学模型。
+//
+// P 仍按满矩阵处理；目前只结构化计算 Phi * P，第二步 M * Phi^T 仍保留稠密计算。
+// ============================================================================
+
+// --- BuildGQGt / BuildGQGtFromNoise -----------------------------------------
+//
+// 原始公式：Qbase = G * q * G^T
+//
+// G 的固定非零块（kNoiseRank=18, kStateRank=21）：
+//   G(V,   VRW)   = Cbn          G(PHI, ARW)   = Cbn
+//   G(GB,  GBSTD) = I            G(AB,  ABSTD) = I
+//   G(GS,  GSSTD) = I            G(AS,  ASSTD) = I
+//   其余全为零。
+//
+// q 本身是块对角矩阵（6 个 3×3 对角块）。
+// 因为 G 的非零块和 q 的块对角结构，G*q*G^T 仅以下 6 个主对角状态块非零：
+//   Qbase(V,V)     = Cbn * q(VRW,VRW) * Cbn^T
+//   Qbase(PHI,PHI) = Cbn * q(ARW,ARW) * Cbn^T
+//   Qbase(GB,GB)   = q(GBSTD,GBSTD)    (及 AB, GS, AS 同理)
+//
+// 其余 21×21 元素全为零。因此可以直接填充这 6 个块，跳过完整 G 的构造和稠密乘法。
+// ----------------------------------------------------------------------------
+
+void Aided_INS::BuildGQGtFromNoise(const Matrix3d &Cbn, const NoiseMatrix &q, StateMatrix &Qbase)
+{
+    Qbase.setZero();
+
+    Qbase.template block<3, 3>(V_ID, V_ID) =
+        Cbn * q.template block<3, 3>(VRW_ID, VRW_ID) * Cbn.transpose();
+
+    Qbase.template block<3, 3>(PHI_ID, PHI_ID) =
+        Cbn * q.template block<3, 3>(ARW_ID, ARW_ID) * Cbn.transpose();
+
+    Qbase.template block<3, 3>(GB_ID, GB_ID) = q.template block<3, 3>(GBSTD_ID, GBSTD_ID);
+    Qbase.template block<3, 3>(AB_ID, AB_ID) = q.template block<3, 3>(ABSTD_ID, ABSTD_ID);
+    Qbase.template block<3, 3>(GS_ID, GS_ID) = q.template block<3, 3>(GSSTD_ID, GSSTD_ID);
+    Qbase.template block<3, 3>(AS_ID, AS_ID) = q.template block<3, 3>(ASSTD_ID, ASSTD_ID);
+}
+
+void Aided_INS::BuildGQGt(const Matrix3d &Cbn, StateMatrix &Qbase) const
+{
+    BuildGQGtFromNoise(Cbn, q_, Qbase);
+}
+
+// --- AccumulatePhiQbaseColumn / BuildPhiQbasePhiT ----------------------------
+//
+// 原始公式：Q = Phi * Qbase * Phi^T
+//
+// 因为 Qbase 仅有 6 个主对角 3×3 块非零（见 BuildGQGtFromNoise），推导如下：
+//   Q(i,j) = Σ_k Σ_l Phi(i,k) * Qbase(k,l) * Phi(j,l)^T
+// 由于 Qbase(k,l) 仅在 k=l 且 k∈{V,PHI,GB,AB,GS,AS} 时非零，退化为：
+//   Q(i,j) = Σ_{k∈非零列} Phi(i,k) * Qbase(k,k) * Phi(j,k)^T
+//
+// 这意味着结构化的 Q 是按列分块累加的：对于每个 k，将贡献加到所有 (i,j) 对上。
+// 注意：不能只填 Q 的主对角块——Phi 的非对角块会把噪声传播到交叉协方差，
+// 所以必须遍历 Phi(*,k) 非零的 i 行和 j 行。
+// ----------------------------------------------------------------------------
+
+void Aided_INS::AccumulatePhiQbaseColumn(const StateMatrix &Phi, const StateMatrix &Qbase,
+                                          const int k_id, const int *rows, const int row_count,
+                                          StateMatrix &Qout)
+{
+    const Eigen::Matrix3d Qkk = Qbase.template block<3, 3>(k_id, k_id);
+
+    for (int a = 0; a < row_count; ++a)
+    {
+        const int i_id = rows[a];
+
+        Eigen::Matrix3d tmp;
+        tmp.noalias() = Phi.template block<3, 3>(i_id, k_id) * Qkk;
+
+        for (int b = 0; b < row_count; ++b)
+        {
+            const int j_id = rows[b];
+
+            Qout.template block<3, 3>(i_id, j_id).noalias() +=
+                tmp * Phi.template block<3, 3>(j_id, k_id).transpose();
+        }
+    }
+}
+
+void Aided_INS::BuildPhiQbasePhiT(const StateMatrix &Phi, const StateMatrix &Qbase, StateMatrix &Qout)
+{
+    Qout.setZero();
+
+    const int rows_v[]   = {P_ID,   V_ID,   PHI_ID};
+    const int rows_phi[] = {V_ID,   PHI_ID};
+    const int rows_gb[]  = {PHI_ID, GB_ID};
+    const int rows_ab[]  = {V_ID,   AB_ID};
+    const int rows_gs[]  = {PHI_ID, GS_ID};
+    const int rows_as[]  = {V_ID,   AS_ID};
+
+    AccumulatePhiQbaseColumn(Phi, Qbase, V_ID,   rows_v,   3, Qout);
+    AccumulatePhiQbaseColumn(Phi, Qbase, PHI_ID, rows_phi, 2, Qout);
+    AccumulatePhiQbaseColumn(Phi, Qbase, GB_ID,  rows_gb,  2, Qout);
+    AccumulatePhiQbaseColumn(Phi, Qbase, AB_ID,  rows_ab,  2, Qout);
+    AccumulatePhiQbaseColumn(Phi, Qbase, GS_ID,  rows_gs,  2, Qout);
+    AccumulatePhiQbaseColumn(Phi, Qbase, AS_ID,  rows_as,  2, Qout);
+}
+
+// --- AccumulatePhiPRow / BuildPhiTimesP -------------------------------------
+//
+// 原始公式（EKFPredict 第一步）：M = Phi * P
+//
+// 利用 Phi 的固定 3×3 块稀疏结构（仅 16 个非零 3×3 块，详见 InsPropagation 中 F 填充逻辑）。
+// 对每个状态行块 i：
+//   M(i,:) = Σ_{k∈非零列} Phi(i,k) * P(k,:)
+//
+// 注意：P 是协方差矩阵，一般不能假设稀疏；本函数不假设 P 稀疏，
+// 只是跳过 Phi 中确定为零的列块，不改变数学结果。
+// ----------------------------------------------------------------------------
+
+void Aided_INS::AccumulatePhiPRow(const StateMatrix &Phi, const StateMatrix &P,
+                                   const int row_id, const int *cols, const int col_count,
+                                   StateMatrix &Mout)
+{
+    for (int c = 0; c < col_count; ++c)
+    {
+        const int k_id = cols[c];
+        Mout.template block<3, 21>(row_id, 0).noalias() +=
+            Phi.template block<3, 3>(row_id, k_id) * P.template block<3, 21>(k_id, 0);
+    }
+}
+
+void Aided_INS::BuildPhiTimesP(const StateMatrix &Phi, const StateMatrix &P, StateMatrix &Mout)
+{
+    Mout.setZero();
+
+    const int cols_P[]   = {P_ID,   V_ID};
+    const int cols_V[]   = {P_ID,   V_ID,   PHI_ID, AB_ID, AS_ID};
+    const int cols_PHI[] = {P_ID,   V_ID,   PHI_ID, GB_ID, GS_ID};
+    const int cols_GB[]  = {GB_ID};
+    const int cols_AB[]  = {AB_ID};
+    const int cols_GS[]  = {GS_ID};
+    const int cols_AS[]  = {AS_ID};
+
+    AccumulatePhiPRow(Phi, P, P_ID,   cols_P,   2, Mout);
+    AccumulatePhiPRow(Phi, P, V_ID,   cols_V,   5, Mout);
+    AccumulatePhiPRow(Phi, P, PHI_ID, cols_PHI, 5, Mout);
+    AccumulatePhiPRow(Phi, P, GB_ID,  cols_GB,  1, Mout);
+    AccumulatePhiPRow(Phi, P, AB_ID,  cols_AB,  1, Mout);
+    AccumulatePhiPRow(Phi, P, GS_ID,  cols_GS,  1, Mout);
+    AccumulatePhiPRow(Phi, P, AS_ID,  cols_AS,  1, Mout);
 }

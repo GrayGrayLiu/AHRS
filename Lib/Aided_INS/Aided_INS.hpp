@@ -178,43 +178,6 @@ private:
     void ImuCompensate(IMU &imu) const;
 
     /**
-     * @brief 结构化构造 Qbase（接受显式 q 参数，供验证和正式路径共用）
-     */
-    static void BuildGQGtFromNoise(const Matrix3d &Cbn,
-                                   const NoiseMatrix &q,
-                                   StateMatrix &Qbase);
-
-    /**
-     * @brief 结构化构造 Qbase = G * q_ * Gᵀ（薄封装，调用 BuildGQGtFromNoise）
-     */
-    void BuildGQGt(const Matrix3d &Cbn, StateMatrix &Qbase) const;
-
-    /**
-     * @brief 块累加：Qout += Phi(*,k) * Qbase(k,k) * Phi(*,k)ᵀ 对于单个 k 列
-     */
-    static void AccumulatePhiQbaseColumn(const StateMatrix &Phi,
-                                         const StateMatrix &Qbase,
-                                         int k_id,
-                                         const int *rows,
-                                         int row_count,
-                                         StateMatrix &Qout);
-
-    /**
-     * @brief 结构化 Q = Phi * Qbase * Phiᵀ
-     *        利用 Qbase 仅 6 个对角 3×3 块非零和 Phi 的块稀疏结构。
-     */
-    static void BuildPhiQbasePhiT(const StateMatrix &Phi,
-                                  const StateMatrix &Qbase,
-                                  StateMatrix &Qout);
-
-#if 1  // 验证用：确认后改为 #if 0 即可关闭
-    /**
-     * @brief 数值验证（调用 BuildGQGtFromNoise，确保验证和正式路径共用同一实现）
-     */
-    static void VerifyStructuredQ();
-#endif
-
-    /**
      * @brief 进行INS状态更新(IMU机械编排算法), 并计算IMU状态转移矩阵和噪声阵
      *        do INS state update(INS mechanization), and compute state transition matrix and noise matrix
      * @param [in,out] imuPre 前一时刻IMU数据
@@ -253,8 +216,7 @@ private:
      * @brief Kalman 更新（固定测量维度模板）
      */
     template<int MeasDim>
-    void EkfUpdate(const MeasurementVector<MeasDim> &dz,
-                   const MeasurementMatrix<MeasDim> &H,
+    void EkfUpdate(const MeasurementVector<MeasDim> &dz, const MeasurementMatrix<MeasDim> &H,
                    const MeasurementNoise<MeasDim> &R);
 
     /**
@@ -285,6 +247,47 @@ private:
      */
     void ProcessNewData();
 
+    // ========================================================================
+    // 结构化传播辅助函数
+    // ========================================================================
+    // 下列 helper 是对 Kalman 传播公式的等价块结构实现，不改变数学模型：
+    //   Qbase = G * q * Gᵀ
+    //   Q     = Phi * Qbase * Phiᵀ
+    //   M     = Phi * P
+    // 优化利用 G、Phi、Qbase 的固定 3×3 块结构，P 仍按满矩阵处理。
+    // ========================================================================
+
+    // --- BuildGQGt / BuildGQGtFromNoise ---
+    /**
+     * @brief 结构化 Qbase = G * q_ * Gᵀ（接受显式 q 参数，供验证和正式路径共用）
+     */
+    static void BuildGQGtFromNoise(const Matrix3d &Cbn, const NoiseMatrix &q, StateMatrix &Qbase);
+
+    /** @brief 薄封装：BuildGQGtFromNoise(Cbn, q_, Qbase) */
+    void BuildGQGt(const Matrix3d &Cbn, StateMatrix &Qbase) const;
+
+    // --- AccumulatePhiQbaseColumn / BuildPhiQbasePhiT ---
+    /** @brief 行对累加：Qout(i,j) += Phi(i,k)*Qkk*Phi(j,k)ᵀ，对单个 k 列 */
+    static void AccumulatePhiQbaseColumn(const StateMatrix &Phi, const StateMatrix &Qbase,
+                                         int k_id, const int *rows, int row_count,
+                                         StateMatrix &Qout);
+
+    /** @brief 结构化 Q = Phi * Qbase * Phiᵀ（利用 Qbase 仅 6 个对角块非零和 Phi 的块稀疏结构） */
+    static void BuildPhiQbasePhiT(const StateMatrix &Phi, const StateMatrix &Qbase, StateMatrix &Qout);
+
+    // --- AccumulatePhiPRow / BuildPhiTimesP ---
+    /** @brief 行累加：Mout.row(i) += Σ_k Phi(i,k)*P.row(k)，k 遍历 cols[] */
+    static void AccumulatePhiPRow(const StateMatrix &Phi, const StateMatrix &P,
+                                  int row_id, const int *cols, int col_count,
+                                  StateMatrix &Mout);
+
+    /** @brief 结构化 M = Phi * P（利用 Phi 的 3×3 块稀疏结构，P 视为满矩阵） */
+    static void BuildPhiTimesP(const StateMatrix &Phi, const StateMatrix &P, StateMatrix &Mout);
+
+#if 1  // 验证用：确认后改为 #if 0 即可关闭
+    /** @brief 数值验证：确认结构化实现与稠密参考等价 */
+    static void VerifyStructuredQ();
+#endif
 
     Config config_;
     uint8_t id_{0};
@@ -325,6 +328,7 @@ private:
     StateMatrix      I_scratch_;     // EkfUpdate 临时 I 矩阵（复用）
     StateMatrix      Qbase_pre_scratch_; // BuildGQGt(pre-Cbn) 输出（复用）
     StateMatrix      Qbase_cur_scratch_; // BuildGQGt(cur-Cbn) 输出（复用）
+    StateMatrix      M_scratch_;         // EKFPredict: M = Phi * P_ 临时矩阵
 
     //传感器驱动类
     // ImuDriver& imu_;
