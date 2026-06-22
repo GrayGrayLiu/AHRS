@@ -41,7 +41,7 @@ namespace aided_ins_service
         uint32_t queued_imu_samples{0};      // 完成 200 Hz 聚合并缓存次数
         uint32_t dropped_imu_samples{0};     // 缓存覆盖次数（消费者未及时取走）
 
-        // [PROFILE] 临时分段耗时统计
+        // [PROFILE] 分段耗时统计
         uint32_t pnd_us{0};      // ProcessNewData last
         uint32_t pnd_max{0};     // ProcessNewData max
         uint32_t prp_us{0};      // InsPropagation last
@@ -63,7 +63,7 @@ namespace aided_ins_service
         uint32_t q1_max{0};      // 第一次 Q max
         uint32_t q2_us{0};       // G 更新 + 第二次 Q last
         uint32_t q2_max{0};      // G 更新 + 第二次 Q max
-        // [ACC_DBG] 临时 AccUpdate 诊断
+        // [ACC_DBG] AccUpdate 诊断
         uint32_t acc_try{0};
         uint32_t acc_accept{0};
         uint32_t acc_fail_small{0};

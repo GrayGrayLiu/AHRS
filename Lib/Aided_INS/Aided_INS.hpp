@@ -24,7 +24,7 @@
 #include "Aided_INS_Types.hpp"
 #include "Aided_INS_DebugConfig.hpp"
 
-// [PROFILE] 临时：分段耗时诊断结构体
+// [PROFILE] 分段耗时诊断结构体
 struct InsProfile
 {
     uint32_t process_new_data_us{0};
@@ -38,7 +38,7 @@ struct InsProfile
     uint32_t fmx_fill_us{0};
     uint32_t fmx_q1_us{0};
     uint32_t fmx_q2_us{0};
-    // [ACC_DBG] 临时 AccUpdate 诊断计数
+    // [ACC_DBG] AccUpdate 诊断计数
     uint32_t acc_try{0};
     uint32_t acc_accept{0};
     uint32_t acc_fail_small{0};
@@ -51,7 +51,7 @@ struct InsProfile
     float    last_cos_gn_gb{0.0f};
     float    last_f_b[3]{0.0f, 0.0f, 0.0f};
     float    last_g_b_ByImu[3]{0.0f, 0.0f, 0.0f};
-    // [EKF_DBG] 临时 EKFPredict 分段计时
+    // [EKF_DBG] EKFPredict 分段计时
     uint32_t ekf_dx_us{0};
     uint32_t ekf_phi_p_us{0};
     uint32_t ekf_m_phi_t_q_us{0};
@@ -65,7 +65,7 @@ struct InsProfile
     uint32_t acc_p_khp_us{0};
     uint32_t acc_p_phkt_us{0};
     uint32_t acc_p_ksk_us{0};
-    // [ATT_DBG] 临时姿态/重力/比力一致性诊断
+    // [ATT_DBG] 姿态/重力/比力一致性诊断
     float    euler_r_deg{0.0f};
     float    euler_p_deg{0.0f};
     float    euler_y_deg{0.0f};
@@ -102,7 +102,7 @@ public:
       */
     int Run();
 
-    // [PROFILE] 临时：获取最近一次 Run() 的分段耗时
+    // [PROFILE] 获取最近一次 Run() 的分段耗时
     const InsProfile &GetLastProfile() const { return profile_; }
 
     /** @brief 获取当前 PVA 状态只读快照（供遥测/调试 task 使用） */
@@ -416,7 +416,7 @@ private:
     enum StateID { P_ID = 0, V_ID = 3, PHI_ID = 6, GB_ID = 9, AB_ID = 12, GS_ID = 15, AS_ID = 18 };
     enum NoiseID { VRW_ID = 0, ARW_ID = 3, GBSTD_ID = 6, ABSTD_ID = 9, GSSTD_ID = 12, ASSTD_ID = 15 };
 
-    // [PROFILE] 临时：分段耗时快照
+    // [PROFILE] 分段耗时快照
     InsProfile profile_;
 
 #if AIDED_INS_ENABLE_COV_HEALTH_CHECK
