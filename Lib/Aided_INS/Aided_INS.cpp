@@ -761,26 +761,73 @@ void Aided_INS::EKFPredict(const StateMatrix &Phi, const StateMatrix &Q)
      * 两个 helper 只利用 Phi 的固有块稀疏结构（16 个非零 3×3 块），
      * P/M 均按满矩阵处理，不做对称性优化，不改变数学结果。
      */
+    const uint64_t t0 = SystemPort_GetMicros();
     dx_ = Phi * dx_;
+    const uint64_t t1 = SystemPort_GetMicros();
 
     StateMatrix &M = M_scratch_;
     BuildPhiTimesP(Phi, P_, M);
+    const uint64_t t2 = SystemPort_GetMicros();
+
     BuildMTimesPhiTAndAddQ(M, Phi, Q, P_);
+    const uint64_t t3 = SystemPort_GetMicros();
+
+    // [EKF_DBG] 临时分段计时
+    profile_.ekf_dx_us        = static_cast<uint32_t>(t1 - t0);
+    profile_.ekf_phi_p_us     = static_cast<uint32_t>(t2 - t1);
+    profile_.ekf_m_phi_t_q_us = static_cast<uint32_t>(t3 - t2);
 }
 
 bool Aided_INS::AccUpdate(const IMU& imuData, const PVA& pvaCur, const Config& config)
 {
+    ++profile_.acc_try;
+
     const Vector3d f_b = imuData.deltaVel / imuData.dt;
     const double gravity = Gravity(pvaCur.pos); //当地重力加速度
     const Vector3d g_l_n{0, 0, gravity}; //当地重力加速度投影在n系
     const Vector3d g_b_ByImu = pvaCur.att.Cbn.transpose() * g_l_n; //IMU测量到的重力加速度（假设没有运动加速度）。g_b_ByImu = Cnb * g_l_n
 
+    // [ACC_DBG] 记录最近一次关键数值
+    profile_.last_f_norm       = static_cast<float>(f_b.norm());
+    profile_.last_gravity      = static_cast<float>(gravity);
+    profile_.last_norm_diff    = static_cast<float>(std::fabs(f_b.norm() - gravity));
+    profile_.last_f_b[0]       = static_cast<float>(f_b(0));
+    profile_.last_f_b[1]       = static_cast<float>(f_b(1));
+    profile_.last_f_b[2]       = static_cast<float>(f_b(2));
+    profile_.last_g_b_ByImu[0] = static_cast<float>(g_b_ByImu(0));
+    profile_.last_g_b_ByImu[1] = static_cast<float>(g_b_ByImu(1));
+    profile_.last_g_b_ByImu[2] = static_cast<float>(g_b_ByImu(2));
+
+    // [ATT_DBG] 姿态/重力/比力一致性诊断
+    profile_.euler_r_deg = static_cast<float>(pvaCur.att.euler(0) * 57.2957795131);
+    profile_.euler_p_deg = static_cast<float>(pvaCur.att.euler(1) * 57.2957795131);
+    profile_.euler_y_deg = static_cast<float>(pvaCur.att.euler(2) * 57.2957795131);
+    profile_.g_l_n[0] = static_cast<float>(g_l_n(0));
+    profile_.g_l_n[1] = static_cast<float>(g_l_n(1));
+    profile_.g_l_n[2] = static_cast<float>(g_l_n(2));
+    profile_.g_b_ByImu[0] = profile_.last_g_b_ByImu[0];
+    profile_.g_b_ByImu[1] = profile_.last_g_b_ByImu[1];
+    profile_.g_b_ByImu[2] = profile_.last_g_b_ByImu[2];
+    const Vector3d cbn_f_b = pvaCur.att.Cbn * f_b;
+    const Vector3d cbn_f_plus_g = cbn_f_b + g_l_n;
+    profile_.cbn_f_b[0] = static_cast<float>(cbn_f_b(0));
+    profile_.cbn_f_b[1] = static_cast<float>(cbn_f_b(1));
+    profile_.cbn_f_b[2] = static_cast<float>(cbn_f_b(2));
+    profile_.cbn_f_plus_g[0] = static_cast<float>(cbn_f_plus_g(0));
+    profile_.cbn_f_plus_g[1] = static_cast<float>(cbn_f_plus_g(1));
+    profile_.cbn_f_plus_g[2] = static_cast<float>(cbn_f_plus_g(2));
+    profile_.cbn_f_plus_g_norm = static_cast<float>(cbn_f_plus_g.norm());
+    profile_.cos_f_gb = static_cast<float>(f_b.dot(g_b_ByImu) / std::max(f_b.norm() * g_b_ByImu.norm(), 1e-12));
+
     if (f_b.norm() > 1e-6f && g_b_ByImu.norm() > 1e-6f)
     {
         const double cos_gn_gb = f_b.dot(g_b_ByImu) / ( f_b.norm() * g_b_ByImu.norm() ); //重力测量值与理论值的夹角，如果不是1，说明测量值与理论值方向不重合
+        profile_.last_cos_gn_gb = static_cast<float>(cos_gn_gb);
 
         if ( std::fabs(f_b.norm() - gravity) < 0.8 && cos_gn_gb < -0.95) // 比力方向与重力方向相反；运动加速度过大则不用加速度计更新姿态
         {
+            ++profile_.acc_accept;
+
             //构造输入加速度计观测方程的测量误差
             const Vector3d f_b_ByImu = -g_b_ByImu; //IMU测量到的重力加速度（假设没有运动加速度）产生的比力
             const MeasurementVector<3> dz = f_b_ByImu - f_b;
@@ -800,6 +847,16 @@ bool Aided_INS::AccUpdate(const IMU& imuData, const PVA& pvaCur, const Config& c
 
             return true;
         }
+        else
+        {
+            // [ACC_DBG] 内层条件失败：norm_diff 或 cos 不满足
+            if (std::fabs(f_b.norm() - gravity) >= 0.8)  { ++profile_.acc_fail_norm; }
+            else                                          { ++profile_.acc_fail_cos; }
+        }
+    }
+    else
+    {
+        ++profile_.acc_fail_small;  // f_b 或 g_b_ByImu norm 太小
     }
 
     return false;
@@ -967,9 +1024,10 @@ void Aided_INS::ProcessNewData()
         if (AccUpdate(imuCur_, pvaCur_, config_))
         {
             StateFeedback();
+            ++profile_.acc_feedback;
         }
 
-        // [PROFILE] 写入 acc_feedback_us
+        // [PROFILE] AccUpdate + StateFeedback 合计（afb_us 包含门限检查时间，即使 update 未触发）
         profile_.acc_feedback_us = static_cast<uint32_t>(SystemPort_GetMicros() - t_after_prop);
     }
     else if (res == KfUpdateType::Prev)

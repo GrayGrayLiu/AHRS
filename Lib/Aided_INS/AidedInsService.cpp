@@ -194,6 +194,38 @@ namespace aided_ins_service
             if (p.fmx_q1_us > stats_.q1_max) { stats_.q1_max = p.fmx_q1_us; }
             stats_.q2_us = p.fmx_q2_us;
             if (p.fmx_q2_us > stats_.q2_max) { stats_.q2_max = p.fmx_q2_us; }
+            // [ACC_DBG] AccUpdate 诊断计数
+            stats_.acc_try        = p.acc_try;
+            stats_.acc_accept     = p.acc_accept;
+            stats_.acc_fail_small = p.acc_fail_small;
+            stats_.acc_fail_norm  = p.acc_fail_norm;
+            stats_.acc_fail_cos   = p.acc_fail_cos;
+            stats_.acc_feedback   = p.acc_feedback;
+            // [ACC_DBG] last values
+            stats_.f_norm      = p.last_f_norm;
+            stats_.f_gravity   = p.last_gravity;
+            stats_.f_norm_diff = p.last_norm_diff;
+            stats_.f_cos_gn_gb = p.last_cos_gn_gb;
+            stats_.f_f_b[0]    = p.last_f_b[0];
+            stats_.f_f_b[1]    = p.last_f_b[1];
+            stats_.f_f_b[2]    = p.last_f_b[2];
+            stats_.f_g_b_ByImu[0] = p.last_g_b_ByImu[0];
+            stats_.f_g_b_ByImu[1] = p.last_g_b_ByImu[1];
+            stats_.f_g_b_ByImu[2] = p.last_g_b_ByImu[2];
+            // [EKF_DBG] EKFPredict 分段
+            stats_.ekf_dx_us        = p.ekf_dx_us;
+            stats_.ekf_phi_p_us     = p.ekf_phi_p_us;
+            stats_.ekf_m_phi_t_q_us = p.ekf_m_phi_t_q_us;
+            // [ATT_DBG] 姿态/重力/比力一致性
+            stats_.euler_r = p.euler_r_deg;
+            stats_.euler_p = p.euler_p_deg;
+            stats_.euler_y = p.euler_y_deg;
+            stats_.g_l_n[0] = p.g_l_n[0]; stats_.g_l_n[1] = p.g_l_n[1]; stats_.g_l_n[2] = p.g_l_n[2];
+            stats_.g_b[0] = p.g_b_ByImu[0]; stats_.g_b[1] = p.g_b_ByImu[1]; stats_.g_b[2] = p.g_b_ByImu[2];
+            stats_.cbn_f[0] = p.cbn_f_b[0]; stats_.cbn_f[1] = p.cbn_f_b[1]; stats_.cbn_f[2] = p.cbn_f_b[2];
+            stats_.cbn_f_g[0] = p.cbn_f_plus_g[0]; stats_.cbn_f_g[1] = p.cbn_f_plus_g[1]; stats_.cbn_f_g[2] = p.cbn_f_plus_g[2];
+            stats_.cfn_g_norm = p.cbn_f_plus_g_norm;
+            stats_.cos_fg = p.cos_f_gb;
         }
         else
         {

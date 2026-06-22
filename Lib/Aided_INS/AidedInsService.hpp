@@ -61,6 +61,33 @@ namespace aided_ins_service
         uint32_t q1_max{0};      // 第一次 Q max
         uint32_t q2_us{0};       // G 更新 + 第二次 Q last
         uint32_t q2_max{0};      // G 更新 + 第二次 Q max
+        // [ACC_DBG] 临时 AccUpdate 诊断
+        uint32_t acc_try{0};
+        uint32_t acc_accept{0};
+        uint32_t acc_fail_small{0};
+        uint32_t acc_fail_norm{0};
+        uint32_t acc_fail_cos{0};
+        uint32_t acc_feedback{0};
+        float    f_norm{0.0f};
+        float    f_gravity{0.0f};
+        float    f_norm_diff{0.0f};
+        float    f_cos_gn_gb{0.0f};
+        float    f_f_b[3]{0.0f, 0.0f, 0.0f};
+        float    f_g_b_ByImu[3]{0.0f, 0.0f, 0.0f};
+        // [EKF_DBG] EKFPredict 分段计时
+        uint32_t ekf_dx_us{0};
+        uint32_t ekf_phi_p_us{0};
+        uint32_t ekf_m_phi_t_q_us{0};
+        // [ATT_DBG] 姿态/重力/比力一致性诊断
+        float euler_r{0.0f};
+        float euler_p{0.0f};
+        float euler_y{0.0f};
+        float g_l_n[3]{0.0f, 0.0f, 0.0f};
+        float g_b[3]{0.0f, 0.0f, 0.0f};
+        float cbn_f[3]{0.0f, 0.0f, 0.0f};
+        float cbn_f_g[3]{0.0f, 0.0f, 0.0f};
+        float cfn_g_norm{0.0f};
+        float cos_fg{0.0f};
     };
 
     /**

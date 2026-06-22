@@ -138,6 +138,36 @@ void InsDebugTask(SchedulerRunReason reason, SchedulerEventMask events,
            static_cast<unsigned long>(stats.q1_max),
            static_cast<unsigned long>(stats.q2_us),
            static_cast<unsigned long>(stats.q2_max));
+
+    // [ACC_DBG] 临时 AccUpdate 触发诊断
+    printf("[ACC_DBG] try=%lu ok=%lu small=%lu norm=%lu cos=%lu fb=%lu f_norm=%.3f g=%.3f diff=%.3f cos_last=%.4f f=(%.2f,%.2f,%.2f) g_b=(%.2f,%.2f,%.2f)\r\n",
+           static_cast<unsigned long>(stats.acc_try),
+           static_cast<unsigned long>(stats.acc_accept),
+           static_cast<unsigned long>(stats.acc_fail_small),
+           static_cast<unsigned long>(stats.acc_fail_norm),
+           static_cast<unsigned long>(stats.acc_fail_cos),
+           static_cast<unsigned long>(stats.acc_feedback),
+           static_cast<double>(stats.f_norm),
+           static_cast<double>(stats.f_gravity),
+           static_cast<double>(stats.f_norm_diff),
+           static_cast<double>(stats.f_cos_gn_gb),
+           static_cast<double>(stats.f_f_b[0]), static_cast<double>(stats.f_f_b[1]), static_cast<double>(stats.f_f_b[2]),
+           static_cast<double>(stats.f_g_b_ByImu[0]), static_cast<double>(stats.f_g_b_ByImu[1]), static_cast<double>(stats.f_g_b_ByImu[2]));
+
+    // [EKF_DBG] 临时 EKFPredict 分段计时
+    printf("[EKF_DBG] dx=%lu phip=%lu mphitq=%lu\r\n",
+           static_cast<unsigned long>(stats.ekf_dx_us),
+           static_cast<unsigned long>(stats.ekf_phi_p_us),
+           static_cast<unsigned long>(stats.ekf_m_phi_t_q_us));
+
+    // [ATT_DBG] 临时姿态/重力/比力一致性诊断
+    printf("[ATT_DBG] eul=(%.2f,%.2f,%.2f) g_n=(%.3f,%.3f,%.3f) g_b=(%.3f,%.3f,%.3f) Cbn*f=(%.3f,%.3f,%.3f) Cbn*f+g=(%.3f,%.3f,%.3f) |Cf+g|=%.4f cos_f_gb=%.4f\r\n",
+           static_cast<double>(stats.euler_r), static_cast<double>(stats.euler_p), static_cast<double>(stats.euler_y),
+           static_cast<double>(stats.g_l_n[0]), static_cast<double>(stats.g_l_n[1]), static_cast<double>(stats.g_l_n[2]),
+           static_cast<double>(stats.g_b[0]), static_cast<double>(stats.g_b[1]), static_cast<double>(stats.g_b[2]),
+           static_cast<double>(stats.cbn_f[0]), static_cast<double>(stats.cbn_f[1]), static_cast<double>(stats.cbn_f[2]),
+           static_cast<double>(stats.cbn_f_g[0]), static_cast<double>(stats.cbn_f_g[1]), static_cast<double>(stats.cbn_f_g[2]),
+           static_cast<double>(stats.cfn_g_norm), static_cast<double>(stats.cos_fg));
 }
 
 // ============================================================================

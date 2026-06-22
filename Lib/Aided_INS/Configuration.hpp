@@ -79,20 +79,20 @@ namespace Aided_INS_Config
         constexpr double initAttStdYaw   = 1.0; //偏航误差状态标准差[deg]
 
         //初始IMU零偏误差状态标准差，IMU的三个轴(x前、y右、z下)
-        constexpr double initGyrBiasStdX = 0.0; //陀螺X轴零偏误差状态标准差[deg/h]
-        constexpr double initGyrBiasStdY = 0.0; //陀螺Y轴零偏误差状态标准差[deg/h]
-        constexpr double initGyrBiasStdZ = 0.0; //陀螺Z轴零偏误差状态标准差[deg/h]
-        constexpr double initAccBiasStdX = 0.0; //加速度计X轴零偏误差状态标准差[mGal]，1Gal=10e^-2 m/s²，1mGal==10e^-5 m/s²
-        constexpr double initAccBiasStdY = 0.0; //加速度计Y轴零偏误差状态标准差[mGal]
-        constexpr double initAccBiasStdZ = 0.0; //加速度计Z轴零偏误差状态标准差[mGal]
+        constexpr double initGyrBiasStdX = 500.0;  // 陀螺X轴零偏误差状态标准差[deg/h]，ICM42688P硬件验证保守值
+        constexpr double initGyrBiasStdY = 500.0;  // 陀螺Y轴零偏误差状态标准差[deg/h]
+        constexpr double initGyrBiasStdZ = 500.0;  // 陀螺Z轴零偏误差状态标准差[deg/h]
+        constexpr double initAccBiasStdX = 1000.0; // 加速度计X轴零偏误差状态标准差[mGal]，ICM42688P硬件验证保守值
+        constexpr double initAccBiasStdY = 1000.0; // 加速度计Y轴零偏误差状态标准差[mGal]
+        constexpr double initAccBiasStdZ = 1000.0; // 加速度计Z轴零偏误差状态标准差[mGal]
 
         //初始IMU比例因子误差状态标准差，IMU的三个轴(x前、y右、z下)
-        constexpr double initGyrScaleStdX = 0.0; //陀螺X轴比例因子误差状态标准差[ppm]，ppm：Parts Per Million，百万分之一
-        constexpr double initGyrScaleStdY = 0.0; //陀螺Y轴比例因子误差状态标准差[ppm]
-        constexpr double initGyrScaleStdZ = 0.0; //陀螺Z轴比例因子误差状态标准差[ppm]
-        constexpr double initAccScaleStdX = 0.0; //加速度计X轴比例因子误差状态标准差[ppm]
-        constexpr double initAccScaleStdY = 0.0; //加速度计Y轴比例因子误差状态标准差[ppm]
-        constexpr double initAccScaleStdZ = 0.0; //加速度计Z轴比例因子误差状态标准差[ppm]
+        constexpr double initGyrScaleStdX = 3000.0; // 陀螺X轴比例因子误差状态标准差[ppm]，ICM42688P硬件验证保守值
+        constexpr double initGyrScaleStdY = 3000.0; // 陀螺Y轴比例因子误差状态标准差[ppm]
+        constexpr double initGyrScaleStdZ = 3000.0; // 陀螺Z轴比例因子误差状态标准差[ppm]
+        constexpr double initAccScaleStdX = 3000.0; // 加速度计X轴比例因子误差状态标准差[ppm]，ICM42688P硬件验证保守值
+        constexpr double initAccScaleStdY = 3000.0; // 加速度计Y轴比例因子误差状态标准差[ppm]
+        constexpr double initAccScaleStdZ = 3000.0; // 加速度计Z轴比例因子误差状态标准差[ppm]
     }
     /***************************************************************************************/
 
@@ -101,28 +101,28 @@ namespace Aided_INS_Config
     namespace IMU_Noise
     {
         //IMU随机游走
-        constexpr double gyrArwX = 0.0; //陀螺X轴角度随机游走[deg/sqrt(hr)]
-        constexpr double gyrArwY = 0.0; //陀螺Y轴角度随机游走[deg/sqrt(hr)]
-        constexpr double gyrArwZ = 0.0; //陀螺Z轴角度随机游走[deg/sqrt(hr)]
-        constexpr double accVrwX = 0.0; //加速度计X轴速度随机游走[m/s/sqrt(hr)]
-        constexpr double accVrwY = 0.0; //加速度计Y轴速度随机游走[m/s/sqrt(hr)]
-        constexpr double accVrwZ = 0.0; //加速度计Z轴速度随机游走[m/s/sqrt(hr)]
+        constexpr double gyrArwX = 0.50; // 陀螺X轴角度随机游走[deg/sqrt(hr)]，ICM42688P硬件验证保守值
+        constexpr double gyrArwY = 0.50; // 陀螺Y轴角度随机游走[deg/sqrt(hr)]
+        constexpr double gyrArwZ = 0.50; // 陀螺Z轴角度随机游走[deg/sqrt(hr)]
+        constexpr double accVrwX = 0.50; // 加速度计X轴速度随机游走[m/s/sqrt(hr)]，ICM42688P硬件验证保守值
+        constexpr double accVrwY = 0.50; // 加速度计Y轴速度随机游走[m/s/sqrt(hr)]
+        constexpr double accVrwZ = 0.50; // 加速度计Z轴速度随机游走[m/s/sqrt(hr)]
 
         //IMU零偏标准差，IMU的三个轴(x前、y右、z下)
-        constexpr double gyrBiasStdX = 0.0; //陀螺X轴零偏标准差[deg/h]
-        constexpr double gyrBiasStdY = 0.0; //陀螺Y轴零偏标准差[deg/h]
-        constexpr double gyrBiasStdZ = 0.0; //陀螺Z轴零偏标准差[deg/h]
-        constexpr double accBiasStdX = 0.0; //加速度计X轴零偏标准差[mGal]，1Gal=10e^-2 m/s²
-        constexpr double accBiasStdY = 0.0; //加速度计Y轴零偏标准差[mGal]
-        constexpr double accBiasStdZ = 0.0; //加速度计Z轴零偏标准差[mGal]
+        constexpr double gyrBiasStdX = 500.0;  // 陀螺X轴零偏标准差[deg/h]，ICM42688P硬件验证保守值
+        constexpr double gyrBiasStdY = 500.0;  // 陀螺Y轴零偏标准差[deg/h]
+        constexpr double gyrBiasStdZ = 500.0;  // 陀螺Z轴零偏标准差[deg/h]
+        constexpr double accBiasStdX = 1000.0; // 加速度计X轴零偏标准差[mGal]，ICM42688P硬件验证保守值
+        constexpr double accBiasStdY = 1000.0; // 加速度计Y轴零偏标准差[mGal]
+        constexpr double accBiasStdZ = 1000.0; // 加速度计Z轴零偏标准差[mGal]
 
         //IMU比例因子标准差，IMU的三个轴(x前、y右、z下)
-        constexpr double gyrScaleStdX = 0.0; //陀螺X轴比例因子标准差[ppm]，ppm：Parts Per Million，百万分之一
-        constexpr double gyrScaleStdY = 0.0; //陀螺Y轴比例因子标准差[ppm]
-        constexpr double gyrScaleStdZ = 0.0; //陀螺Z轴比例因子标准差[ppm]
-        constexpr double accScaleStdX = 0.0; //加速度计X轴比例因子标准差[ppm]
-        constexpr double accScaleStdY = 0.0; //加速度计Y轴比例因子标准差[ppm]
-        constexpr double accScaleStdZ = 0.0; //加速度计Z轴比例因子标准差[ppm]
+        constexpr double gyrScaleStdX = 3000.0; // 陀螺X轴比例因子标准差[ppm]，ICM42688P硬件验证保守值
+        constexpr double gyrScaleStdY = 3000.0; // 陀螺Y轴比例因子标准差[ppm]
+        constexpr double gyrScaleStdZ = 3000.0; // 陀螺Z轴比例因子标准差[ppm]
+        constexpr double accScaleStdX = 3000.0; // 加速度计X轴比例因子标准差[ppm]，ICM42688P硬件验证保守值
+        constexpr double accScaleStdY = 3000.0; // 加速度计Y轴比例因子标准差[ppm]
+        constexpr double accScaleStdZ = 3000.0; // 加速度计Z轴比例因子标准差[ppm]
 
         //相关时间
         constexpr double imuCorrTime = 1.0; //陀螺和加速度计的零偏、比例因子的相关时间[h]

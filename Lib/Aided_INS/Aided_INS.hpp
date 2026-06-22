@@ -37,6 +37,33 @@ struct InsProfile
     uint32_t fmx_fill_us{0};
     uint32_t fmx_q1_us{0};
     uint32_t fmx_q2_us{0};
+    // [ACC_DBG] 临时 AccUpdate 诊断计数
+    uint32_t acc_try{0};
+    uint32_t acc_accept{0};
+    uint32_t acc_fail_small{0};
+    uint32_t acc_fail_norm{0};
+    uint32_t acc_fail_cos{0};
+    uint32_t acc_feedback{0};
+    float    last_f_norm{0.0f};
+    float    last_gravity{0.0f};
+    float    last_norm_diff{0.0f};
+    float    last_cos_gn_gb{0.0f};
+    float    last_f_b[3]{0.0f, 0.0f, 0.0f};
+    float    last_g_b_ByImu[3]{0.0f, 0.0f, 0.0f};
+    // [EKF_DBG] 临时 EKFPredict 分段计时
+    uint32_t ekf_dx_us{0};
+    uint32_t ekf_phi_p_us{0};
+    uint32_t ekf_m_phi_t_q_us{0};
+    // [ATT_DBG] 临时姿态/重力/比力一致性诊断
+    float    euler_r_deg{0.0f};
+    float    euler_p_deg{0.0f};
+    float    euler_y_deg{0.0f};
+    float    g_l_n[3]{0.0f, 0.0f, 0.0f};
+    float    g_b_ByImu[3]{0.0f, 0.0f, 0.0f};
+    float    cbn_f_b[3]{0.0f, 0.0f, 0.0f};
+    float    cbn_f_plus_g[3]{0.0f, 0.0f, 0.0f};
+    float    cbn_f_plus_g_norm{0.0f};
+    float    cos_f_gb{0.0f};
 };
 
 class Aided_INS
