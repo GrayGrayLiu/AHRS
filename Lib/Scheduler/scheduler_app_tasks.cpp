@@ -160,17 +160,13 @@ void InsDebugTask(SchedulerRunReason reason, SchedulerEventMask events,
            static_cast<unsigned long>(stats.feedback_max));
 
     // [PROFILE] EkfUpdateAcc3 内部分段
-    printf("[INS_PROF4] phs=%lu %lu kdx=%lu %lu khp=%lu %lu phkt=%lu %lu ksk=%lu %lu\r\n",
+    printf("[INS_PROF4] phs=%lu %lu kdx=%lu %lu khp=%lu %lu\r\n",
            static_cast<unsigned long>(stats.acc_phs_us),
            static_cast<unsigned long>(stats.acc_phs_max),
            static_cast<unsigned long>(stats.acc_kdx_us),
            static_cast<unsigned long>(stats.acc_kdx_max),
            static_cast<unsigned long>(stats.acc_p_khp_us),
-           static_cast<unsigned long>(stats.acc_p_khp_max),
-           static_cast<unsigned long>(stats.acc_p_phkt_us),
-           static_cast<unsigned long>(stats.acc_p_phkt_max),
-           static_cast<unsigned long>(stats.acc_p_ksk_us),
-           static_cast<unsigned long>(stats.acc_p_ksk_max));
+           static_cast<unsigned long>(stats.acc_p_khp_max));
 #endif // AIDED_INS_ENABLE_PROFILING_PRINT
 
 #if AIDED_INS_ENABLE_DEBUG_PRINT

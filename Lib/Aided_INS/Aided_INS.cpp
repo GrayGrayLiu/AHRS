@@ -1464,9 +1464,6 @@ void Aided_INS::EkfUpdateAcc3(const MeasurementVector<3> &dz,
      * VerifyAccUpdateStructured() 对对称和非对称 P 测试用例分别验证了
      * 此简化路径与稠密 Joseph form 参考等价。
      */
-    profile_.acc_p_phkt_us = 0;
-    profile_.acc_p_ksk_us  = 0;
-
     // [PROFILE] 写入 EkfUpdateAcc3 内部分段
     profile_.acc_phs_us    = static_cast<uint32_t>(t1 - t0);
     profile_.acc_kdx_us    = static_cast<uint32_t>(t2 - t1);

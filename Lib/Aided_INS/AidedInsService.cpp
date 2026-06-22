@@ -115,10 +115,6 @@ namespace aided_ins_service
             if (p.acc_kdx_us > s.acc_kdx_max) { s.acc_kdx_max = p.acc_kdx_us; }
             s.acc_p_khp_us = p.acc_p_khp_us;
             if (p.acc_p_khp_us > s.acc_p_khp_max) { s.acc_p_khp_max = p.acc_p_khp_us; }
-            s.acc_p_phkt_us = p.acc_p_phkt_us;
-            if (p.acc_p_phkt_us > s.acc_p_phkt_max) { s.acc_p_phkt_max = p.acc_p_phkt_us; }
-            s.acc_p_ksk_us = p.acc_p_ksk_us;
-            if (p.acc_p_ksk_us > s.acc_p_ksk_max) { s.acc_p_ksk_max = p.acc_p_ksk_us; }
             s.euler_r = p.euler_r_deg;
             s.euler_p = p.euler_p_deg;
             s.euler_y = p.euler_y_deg;

@@ -94,10 +94,6 @@ namespace aided_ins_service
         uint32_t acc_kdx_max{0};
         uint32_t acc_p_khp_us{0};
         uint32_t acc_p_khp_max{0};
-        uint32_t acc_p_phkt_us{0};
-        uint32_t acc_p_phkt_max{0};
-        uint32_t acc_p_ksk_us{0};
-        uint32_t acc_p_ksk_max{0};
         // [ATT_DBG] 姿态/重力/比力一致性诊断
         float euler_r{0.0f};
         float euler_p{0.0f};
