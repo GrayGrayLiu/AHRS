@@ -189,13 +189,13 @@ void InsDebugTask(SchedulerRunReason reason, SchedulerEventMask events,
            static_cast<double>(stats.f_f_b[0]), static_cast<double>(stats.f_f_b[1]), static_cast<double>(stats.f_f_b[2]),
            static_cast<double>(stats.f_g_b_ByImu[0]), static_cast<double>(stats.f_g_b_ByImu[1]), static_cast<double>(stats.f_g_b_ByImu[2]));
 
-    // [EKF_DBG] 临时 EKFPredict 分段计时
+    // [EKF_DBG] EKFPredict 分段计时
     printf("[EKF_DBG] dx=%lu phip=%lu mphitq=%lu\r\n",
            static_cast<unsigned long>(stats.ekf_dx_us),
            static_cast<unsigned long>(stats.ekf_phi_p_us),
            static_cast<unsigned long>(stats.ekf_m_phi_t_q_us));
 
-    // [ATT_DBG] 临时姿态/重力/比力一致性诊断
+    // [ATT_DBG] 姿态/重力/比力一致性诊断
     printf("[ATT_DBG] eul=(%.2f,%.2f,%.2f) g_n=(%.3f,%.3f,%.3f) g_b=(%.3f,%.3f,%.3f) Cbn*f=(%.3f,%.3f,%.3f) Cbn*f+g=(%.3f,%.3f,%.3f) |Cf+g|=%.4f cos_f_gb=%.4f\r\n",
            static_cast<double>(stats.euler_r), static_cast<double>(stats.euler_p), static_cast<double>(stats.euler_y),
            static_cast<double>(stats.g_l_n[0]), static_cast<double>(stats.g_l_n[1]), static_cast<double>(stats.g_l_n[2]),

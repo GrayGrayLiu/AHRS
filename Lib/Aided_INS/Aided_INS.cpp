@@ -775,7 +775,7 @@ void Aided_INS::EKFPredict(const StateMatrix &Phi, const StateMatrix &Q)
     BuildMTimesPhiTAndAddQ(M, Phi, Q, P_);
     const uint64_t t3 = SystemPort_GetMicros();
 
-    // [EKF_DBG] 临时分段计时
+    // [EKF_DBG] EKFPredict 分段计时
     profile_.ekf_dx_us        = static_cast<uint32_t>(t1 - t0);
     profile_.ekf_phi_p_us     = static_cast<uint32_t>(t2 - t1);
     profile_.ekf_m_phi_t_q_us = static_cast<uint32_t>(t3 - t2);
