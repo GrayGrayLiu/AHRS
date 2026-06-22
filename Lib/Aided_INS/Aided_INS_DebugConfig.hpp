@@ -15,6 +15,19 @@
  * 运行期 UART printf 会阻塞主循环，可能导致 false timestamp_errors；
  * 正式运行默认关闭运行期输出，需要调试时再临时打开。启动验证默认保留。
  *
+ * 【性能基线（STM32H723 + RelWithDebInfo + 当前调度配置下的典型观测值，非实时上界）】
+ *   优化前：Aided_INS::Run() 整体约 3.4~3.6 ms，
+ *           其中状态转移/传播噪声相关矩阵构造约 2.4 ms，EKFPredict() 协方差预测约 0.94 ms。
+ *   结构化 predict 后：InsPropagation() 整体约 0.60 ms，
+ *           其中 INS 机械编排/机械更新约 66~67 us，
+ *           状态转移矩阵 Φ 与传播噪声 Q 构造约 0.16 ms，
+ *           EKFPredict() 协方差预测约 0.37 ms。
+ *   producer/consumer 解耦并关闭 runtime printf 后：
+ *           ins_consumer 中 Aided_INS::Run() 约 0.93 ms，
+ *           IMU DRDY producer/service 路径约 4~5 us。
+ *   这些数据解释了为什么 INS 不应在 IMU DRDY 路径同步运行，
+ *   以及为什么 runtime UART printf 默认关闭。
+ *
  * 可通过修改此文件或编译器 -D 选项覆盖。
  */
 

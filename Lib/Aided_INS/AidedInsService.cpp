@@ -24,7 +24,11 @@ namespace aided_ins_service
 
     namespace
     {
-        constexpr bool kRunInsInDrdyForProfiling = false; // producer/consumer 解耦模式
+        // producer/consumer 解耦模式。
+        // 历史观测：ins_consumer 中 Aided_INS::Run() 约 0.93 ms，明显长于 IMU DRDY producer/service
+        // 路径的数微秒级耗时；因此 INS 不应在 DRDY producer 路径同步运行（会阻塞后续 400 Hz sample），
+        // 当前默认由独立 ins_consumer task（1 ms polling）异步消费。
+        constexpr bool kRunInsInDrdyForProfiling = false;
 
         bool      pending_{false};
         IMU       pending_imu_{};
