@@ -329,7 +329,18 @@ private:
 
     /** @brief 数值验证：AccUpdate 结构化 EKF 更新 vs 稠密 Joseph form */
     void VerifyAccUpdateStructured();
+
+    /** @brief 数值验证：MagUpdate 结构化 EKF 更新 vs 稠密 Joseph form */
+    void VerifyMagUpdateStructured();
 #endif
+
+    /**
+     * @brief MagUpdate 专用结构化 EKF 更新（yaw 标量量测，Joseph form 展开）
+     *        利用 H_mag 只在 PHI_z 位置有一个非零元素的结构。
+     */
+    void EkfUpdateMagYaw1(const MeasurementVector<1> &dz,
+                          double H_phi_z,
+                          const MeasurementNoise<1> &R);
 
     Config config_;
     uint8_t id_{0};

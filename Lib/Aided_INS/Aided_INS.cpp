@@ -69,6 +69,7 @@ int Aided_INS::Init()
 #if 1  // 结构化矩阵实现数值验证开关；收尾阶段可统一改为 #if 0
     VerifyStructuredQ();
     VerifyAccUpdateStructured();
+    VerifyMagUpdateStructured();
 #endif
 
     return 0;
@@ -891,17 +892,23 @@ void Aided_INS::MagUpdate(const Mag &magData, const PVA &pvaCur, const Config &c
     MeasurementVector<1> dz;
     dz(0, 0) = -atan2(-h_n(1), h_n(0)); //磁力计测得的航向误差 = 偏航角误差 + 磁偏角
 
-    //构造磁力计观测矩阵
-    MeasurementMatrix<1> H_mag;
-    H_mag.setZero();
-    H_mag(0, PHI_ID+2) = 1;
+    /*
+     * MagUpdate 的完整 H_mag 为 1×21，状态块顺序：
+     *   x = [ P | V | PHI | GB | AB | GS | AS ]^T
+     *
+     * 当前磁力计更新只把水平磁航向误差作为 yaw 误差观测：
+     *   H_mag = [ 0  0  (0 0 1)  0  0  0  0 ]
+     *
+     * 因此 EkfUpdateMagYaw1 只需传入 PHI_z 对应的标量 H_phi_yaw = 1。
+     */
+    constexpr double H_phi_yaw = 1.0;
 
     //磁力计观测噪声矩阵
     MeasurementNoise<1> R_mag;
     R_mag(0, 0) = config.magMeasureYawStd * config.magMeasureYawStd;
 
-    // EKF更新协方差和误差状态
-    EkfUpdate<1>(dz, H_mag, R_mag);
+    // EKF更新协方差和误差状态（结构化 Mag yaw 专用路径）
+    EkfUpdateMagYaw1(dz, H_phi_yaw, R_mag);
 
     //磁力计更新之后设置为不可用
     magData_.isUpdate = false;
@@ -1414,6 +1421,67 @@ void Aided_INS::EkfUpdateAcc3(const MeasurementVector<3> &dz,
     P_.noalias() += tmp;
 }
 
+// --- EkfUpdateMagYaw1 --------------------------------------------------------
+//
+// MagUpdate 专用结构化 EKF 更新（yaw 标量量测，Joseph form 展开）。
+//
+// 当前磁力计只把水平磁航向误差作为 yaw 误差观测：
+//
+//   H_mag = [ 0  0  (0 0 1)  0  0  0  0 ]
+//            P     V   PHI     GB AB GS AS
+//
+// 因此只需处理 PHI_z（PHI_ID+2）位置的标量 H_phi_yaw = 1。
+//
+// 结构化展开：
+//   idx = PHI_ID + 2
+//   PHt = P(:,idx) * H_phi_yaw                                    （21×1）
+//   HP  = H_phi_yaw * P(idx,:)                                    （1×21）
+//   S   = H_phi_yaw * P(idx,idx) * H_phi_yaw + R                  （1×1）
+//   K   = PHt / S                                                 （21×1）
+//   innovation = dz - H_phi_yaw * dx(idx)
+//
+// Joseph form 展开（不假设 P 对称）：
+//   P+ = P - K*HP - PHt*K^T + K*S*K^T
+//
+// 等价于构造完整 H_mag 后调用通用 EkfUpdate<1>()。
+// ----------------------------------------------------------------------------
+
+void Aided_INS::EkfUpdateMagYaw1(const MeasurementVector<1> &dz,
+                                  const double H_phi_z,
+                                  const MeasurementNoise<1> &R)
+{
+    constexpr int kYawErrIndex = PHI_ID + 2;
+
+    // 1. S = H * P * H^T + R（标量）
+    const double S = H_phi_z * P_(kYawErrIndex, kYawErrIndex) * H_phi_z + R(0, 0);
+
+    // 2. PHt = P(:,idx) * H^T（21×1）
+    Eigen::Matrix<double, kStateRank, 1> PHt;
+    PHt.noalias() = P_.template block<kStateRank, 1>(0, kYawErrIndex) * H_phi_z;
+
+    // 3. HP = H * P（1×21），不通过 PHt^T
+    Eigen::Matrix<double, 1, kStateRank> HP;
+    HP.noalias() = H_phi_z * P_.template block<1, kStateRank>(kYawErrIndex, 0);
+
+    // 4. K = PHt / S
+    const Eigen::Matrix<double, kStateRank, 1> K = PHt / S;
+
+    // 5. innovation
+    const double innovation = dz(0, 0) - H_phi_z * dx_(kYawErrIndex);
+    dx_.noalias() += K * innovation;
+
+    // 6. P = P - KHP - PHt*K^T + K*S*K^T（Joseph form 展开，不假设 P 对称）
+    StateMatrix &tmp = I_scratch_;
+    tmp.noalias() = K * HP;
+    P_ -= tmp;
+
+    tmp.noalias() = PHt * K.transpose();
+    P_ -= tmp;
+
+    tmp.noalias() = K * S * K.transpose();
+    P_.noalias() += tmp;
+}
+
 // ============================================================================
 // VerifyAccUpdateStructured — AccUpdate 结构化 EKF vs 稠密 Joseph form
 // ============================================================================
@@ -1545,6 +1613,90 @@ void Aided_INS::VerifyAccUpdateStructured()
     {
         printf("[ACC_VERIFY] all checks pass (err < 1e-10)\r\n");
     }
+}
+
+#endif
+
+// ============================================================================
+// VerifyMagUpdateStructured — MagUpdate 结构化 EKF vs 稠密 Joseph form
+// ============================================================================
+
+#if 1  // 结构化矩阵实现数值验证开关；收尾阶段统一关闭
+
+void Aided_INS::VerifyMagUpdateStructured()
+{
+    constexpr int kYawIdx = PHI_ID + 2;
+    constexpr double H_phi_yaw = 1.0;
+
+    MeasurementVector<1> dz_test;
+    dz_test(0, 0) = 0.05;
+
+    MeasurementNoise<1> R_test;
+    constexpr double kMagYawStd = 2.0 * 0.017453292519943295;  // 2 deg -> rad
+    R_test(0, 0) = kMagYawStd * kMagYawStd;
+
+    MeasurementMatrix<1> H_dense;
+    H_dense.setZero();
+    H_dense(0, kYawIdx) = H_phi_yaw;
+
+    // 填充测试状态的 helper（直接写入 P_ / dx_，不产生局部 StateMatrix）
+    auto FillTestState = [this](bool nonsym) {
+        P_.setZero();
+        for (int i = 0; i < kStateRank; ++i)
+            for (int j = i; j < kStateRank; ++j) {
+                const double val = 1.0 + 0.1 * static_cast<double>(i + j);
+                P_(i, j) = val;
+                P_(j, i) = val;
+            }
+        if (nonsym) {
+            for (int i = 0; i < kStateRank; ++i)
+                for (int j = 0; j < kStateRank; ++j)
+                    if (i != j)
+                        P_(i, j) += 1.0e-3 * static_cast<double>((i + 1) - (j + 1));
+        }
+        dx_.setZero();
+        dx_(kYawIdx)    = 0.01;
+        dx_(PHI_ID + 1) = -0.005;
+        dx_(AB_ID + 0)  = 0.002;
+    };
+
+    // 用 static 存放临时大矩阵，避免栈溢出（仅验证路径使用）
+    static StateMatrix P_saved;
+    static StateMatrix P_ref;
+    static StateVector dx_saved;
+    static StateVector dx_ref;
+
+    auto RunCase = [&](bool nonsym, const char *label) -> bool {
+        P_saved = P_;
+        dx_saved = dx_;
+
+        // 稠密参考：复用通用 EkfUpdate<1>()
+        FillTestState(nonsym);
+        EkfUpdate<1>(dz_test, H_dense, R_test);
+        P_ref = P_;
+        dx_ref = dx_;
+
+        // 结构化路径：复用 EkfUpdateMagYaw1()
+        FillTestState(nonsym);
+        EkfUpdateMagYaw1(dz_test, H_phi_yaw, R_test);
+
+        const double dx_err = (dx_ref - dx_).cwiseAbs().maxCoeff();
+        const double p_err  = (P_ref - P_).cwiseAbs().maxCoeff();
+
+        P_ = P_saved;
+        dx_ = dx_saved;
+
+        printf("[MAG_VERIFY] %s dx_err=%.6e p_err=%.6e\r\n", label, dx_err, p_err);
+        return (dx_err > 1.0e-10) || (p_err > 1.0e-10);
+    };
+
+    bool fail = RunCase(false, "sym");
+    fail |= RunCase(true, "nonsym");
+
+    if (fail)
+        printf("[MAG_VERIFY] *** WARNING: structured MagUpdate differs from dense ***\r\n");
+    else
+        printf("[MAG_VERIFY] all checks pass (err < 1e-10)\r\n");
 }
 
 #endif
