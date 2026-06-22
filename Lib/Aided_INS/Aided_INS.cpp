@@ -554,11 +554,36 @@ void Aided_INS::VerifyStructuredQ()
     BuildPhiTimesP(Phi_test, P_test, M_opt);
     const double m_err = (M_ref - M_opt).cwiseAbs().maxCoeff();
 
-    // 进一步：完整 EKFPredict 后的 P（M * Phiᵀ + Q 第二步暂保留稠密）
-    // 用 Q1_opt 作为非零 Q_test（Q1_opt 已在前面验证为正确）
+    // 完整 EKFPredict 结构化路径：BuildPhiTimesP + BuildMTimesPhiTAndAddQ
+    // 复用已验证的 M_opt，避免重复计算
     const StateMatrix P_ref = Phi_test * P_test * Phi_test.transpose() + Q1_opt;
-    const StateMatrix P_opt = M_opt * Phi_test.transpose() + Q1_opt;
+
+    StateMatrix P_opt;
+    BuildMTimesPhiTAndAddQ(M_opt, Phi_test, Q1_opt, P_opt);  // Stage 3b
     const double p_err = (P_ref - P_opt).cwiseAbs().maxCoeff();
+
+    // -------------------------------
+    // 验证 5: Stage 3b — BuildMTimesPhiTAndAddQ 对一般满矩阵 M_test
+    // -------------------------------
+
+    // 构造非平凡、非对称满矩阵 M_test
+    StateMatrix M_test;
+    M_test.setZero();
+    for (int i = 0; i < kStateRank; ++i)
+    {
+        for (int j = 0; j < kStateRank; ++j)
+        {
+            M_test(i, j) = 0.5 + 0.01 * static_cast<double>(i * kStateRank + j);
+        }
+    }
+
+    // 稠密参考
+    const StateMatrix P3b_ref = M_test * Phi_test.transpose() + Q1_opt;
+
+    // 结构化
+    StateMatrix P3b_opt;
+    BuildMTimesPhiTAndAddQ(M_test, Phi_test, Q1_opt, P3b_opt);
+    const double p3b_err = (P3b_ref - P3b_opt).cwiseAbs().maxCoeff();
 
     // -------------------------------
     // 输出
@@ -566,11 +591,12 @@ void Aided_INS::VerifyStructuredQ()
     printf("[Q_VERIFY] qbase_err=%.6e  q1_err=%.6e  q2_err=%.6e\r\n",
            qbase_err, q1_err, q2_err);
 
-    printf("[EKF_VERIFY] m_err=%.6e  p_err=%.6e\r\n", m_err, p_err);
+    printf("[EKF_VERIFY] m_err=%.6e  p_err=%.6e  p3b_err=%.6e\r\n",
+           m_err, p_err, p3b_err);
 
-    constexpr double kQVerifyThreshold = 1.0e-12;  // 块累加顺序不同，允许略大舍入
-    bool q_fail = (qbase_err > kQVerifyThreshold || q1_err > kQVerifyThreshold || q2_err > kQVerifyThreshold);
-    bool ekf_fail = (m_err > kQVerifyThreshold || p_err > kQVerifyThreshold);
+    constexpr double kQVerifyThreshold = 1.0e-12;
+    bool q_fail  = (qbase_err > kQVerifyThreshold || q1_err > kQVerifyThreshold || q2_err > kQVerifyThreshold);
+    bool ekf_fail = (m_err > kQVerifyThreshold || p_err > kQVerifyThreshold || p3b_err > kQVerifyThreshold);
 
     if (q_fail || ekf_fail)
     {
@@ -728,19 +754,18 @@ void Aided_INS::EKFPredict(const StateMatrix &Phi, const StateMatrix &Q)
      *     dx = Phi * dx
      *     P  = Phi * P * Phi^T + Q
      *
-     * Stage 3a 实现（保留第二阶段 M*Phi^T 为稠密乘法）：
-     *     M  = Phi * P        // BuildPhiTimesP：利用 Phi 的 3×3 块稀疏结构
-     *     P  = M * Phi^T + Q  // 第二阶段暂保留 Eigen 稠密表达式
+     * Stage 3a/3b 实现（结构化等价计算）：
+     *     M = Phi * P               // BuildPhiTimesP：利用 Phi 的 3×3 块稀疏结构
+     *     P = M * Phi^T + Q         // BuildMTimesPhiTAndAddQ：同上，不假设 P 稀疏
      *
-     * BuildPhiTimesP() 基于 Phi 的固有块稀疏结构（16 个非零 3×3 块），
-     * 不假设 P 稀疏，不改变数学结果。
+     * 两个 helper 只利用 Phi 的固有块稀疏结构（16 个非零 3×3 块），
+     * P/M 均按满矩阵处理，不做对称性优化，不改变数学结果。
      */
     dx_ = Phi * dx_;
 
     StateMatrix &M = M_scratch_;
     BuildPhiTimesP(Phi, P_, M);
-
-    P_ = M * Phi.transpose() + Q;
+    BuildMTimesPhiTAndAddQ(M, Phi, Q, P_);
 }
 
 bool Aided_INS::AccUpdate(const IMU& imuData, const PVA& pvaCur, const Config& config)
@@ -1163,4 +1188,61 @@ void Aided_INS::BuildPhiTimesP(const StateMatrix &Phi, const StateMatrix &P, Sta
     AccumulatePhiPRow(Phi, P, AB_ID,  cols_AB,  1, Mout);
     AccumulatePhiPRow(Phi, P, GS_ID,  cols_GS,  1, Mout);
     AccumulatePhiPRow(Phi, P, AS_ID,  cols_AS,  1, Mout);
+}
+
+// --- BuildMTimesPhiTAndAddQ -------------------------------------------------
+//
+// 原始公式（EKFPredict 第二步）：P = M * Phi^T + Q
+//
+// 结构化实现：
+//   Pout 先设为 Q；
+//   对每个输出列块 j，遍历 Phi(j,k) 的非零 k 集合：
+//     Pout(i,j) += Σ_k M(i,k) * Phi(j,k)^T   (i 遍历全部 7 个行块)
+//
+// 注意：M 是 Phi*P 的结果，一般已满；Phi 仅 16 个非零 3×3 块；
+//       本函数只利用 Phi 的块稀疏结构，不利用 P/Pout 的对称性。
+// ----------------------------------------------------------------------------
+
+void Aided_INS::BuildMTimesPhiTAndAddQ(const StateMatrix &M, const StateMatrix &Phi,
+                                        const StateMatrix &Q, StateMatrix &Pout)
+{
+    Pout = Q;
+
+    // 输出列块 j 对应的非零 Phi(j,k) 列集合
+    const int cols_P[]   = {P_ID,   V_ID};
+    const int cols_V[]   = {P_ID,   V_ID,   PHI_ID, AB_ID, AS_ID};
+    const int cols_PHI[] = {P_ID,   V_ID,   PHI_ID, GB_ID, GS_ID};
+    const int cols_GB[]  = {GB_ID};
+    const int cols_AB[]  = {AB_ID};
+    const int cols_GS[]  = {GS_ID};
+    const int cols_AS[]  = {AS_ID};
+
+    // 全部 7 个行块索引
+    constexpr int kAllRows[] = {P_ID, V_ID, PHI_ID, GB_ID, AB_ID, GS_ID, AS_ID};
+    constexpr int kRowCount  = 7;
+
+    // 对每个输出列块 j
+    auto accColumn = [&](const int j_id, const int *cols, const int col_count)
+    {
+        for (int c = 0; c < col_count; ++c)
+        {
+            const int k_id = cols[c];
+            const Eigen::Matrix3d Phi_jk_T = Phi.template block<3, 3>(j_id, k_id).transpose();
+
+            for (int i = 0; i < kRowCount; ++i)
+            {
+                const int i_id = kAllRows[i];
+                Pout.template block<3, 3>(i_id, j_id).noalias() +=
+                    M.template block<3, 3>(i_id, k_id) * Phi_jk_T;
+            }
+        }
+    };
+
+    accColumn(P_ID,   cols_P,   2);
+    accColumn(V_ID,   cols_V,   5);
+    accColumn(PHI_ID, cols_PHI, 5);
+    accColumn(GB_ID,  cols_GB,  1);
+    accColumn(AB_ID,  cols_AB,  1);
+    accColumn(GS_ID,  cols_GS,  1);
+    accColumn(AS_ID,  cols_AS,  1);
 }

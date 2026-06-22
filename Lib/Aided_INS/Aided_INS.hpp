@@ -284,6 +284,10 @@ private:
     /** @brief 结构化 M = Phi * P（利用 Phi 的 3×3 块稀疏结构，P 视为满矩阵） */
     static void BuildPhiTimesP(const StateMatrix &Phi, const StateMatrix &P, StateMatrix &Mout);
 
+    /** @brief 结构化 Pout = M * Phiᵀ + Q（利用 Phi 块稀疏，M/Q 按满矩阵处理，不做对称优化） */
+    static void BuildMTimesPhiTAndAddQ(const StateMatrix &M, const StateMatrix &Phi,
+                                       const StateMatrix &Q, StateMatrix &Pout);
+
 #if 1  // 验证用：确认后改为 #if 0 即可关闭
     /** @brief 数值验证：确认结构化实现与稠密参考等价 */
     static void VerifyStructuredQ();
