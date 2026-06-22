@@ -131,6 +131,20 @@ namespace aided_ins_service
             s.cfn_g_norm = p.cbn_f_plus_g_norm;
             s.cos_fg = p.cos_f_gb;
         }
+
+#if AIDED_INS_ENABLE_COV_HEALTH_CHECK
+        void CopyCovHealthToStats(Stats &s)
+        {
+            const auto &h = InsInstance().GetCovHealth();
+            s.cov_has_nan_inf       = h.has_nan_inf;
+            s.cov_has_neg_diag      = h.has_neg_diag;
+            s.cov_max_asymmetry_last = h.max_asymmetry_last;
+            s.cov_max_asymmetry_max  = h.max_asymmetry_max;
+            s.cov_nan_inf_count      = h.nan_inf_count;
+            s.cov_neg_diag_count     = h.neg_diag_count;
+            s.cov_check_count        = h.check_count;
+        }
+#endif
     } // namespace
 
     int Init()
@@ -188,16 +202,7 @@ namespace aided_ins_service
         CopyInsProfileToStats(InsInstance().GetLastProfile(), stats_);
 
 #if AIDED_INS_ENABLE_COV_HEALTH_CHECK
-        {
-            const auto &h = InsInstance().GetCovHealth();
-            stats_.cov_has_nan_inf       = h.has_nan_inf;
-            stats_.cov_has_neg_diag      = h.has_neg_diag;
-            stats_.cov_max_asymmetry_last = h.max_asymmetry_last;
-            stats_.cov_max_asymmetry_max  = h.max_asymmetry_max;
-            stats_.cov_nan_inf_count      = h.nan_inf_count;
-            stats_.cov_neg_diag_count     = h.neg_diag_count;
-            stats_.cov_check_count        = h.check_count;
-        }
+        CopyCovHealthToStats(stats_);
 #endif
 
         return 1;
@@ -305,16 +310,7 @@ namespace aided_ins_service
             CopyInsProfileToStats(InsInstance().GetLastProfile(), stats_);
 
 #if AIDED_INS_ENABLE_COV_HEALTH_CHECK
-            {
-                const auto &h = InsInstance().GetCovHealth();
-                stats_.cov_has_nan_inf       = h.has_nan_inf;
-                stats_.cov_has_neg_diag      = h.has_neg_diag;
-                stats_.cov_max_asymmetry_last = h.max_asymmetry_last;
-                stats_.cov_max_asymmetry_max  = h.max_asymmetry_max;
-                stats_.cov_nan_inf_count      = h.nan_inf_count;
-                stats_.cov_neg_diag_count     = h.neg_diag_count;
-                stats_.cov_check_count        = h.check_count;
-            }
+            CopyCovHealthToStats(stats_);
 #endif
         }
         else
