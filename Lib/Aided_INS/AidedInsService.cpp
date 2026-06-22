@@ -157,6 +157,19 @@ namespace aided_ins_service
 
         CopyInsProfileToStats(InsInstance().GetLastProfile(), stats_);
 
+#if AIDED_INS_ENABLE_COV_HEALTH_CHECK
+        {
+            const auto &h = InsInstance().GetCovHealth();
+            stats_.cov_has_nan_inf       = h.has_nan_inf;
+            stats_.cov_has_neg_diag      = h.has_neg_diag;
+            stats_.cov_max_asymmetry_last = h.max_asymmetry_last;
+            stats_.cov_max_asymmetry_max  = h.max_asymmetry_max;
+            stats_.cov_nan_inf_count      = h.nan_inf_count;
+            stats_.cov_neg_diag_count     = h.neg_diag_count;
+            stats_.cov_check_count        = h.check_count;
+        }
+#endif
+
         return 1;
     }
 
@@ -260,6 +273,19 @@ namespace aided_ins_service
             ++stats_.ins_run_calls;
 
             CopyInsProfileToStats(InsInstance().GetLastProfile(), stats_);
+
+#if AIDED_INS_ENABLE_COV_HEALTH_CHECK
+            {
+                const auto &h = InsInstance().GetCovHealth();
+                stats_.cov_has_nan_inf       = h.has_nan_inf;
+                stats_.cov_has_neg_diag      = h.has_neg_diag;
+                stats_.cov_max_asymmetry_last = h.max_asymmetry_last;
+                stats_.cov_max_asymmetry_max  = h.max_asymmetry_max;
+                stats_.cov_nan_inf_count      = h.nan_inf_count;
+                stats_.cov_neg_diag_count     = h.neg_diag_count;
+                stats_.cov_check_count        = h.check_count;
+            }
+#endif
         }
         else
         {

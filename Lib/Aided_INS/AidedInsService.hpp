@@ -106,6 +106,14 @@ namespace aided_ins_service
         float cbn_f_g[3]{0.0f, 0.0f, 0.0f};
         float cfn_g_norm{0.0f};
         float cos_fg{0.0f};
+        // [COV_HLTH] 协方差健康状态镜像（always present，macro off 时保持零值）
+        bool     cov_has_nan_inf{false};
+        bool     cov_has_neg_diag{false};
+        float    cov_max_asymmetry_last{0.0f};
+        float    cov_max_asymmetry_max{0.0f};
+        uint32_t cov_nan_inf_count{0};
+        uint32_t cov_neg_diag_count{0};
+        uint32_t cov_check_count{0};
     };
 
     /**

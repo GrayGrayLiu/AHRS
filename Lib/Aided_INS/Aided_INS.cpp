@@ -408,6 +408,10 @@ void Aided_INS::Initialize()
     P_.block(AB_ID, AB_ID, 3, 3)   = initStateStd.accBias.cwiseProduct(initStateStd.accBias).asDiagonal();
     P_.block(GS_ID, GS_ID, 3, 3)   = initStateStd.gyrScale.cwiseProduct(initStateStd.gyrScale).asDiagonal();
     P_.block(AS_ID, AS_ID, 3, 3)   = initStateStd.accScale.cwiseProduct(initStateStd.accScale).asDiagonal();
+
+#if AIDED_INS_ENABLE_COV_HEALTH_CHECK
+    cov_health_ = CovHealth{};  // 重置 latch 标志和累计计数
+#endif
 }
 
 void Aided_INS::ImuCompensate(IMU &imu) const
@@ -1123,6 +1127,11 @@ void Aided_INS::ProcessNewData()
     pvaPre_ = pvaCur_;
     imuPre_ = imuCur_;
 
+#if AIDED_INS_ENABLE_COV_HEALTH_CHECK
+    // 本周期 P_ 已完成所有预测/更新，执行轻量健康检查（纯计数，无 printf）
+    CheckCovarianceHealth();
+#endif
+
     // [PROFILE] ProcessNewData 总耗时终点
     profile_.process_new_data_us = static_cast<uint32_t>(SystemPort_GetMicros() - t_pnd_start);
 }
@@ -1734,6 +1743,85 @@ void Aided_INS::VerifyMagUpdateStructured()
         printf("[MAG_VERIFY] *** WARNING: structured MagUpdate differs from dense ***\r\n");
     else
         printf("[MAG_VERIFY] all checks pass (err < 1e-10)\r\n");
+}
+
+#endif
+
+// ============================================================================
+// CheckCovarianceHealth — 轻量协方差健康检查
+// ============================================================================
+//
+// 本函数在每个 ProcessNewData 周期末尾调用（200 Hz），执行三项轻量检查：
+//   1. 扫描 P_ 全矩阵是否存在 NaN/Inf。
+//   2. 检查 P_ 对角线是否出现负值或非有限值。
+//   3. 计算 max(|P(i,j) - P(j,i)|)，只扫描上三角（j > i），监测对称性破坏。
+//
+// 检测到异常时仅更新 latch 标志和计数器，不做 UART printf。
+// has_nan_inf / has_neg_diag 为 latch 型标志，触发后保持，直到 Initialize() 重置。
+// ============================================================================
+
+#if AIDED_INS_ENABLE_COV_HEALTH_CHECK
+
+void Aided_INS::CheckCovarianceHealth()
+{
+    auto &h = cov_health_;
+    ++h.check_count;
+
+    // 1. 扫描 P_ 全矩阵是否存在 NaN/Inf。
+    {
+        bool found = false;
+        for (int i = 0; i < kStateRank && !found; ++i)
+        {
+            for (int j = 0; j < kStateRank && !found; ++j)
+            {
+                if (!std::isfinite(P_(i, j)))
+                {
+                    found = true;
+                }
+            }
+        }
+        if (found)
+        {
+            h.has_nan_inf = true;
+            ++h.nan_inf_count;
+        }
+    }
+
+    // 2. 检查对角线：非有限或 d < 0.0。
+    {
+        bool found = false;
+        for (int i = 0; i < kStateRank && !found; ++i)
+        {
+            const double d = P_(i, i);
+            if (!std::isfinite(d) || d < 0.0)
+            {
+                found = true;
+            }
+        }
+        if (found)
+        {
+            h.has_neg_diag = true;
+            ++h.neg_diag_count;
+        }
+    }
+
+    // 3. max(|P(i,j) - P(j,i)|)：只扫描上三角 (j > i)。
+    {
+        float max_asym = 0.0f;
+        for (int i = 0; i < kStateRank; ++i)
+        {
+            for (int j = i + 1; j < kStateRank; ++j)
+            {
+                const float diff = static_cast<float>(std::abs(P_(i, j) - P_(j, i)));
+                if (diff > max_asym) { max_asym = diff; }
+            }
+        }
+        h.max_asymmetry_last = max_asym;
+        if (max_asym > h.max_asymmetry_max)
+        {
+            h.max_asymmetry_max = max_asym;
+        }
+    }
 }
 
 #endif

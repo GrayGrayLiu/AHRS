@@ -105,6 +105,26 @@ public:
     // [PROFILE] 临时：获取最近一次 Run() 的分段耗时
     const InsProfile &GetLastProfile() const { return profile_; }
 
+#if AIDED_INS_ENABLE_COV_HEALTH_CHECK
+    /**
+     * @brief  协方差健康状态
+     * @details has_nan_inf / has_neg_diag 为 latch 型标志，一旦触发保持为 true，
+     *          直到重新 Init() 重置。
+     */
+    struct CovHealth
+    {
+        bool     has_nan_inf{false};
+        bool     has_neg_diag{false};
+        float    max_asymmetry_last{0.0f};   // 最近一次 max(|P-P^T|)
+        float    max_asymmetry_max{0.0f};    // 历史最大 max(|P-P^T|)
+        uint32_t nan_inf_count{0};           // 检测到 NaN/Inf 的检查次数
+        uint32_t neg_diag_count{0};          // 检测到负/非有限对角线的检查次数
+        uint32_t check_count{0};             // 健康检查累计调用次数
+    };
+
+    const CovHealth &GetCovHealth() const { return cov_health_; }
+#endif
+
 private:
     using NavState = Aided_INS_Space::NavState;
     using IMU      = Aided_INS_Space::IMU;
@@ -353,6 +373,11 @@ private:
                           double H_phi_z,
                           const MeasurementNoise<1> &R);
 
+#if AIDED_INS_ENABLE_COV_HEALTH_CHECK
+    /** @brief 轻量协方差健康检查：NaN/Inf、负对角线、对称性破坏度（纯计数，无 printf） */
+    void CheckCovarianceHealth();
+#endif
+
     Config config_;
     uint8_t id_{0};
 
@@ -384,6 +409,10 @@ private:
 
     // [PROFILE] 临时：分段耗时快照
     InsProfile profile_;
+
+#if AIDED_INS_ENABLE_COV_HEALTH_CHECK
+    CovHealth cov_health_;   // 协方差健康状态（latch 标志 + 累计计数 + 对称性记录）
+#endif
 
     // 固定尺寸 scratch buffer：避免每次调用 InsPropagation/EkfUpdate 都 malloc
     StateMatrix      Phi_scratch_;   // 状态转移矩阵（复用）
