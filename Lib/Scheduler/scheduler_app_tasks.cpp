@@ -139,6 +139,28 @@ void InsDebugTask(SchedulerRunReason reason, SchedulerEventMask events,
            static_cast<unsigned long>(stats.q2_us),
            static_cast<unsigned long>(stats.q2_max));
 
+    // [PROFILE] afb 拆分
+    printf("[INS_PROF3] acc_prep=%lu %lu acc_ekf=%lu %lu fb=%lu %lu\r\n",
+           static_cast<unsigned long>(stats.acc_prep_us),
+           static_cast<unsigned long>(stats.acc_prep_max),
+           static_cast<unsigned long>(stats.acc_ekf_us),
+           static_cast<unsigned long>(stats.acc_ekf_max),
+           static_cast<unsigned long>(stats.feedback_us),
+           static_cast<unsigned long>(stats.feedback_max));
+
+    // [PROFILE] EkfUpdateAcc3 内部分段
+    printf("[INS_PROF4] phs=%lu %lu kdx=%lu %lu khp=%lu %lu phkt=%lu %lu ksk=%lu %lu\r\n",
+           static_cast<unsigned long>(stats.acc_phs_us),
+           static_cast<unsigned long>(stats.acc_phs_max),
+           static_cast<unsigned long>(stats.acc_kdx_us),
+           static_cast<unsigned long>(stats.acc_kdx_max),
+           static_cast<unsigned long>(stats.acc_p_khp_us),
+           static_cast<unsigned long>(stats.acc_p_khp_max),
+           static_cast<unsigned long>(stats.acc_p_phkt_us),
+           static_cast<unsigned long>(stats.acc_p_phkt_max),
+           static_cast<unsigned long>(stats.acc_p_ksk_us),
+           static_cast<unsigned long>(stats.acc_p_ksk_max));
+
     // [ACC_DBG] 临时 AccUpdate 触发诊断
     printf("[ACC_DBG] try=%lu ok=%lu small=%lu norm=%lu cos=%lu fb=%lu f_norm=%.3f g=%.3f diff=%.3f cos_last=%.4f f=(%.2f,%.2f,%.2f) g_b=(%.2f,%.2f,%.2f)\r\n",
            static_cast<unsigned long>(stats.acc_try),

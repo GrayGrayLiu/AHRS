@@ -216,6 +216,24 @@ namespace aided_ins_service
             stats_.ekf_dx_us        = p.ekf_dx_us;
             stats_.ekf_phi_p_us     = p.ekf_phi_p_us;
             stats_.ekf_m_phi_t_q_us = p.ekf_m_phi_t_q_us;
+            // [PROFILE] afb 拆分
+            stats_.acc_prep_us = p.acc_prep_us;
+            if (p.acc_prep_us > stats_.acc_prep_max) { stats_.acc_prep_max = p.acc_prep_us; }
+            stats_.acc_ekf_us = p.acc_ekf_us;
+            if (p.acc_ekf_us > stats_.acc_ekf_max) { stats_.acc_ekf_max = p.acc_ekf_us; }
+            stats_.feedback_us = p.feedback_us;
+            if (p.feedback_us > stats_.feedback_max) { stats_.feedback_max = p.feedback_us; }
+            // [PROFILE] EkfUpdateAcc3 内部分段
+            stats_.acc_phs_us = p.acc_phs_us;
+            if (p.acc_phs_us > stats_.acc_phs_max) { stats_.acc_phs_max = p.acc_phs_us; }
+            stats_.acc_kdx_us = p.acc_kdx_us;
+            if (p.acc_kdx_us > stats_.acc_kdx_max) { stats_.acc_kdx_max = p.acc_kdx_us; }
+            stats_.acc_p_khp_us = p.acc_p_khp_us;
+            if (p.acc_p_khp_us > stats_.acc_p_khp_max) { stats_.acc_p_khp_max = p.acc_p_khp_us; }
+            stats_.acc_p_phkt_us = p.acc_p_phkt_us;
+            if (p.acc_p_phkt_us > stats_.acc_p_phkt_max) { stats_.acc_p_phkt_max = p.acc_p_phkt_us; }
+            stats_.acc_p_ksk_us = p.acc_p_ksk_us;
+            if (p.acc_p_ksk_us > stats_.acc_p_ksk_max) { stats_.acc_p_ksk_max = p.acc_p_ksk_us; }
             // [ATT_DBG] 姿态/重力/比力一致性
             stats_.euler_r = p.euler_r_deg;
             stats_.euler_p = p.euler_p_deg;

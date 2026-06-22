@@ -54,6 +54,16 @@ struct InsProfile
     uint32_t ekf_dx_us{0};
     uint32_t ekf_phi_p_us{0};
     uint32_t ekf_m_phi_t_q_us{0};
+    // [PROFILE] afb 拆分：AccUpdate 前处理 / EKF / StateFeedback
+    uint32_t acc_prep_us{0};
+    uint32_t acc_ekf_us{0};
+    uint32_t feedback_us{0};
+    // [PROFILE] EkfUpdateAcc3 内部分段
+    uint32_t acc_phs_us{0};
+    uint32_t acc_kdx_us{0};
+    uint32_t acc_p_khp_us{0};
+    uint32_t acc_p_phkt_us{0};
+    uint32_t acc_p_ksk_us{0};
     // [ATT_DBG] 临时姿态/重力/比力一致性诊断
     float    euler_r_deg{0.0f};
     float    euler_p_deg{0.0f};

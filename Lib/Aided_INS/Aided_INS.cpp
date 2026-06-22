@@ -784,6 +784,9 @@ bool Aided_INS::AccUpdate(const IMU& imuData, const PVA& pvaCur, const Config& c
 {
     ++profile_.acc_try;
 
+    // [PROFILE] afb 拆分：AccUpdate 前处理起点
+    const uint64_t t_acc_start = SystemPort_GetMicros();
+
     const Vector3d f_b = imuData.deltaVel / imuData.dt;
     const double gravity = Gravity(pvaCur.pos); //当地重力加速度
     const Vector3d g_l_n{0, 0, gravity}; //当地重力加速度投影在n系
@@ -860,7 +863,14 @@ bool Aided_INS::AccUpdate(const IMU& imuData, const PVA& pvaCur, const Config& c
             const Matrix3d H_phi = SkewSymmetric(-f_b_ByImu);
             const Matrix3d H_ab  = -Matrix3d::Identity();
             const Matrix3d H_as  = (-f_b_ByImu).asDiagonal();
+
+            const uint64_t t_before_acc_ekf = SystemPort_GetMicros();
+            profile_.acc_prep_us = static_cast<uint32_t>(t_before_acc_ekf - t_acc_start);
+
             EkfUpdateAcc3(dz, H_phi, H_ab, H_as, R_acc);
+
+            const uint64_t t_after_acc_ekf = SystemPort_GetMicros();
+            profile_.acc_ekf_us = static_cast<uint32_t>(t_after_acc_ekf - t_before_acc_ekf);
 
             return true;
         }
@@ -1046,7 +1056,11 @@ void Aided_INS::ProcessNewData()
 
         if (AccUpdate(imuCur_, pvaCur_, config_))
         {
+            const uint64_t t_before_fb = SystemPort_GetMicros();
             StateFeedback();
+            const uint64_t t_after_fb = SystemPort_GetMicros();
+            profile_.feedback_us = static_cast<uint32_t>(t_after_fb - t_before_fb);
+
             ++profile_.acc_feedback;
         }
 
@@ -1376,6 +1390,8 @@ void Aided_INS::EkfUpdateAcc3(const MeasurementVector<3> &dz,
                                const Matrix3d &H_phi, const Matrix3d &H_ab, const Matrix3d &H_as,
                                const MeasurementNoise<3> &R)
 {
+    const uint64_t t0 = SystemPort_GetMicros();
+
     // 1. PHt = P * H^T（21×3）
     Eigen::Matrix<double, kStateRank, 3> PHt;
     const auto P_phi = P_.template block<kStateRank, 3>(0, PHI_ID);
@@ -1395,6 +1411,8 @@ void Aided_INS::EkfUpdateAcc3(const MeasurementVector<3> &dz,
     const auto PHt_as  = PHt.template block<3, 3>(AS_ID, 0);
     Eigen::Matrix3d S = H_phi * PHt_phi + H_ab * PHt_ab + H_as * PHt_as + R;
 
+    const uint64_t t1 = SystemPort_GetMicros();
+
     // 4. K = PHt * S^-1
     const Eigen::Matrix<double, kStateRank, 3> K = PHt * S.inverse();
 
@@ -1407,18 +1425,36 @@ void Aided_INS::EkfUpdateAcc3(const MeasurementVector<3> &dz,
     // 6. dx += K * innovation
     dx_.noalias() += K * innovation;
 
+    const uint64_t t2 = SystemPort_GetMicros();
+
     // 7. KHP = K * HP (21×21)，复用 I_scratch_
     StateMatrix &tmp = I_scratch_;
     tmp.noalias() = K * HP;
     P_ -= tmp;
 
-    // 8. P -= PHt * K^T（不假设 P 对称，不用 KHP^T 代替）
-    tmp.noalias() = PHt * K.transpose();
-    P_ -= tmp;
+    const uint64_t t3 = SystemPort_GetMicros();
 
-    // 9. P += K * S * K^T
-    tmp.noalias() = K * S * K.transpose();
-    P_.noalias() += tmp;
+    /*
+     * Joseph form covariance update 简化为 P = P - K*HP：
+     *
+     *   P+ = P - K*HP - PHt*K^T + K*S*K^T    (Joseph form)
+     *
+     * 其中 PHt = P*H^T, S = H*P*H^T+R, K = PHt*S^{-1}。
+     * 在精确算术中 K*S = PHt，因此 K*S*K^T = PHt*K^T，两项抵消，
+     * 退化为：
+     *
+     *   P+ = P - K*HP
+     *
+     * VerifyAccUpdateStructured() 对对称和非对称 P 测试用例分别验证了
+     * 此简化路径与稠密 Joseph form 参考等价。
+     */
+    profile_.acc_p_phkt_us = 0;
+    profile_.acc_p_ksk_us  = 0;
+
+    // [PROFILE] 写入 EkfUpdateAcc3 内部分段
+    profile_.acc_phs_us    = static_cast<uint32_t>(t1 - t0);
+    profile_.acc_kdx_us    = static_cast<uint32_t>(t2 - t1);
+    profile_.acc_p_khp_us  = static_cast<uint32_t>(t3 - t2);
 }
 
 // --- EkfUpdateMagYaw1 --------------------------------------------------------
