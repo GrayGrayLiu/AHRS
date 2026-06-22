@@ -12,7 +12,6 @@
  *      默认不在 IMU DRDY producer 路径同步运行 INS；
  *      由独立 ins_consumer task 通过 RunInsConsumerOnce() 消费缓存，
  *      注入 Aided_INS 并调用 Aided_INS::Run()。
- *      kRunInsInDrdyForProfiling=true 时仍在 producer 路径同步调用（仅 profiling）。
  */
 
 #include "AidedInsService.hpp"
@@ -30,9 +29,8 @@ namespace aided_ins_service
     {
         // producer/consumer 解耦模式。
         // 历史观测：ins_consumer 中 Aided_INS::Run() 约 0.93 ms，明显长于 IMU DRDY producer/service
-        // 路径的数微秒级耗时；因此 INS 不应在 DRDY producer 路径同步运行（会阻塞后续 400 Hz sample），
-        // 当前默认由独立 ins_consumer task（1 ms polling）异步消费。
-        constexpr bool kRunInsInDrdyForProfiling = false;
+        // 路径的数微秒级耗时；因此 INS 不在 DRDY producer 路径同步运行，
+        // 由独立 ins_consumer task（1 ms polling）异步消费。
 
         bool      pending_{false};
         IMU       pending_imu_{};
@@ -67,7 +65,7 @@ namespace aided_ins_service
             return aided_ins;
         }
 
-        // 抽取重复的 profile→stats 拷贝逻辑，供同步 profiling 分支和 consumer 共用
+        // 将最近一次 INS profile 快照拷贝到 service stats，供调试统计输出使用
         void CopyInsProfileToStats(const InsProfile &p, Stats &s)
         {
             s.pnd_us = p.process_new_data_us;
@@ -287,43 +285,14 @@ namespace aided_ins_service
 
         ++stats_.aggregated_samples;
 
-        // 7. 临时诊断开关：选择聚合后的行为。
-        if (kRunInsInDrdyForProfiling)
+        // 缓存聚合后的 200 Hz IMU，由独立 ins_consumer task 异步消费。
+        if (has_imu200_)
         {
-            // 临时：重新调用 Aided_INS::Run() 以测量 hard-float 下 INS 耗时。
-            InsInstance().SetImuData(pending_imu_);
-
-            const uint64_t t_ins_start = SystemPort_GetMicros();
-            InsInstance().Run();
-            const uint64_t t_ins_end = SystemPort_GetMicros();
-
-            const uint32_t ins_elapsed = static_cast<uint32_t>(t_ins_end - t_ins_start);
-            stats_.ins_run_last_us = ins_elapsed;
-
-            if (ins_elapsed > stats_.ins_run_max_us)
-            {
-                stats_.ins_run_max_us = ins_elapsed;
-            }
-
-            ++stats_.ins_run_calls;
-
-            CopyInsProfileToStats(InsInstance().GetLastProfile(), stats_);
-
-#if AIDED_INS_ENABLE_COV_HEALTH_CHECK
-            CopyCovHealthToStats(stats_);
-#endif
+            ++stats_.dropped_imu_samples;
         }
-        else
-        {
-            // 保留 producer-only 缓存逻辑。
-            if (has_imu200_)
-            {
-                ++stats_.dropped_imu_samples;
-            }
-            latest_imu200_ = pending_imu_;
-            has_imu200_ = true;
-            ++stats_.queued_imu_samples;
-        }
+        latest_imu200_ = pending_imu_;
+        has_imu200_ = true;
+        ++stats_.queued_imu_samples;
 
         pending_ = false;
 
