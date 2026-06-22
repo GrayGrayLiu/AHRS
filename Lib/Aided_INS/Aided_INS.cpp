@@ -237,12 +237,8 @@ bool Aided_INS::GetImuData()
 
 bool Aided_INS::GetMagData()
 {
-    // if ()
-    // {
-    //     magData_.isUpdate = true;
-    //     return true;
-    // }
-
+    // TODO: 接入真实磁力计 service 后，在此更新 magData_、设置 isUpdate=true 并返回 true。
+    // 当前磁力计链路未接入，运行期不触发 MagUpdate。
     return false;
 }
 

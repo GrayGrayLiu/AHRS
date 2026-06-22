@@ -288,7 +288,7 @@ void AttitudeTelemetryTask(SchedulerRunReason reason, SchedulerEventMask events,
 constexpr SchedulerTaskConfig kAppTasks[] = {
     // priority: 0=highest, 255=lowest
     {
-        "imu_debug",                        // IMU 状态 print（1 Hz），暂时关闭以验证 INS Service
+        "imu_debug",                        // IMU 状态 print task，默认关闭；不访问 SPI/FIFO/EXTI
         ImuDebugTask,
         nullptr,
         200u,
@@ -296,7 +296,7 @@ constexpr SchedulerTaskConfig kAppTasks[] = {
         IMU_DEBUG_PERIOD_MS,
         0u,
         0u,
-        0u,                                 // 暂时关闭：验证 Aided INS Service 统计输出
+        0u,                                 // enabled=0：由 kAppTasks 中 enabled 字段控制注册/运行
     },
     {
         "imu_drdy",                         // ICM42688P data-ready 主处理路径
@@ -309,19 +309,19 @@ constexpr SchedulerTaskConfig kAppTasks[] = {
         IMU_DRDY_DEADLINE_MS,
         1u,
     },
-        {
-                "ins_consumer",                                                // INS consumer task：定期消费 200 Hz 聚合 IMU
-                InsConsumerTask,
-                nullptr,
-                20u,                                                                // priority: 低于 imu_drdy(10)，高于 debug tasks
-                0u,
-                INS_CONSUMER_PERIOD_MS,
-                0u,
-                0u,
-                1u,
-        },
-            {
-        "ins_debug",                        // Aided INS Service 统计 print（1 Hz）
+    {
+        "ins_consumer",                     // INS consumer task：定期消费 200 Hz 聚合 IMU
+        InsConsumerTask,
+        nullptr,
+        20u,                                // priority: 低于 imu_drdy(10)，高于 debug tasks
+        0u,
+        INS_CONSUMER_PERIOD_MS,
+        0u,
+        0u,
+        1u,
+    },
+    {
+        "ins_debug",                        // Aided INS Service 统计 print task（周期由 INS_DEBUG_PERIOD_MS 决定，默认关闭）
         InsDebugTask,
         nullptr,
         210u,                               // priority: 低于 IMU driver debug
