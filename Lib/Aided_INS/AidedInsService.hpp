@@ -40,7 +40,6 @@ namespace aided_ins_service
         uint32_t service_run_max_us{0};      // Run() 单次最大总耗时，us
         uint32_t queued_imu_samples{0};      // 完成 200 Hz 聚合并缓存次数
         uint32_t dropped_imu_samples{0};     // 缓存覆盖次数（消费者未及时取走）
-        uint32_t ins_run_disabled{0};        // 聚合完成但跳过 INS Run 的次数
 
         // [PROFILE] 临时分段耗时统计
         uint32_t pnd_us{0};      // ProcessNewData last
