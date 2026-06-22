@@ -122,6 +122,13 @@ namespace aided_ins_service
     int Run();
 
     /**
+     * @brief  消费最新聚合完成的 200 Hz IMU 并执行一次 INS 更新。
+     * @note   独立于 producer 的 consumer 路径；不访问 ICM42688P 驱动。
+     * @retval 0 无可用数据，1 成功执行了 Run()。
+     */
+    int RunInsConsumerOnce();
+
+    /**
      * @brief  返回运行统计快照（只读，如需清零则调用 Init()）。
      */
     Stats GetStats();

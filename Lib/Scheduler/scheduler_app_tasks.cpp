@@ -21,6 +21,7 @@ namespace
 
 constexpr uint32_t IMU_DEBUG_PERIOD_MS = 1000u;
 constexpr uint32_t INS_DEBUG_PERIOD_MS = 1000u;
+constexpr uint32_t INS_CONSUMER_PERIOD_MS = 1u;
 constexpr uint32_t IMU_DRDY_DEADLINE_MS = 5u;
 
 // ============================================================================
@@ -197,6 +198,20 @@ void InsDebugTask(SchedulerRunReason reason, SchedulerEventMask events,
 #endif // AIDED_INS_ENABLE_DEBUG_PRINT
 }
 
+	// ============================================================================
+	// INS consumer task — 定期消费聚合后的 200 Hz IMU
+	// ============================================================================
+
+	/**
+	 * @brief  INS consumer task（1 ms polling，priority=20）。
+	 * @note   不访问 ICM42688P；只从 AidedInsService 取最新聚合 IMU 并调用 INS Run。
+	 */
+	void InsConsumerTask(SchedulerRunReason reason, SchedulerEventMask events,
+	                     uint32_t now_ms, uint64_t now_us, void *context)
+	{
+	    (void)reason; (void)events; (void)now_ms; (void)now_us; (void)context;
+	    (void)aided_ins_service::RunInsConsumerOnce();
+	}
 // ============================================================================
 // ICM42688P event+deadline task — IMU data-ready 主处理路径
 // ============================================================================
@@ -245,7 +260,18 @@ constexpr SchedulerTaskConfig kAppTasks[] = {
         IMU_DRDY_DEADLINE_MS,
         1u,
     },
-    {
+	{
+		"ins_consumer",						// INS consumer task：定期消费 200 Hz 聚合 IMU
+		InsConsumerTask,
+		nullptr,
+		20u,								// priority: 低于 imu_drdy(10)，高于 debug tasks
+		0u,
+		INS_CONSUMER_PERIOD_MS,
+		0u,
+		0u,
+		1u,
+	},
+	    {
         "ins_debug",                        // Aided INS Service 统计 print（1 Hz）
         InsDebugTask,
         nullptr,

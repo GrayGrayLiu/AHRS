@@ -24,7 +24,7 @@ namespace aided_ins_service
 
     namespace
     {
-        constexpr bool kRunInsInDrdyForProfiling = true;  // 临时诊断开关：true=聚合后调用 INS Run 测耗时
+        constexpr bool kRunInsInDrdyForProfiling = false; // producer/consumer 解耦模式
 
         bool      pending_{false};
         IMU       pending_imu_{};
@@ -58,6 +58,71 @@ namespace aided_ins_service
             static Aided_INS aided_ins{0};
             return aided_ins;
         }
+
+        // 抽取重复的 profile→stats 拷贝逻辑，供同步 profiling 分支和 consumer 共用
+        void CopyInsProfileToStats(const InsProfile &p, Stats &s)
+        {
+            s.pnd_us = p.process_new_data_us;
+            if (p.process_new_data_us > s.pnd_max) { s.pnd_max = p.process_new_data_us; }
+            s.prp_us = p.ins_propagation_us;
+            if (p.ins_propagation_us > s.prp_max) { s.prp_max = p.ins_propagation_us; }
+            s.mec_us = p.ins_mech_us;
+            if (p.ins_mech_us > s.mec_max) { s.mec_max = p.ins_mech_us; }
+            s.fmx_us = p.phi_f_q_g_us;
+            if (p.phi_f_q_g_us > s.fmx_max) { s.fmx_max = p.phi_f_q_g_us; }
+            s.ekf_us = p.ekf_predict_us;
+            if (p.ekf_predict_us > s.ekf_max) { s.ekf_max = p.ekf_predict_us; }
+            s.afb_us = p.acc_feedback_us;
+            if (p.acc_feedback_us > s.afb_max) { s.afb_max = p.acc_feedback_us; }
+            s.alc_us = p.fmx_alc_us;
+            if (p.fmx_alc_us > s.alc_max) { s.alc_max = p.fmx_alc_us; }
+            s.fill_us = p.fmx_fill_us;
+            if (p.fmx_fill_us > s.fill_max) { s.fill_max = p.fmx_fill_us; }
+            s.q1_us = p.fmx_q1_us;
+            if (p.fmx_q1_us > s.q1_max) { s.q1_max = p.fmx_q1_us; }
+            s.q2_us = p.fmx_q2_us;
+            if (p.fmx_q2_us > s.q2_max) { s.q2_max = p.fmx_q2_us; }
+            s.acc_try        = p.acc_try;
+            s.acc_accept     = p.acc_accept;
+            s.acc_fail_small = p.acc_fail_small;
+            s.acc_fail_norm  = p.acc_fail_norm;
+            s.acc_fail_cos   = p.acc_fail_cos;
+            s.acc_feedback   = p.acc_feedback;
+            s.f_norm      = p.last_f_norm;
+            s.f_gravity   = p.last_gravity;
+            s.f_norm_diff = p.last_norm_diff;
+            s.f_cos_gn_gb = p.last_cos_gn_gb;
+            s.f_f_b[0] = p.last_f_b[0]; s.f_f_b[1] = p.last_f_b[1]; s.f_f_b[2] = p.last_f_b[2];
+            s.f_g_b_ByImu[0] = p.last_g_b_ByImu[0]; s.f_g_b_ByImu[1] = p.last_g_b_ByImu[1]; s.f_g_b_ByImu[2] = p.last_g_b_ByImu[2];
+            s.ekf_dx_us        = p.ekf_dx_us;
+            s.ekf_phi_p_us     = p.ekf_phi_p_us;
+            s.ekf_m_phi_t_q_us = p.ekf_m_phi_t_q_us;
+            s.acc_prep_us = p.acc_prep_us;
+            if (p.acc_prep_us > s.acc_prep_max) { s.acc_prep_max = p.acc_prep_us; }
+            s.acc_ekf_us = p.acc_ekf_us;
+            if (p.acc_ekf_us > s.acc_ekf_max) { s.acc_ekf_max = p.acc_ekf_us; }
+            s.feedback_us = p.feedback_us;
+            if (p.feedback_us > s.feedback_max) { s.feedback_max = p.feedback_us; }
+            s.acc_phs_us = p.acc_phs_us;
+            if (p.acc_phs_us > s.acc_phs_max) { s.acc_phs_max = p.acc_phs_us; }
+            s.acc_kdx_us = p.acc_kdx_us;
+            if (p.acc_kdx_us > s.acc_kdx_max) { s.acc_kdx_max = p.acc_kdx_us; }
+            s.acc_p_khp_us = p.acc_p_khp_us;
+            if (p.acc_p_khp_us > s.acc_p_khp_max) { s.acc_p_khp_max = p.acc_p_khp_us; }
+            s.acc_p_phkt_us = p.acc_p_phkt_us;
+            if (p.acc_p_phkt_us > s.acc_p_phkt_max) { s.acc_p_phkt_max = p.acc_p_phkt_us; }
+            s.acc_p_ksk_us = p.acc_p_ksk_us;
+            if (p.acc_p_ksk_us > s.acc_p_ksk_max) { s.acc_p_ksk_max = p.acc_p_ksk_us; }
+            s.euler_r = p.euler_r_deg;
+            s.euler_p = p.euler_p_deg;
+            s.euler_y = p.euler_y_deg;
+            s.g_l_n[0] = p.g_l_n[0]; s.g_l_n[1] = p.g_l_n[1]; s.g_l_n[2] = p.g_l_n[2];
+            s.g_b[0] = p.g_b_ByImu[0]; s.g_b[1] = p.g_b_ByImu[1]; s.g_b[2] = p.g_b_ByImu[2];
+            s.cbn_f[0] = p.cbn_f_b[0]; s.cbn_f[1] = p.cbn_f_b[1]; s.cbn_f[2] = p.cbn_f_b[2];
+            s.cbn_f_g[0] = p.cbn_f_plus_g[0]; s.cbn_f_g[1] = p.cbn_f_plus_g[1]; s.cbn_f_g[2] = p.cbn_f_plus_g[2];
+            s.cfn_g_norm = p.cbn_f_plus_g_norm;
+            s.cos_fg = p.cos_f_gb;
+        }
     } // namespace
 
     int Init()
@@ -70,6 +135,29 @@ namespace aided_ins_service
     Stats GetStats()
     {
         return stats_;
+    }
+
+    int RunInsConsumerOnce()
+    {
+        if (!has_imu200_) { return 0; }
+
+        const IMU local_imu = latest_imu200_;
+        has_imu200_ = false;
+
+        InsInstance().SetImuData(local_imu);
+
+        const uint64_t t_ins_start = SystemPort_GetMicros();
+        InsInstance().Run();
+        const uint64_t t_ins_end = SystemPort_GetMicros();
+
+        const uint32_t ins_elapsed = static_cast<uint32_t>(t_ins_end - t_ins_start);
+        stats_.ins_run_last_us = ins_elapsed;
+        if (ins_elapsed > stats_.ins_run_max_us) { stats_.ins_run_max_us = ins_elapsed; }
+        ++stats_.ins_run_calls;
+
+        CopyInsProfileToStats(InsInstance().GetLastProfile(), stats_);
+
+        return 1;
     }
 
     int Run()
@@ -171,79 +259,7 @@ namespace aided_ins_service
 
             ++stats_.ins_run_calls;
 
-            // [PROFILE] 读取分段耗时并更新 stats last/max
-            const InsProfile &p = InsInstance().GetLastProfile();
-            stats_.pnd_us = p.process_new_data_us;
-            if (p.process_new_data_us > stats_.pnd_max) { stats_.pnd_max = p.process_new_data_us; }
-            stats_.prp_us = p.ins_propagation_us;
-            if (p.ins_propagation_us > stats_.prp_max) { stats_.prp_max = p.ins_propagation_us; }
-            stats_.mec_us = p.ins_mech_us;
-            if (p.ins_mech_us > stats_.mec_max) { stats_.mec_max = p.ins_mech_us; }
-            stats_.fmx_us = p.phi_f_q_g_us;
-            if (p.phi_f_q_g_us > stats_.fmx_max) { stats_.fmx_max = p.phi_f_q_g_us; }
-            stats_.ekf_us = p.ekf_predict_us;
-            if (p.ekf_predict_us > stats_.ekf_max) { stats_.ekf_max = p.ekf_predict_us; }
-            stats_.afb_us = p.acc_feedback_us;
-            if (p.acc_feedback_us > stats_.afb_max) { stats_.afb_max = p.acc_feedback_us; }
-            // [PROFILE] Phase-2: fmx 子段
-            stats_.alc_us = p.fmx_alc_us;
-            if (p.fmx_alc_us > stats_.alc_max) { stats_.alc_max = p.fmx_alc_us; }
-            stats_.fill_us = p.fmx_fill_us;
-            if (p.fmx_fill_us > stats_.fill_max) { stats_.fill_max = p.fmx_fill_us; }
-            stats_.q1_us = p.fmx_q1_us;
-            if (p.fmx_q1_us > stats_.q1_max) { stats_.q1_max = p.fmx_q1_us; }
-            stats_.q2_us = p.fmx_q2_us;
-            if (p.fmx_q2_us > stats_.q2_max) { stats_.q2_max = p.fmx_q2_us; }
-            // [ACC_DBG] AccUpdate 诊断计数
-            stats_.acc_try        = p.acc_try;
-            stats_.acc_accept     = p.acc_accept;
-            stats_.acc_fail_small = p.acc_fail_small;
-            stats_.acc_fail_norm  = p.acc_fail_norm;
-            stats_.acc_fail_cos   = p.acc_fail_cos;
-            stats_.acc_feedback   = p.acc_feedback;
-            // [ACC_DBG] last values
-            stats_.f_norm      = p.last_f_norm;
-            stats_.f_gravity   = p.last_gravity;
-            stats_.f_norm_diff = p.last_norm_diff;
-            stats_.f_cos_gn_gb = p.last_cos_gn_gb;
-            stats_.f_f_b[0]    = p.last_f_b[0];
-            stats_.f_f_b[1]    = p.last_f_b[1];
-            stats_.f_f_b[2]    = p.last_f_b[2];
-            stats_.f_g_b_ByImu[0] = p.last_g_b_ByImu[0];
-            stats_.f_g_b_ByImu[1] = p.last_g_b_ByImu[1];
-            stats_.f_g_b_ByImu[2] = p.last_g_b_ByImu[2];
-            // [EKF_DBG] EKFPredict 分段
-            stats_.ekf_dx_us        = p.ekf_dx_us;
-            stats_.ekf_phi_p_us     = p.ekf_phi_p_us;
-            stats_.ekf_m_phi_t_q_us = p.ekf_m_phi_t_q_us;
-            // [PROFILE] afb 拆分
-            stats_.acc_prep_us = p.acc_prep_us;
-            if (p.acc_prep_us > stats_.acc_prep_max) { stats_.acc_prep_max = p.acc_prep_us; }
-            stats_.acc_ekf_us = p.acc_ekf_us;
-            if (p.acc_ekf_us > stats_.acc_ekf_max) { stats_.acc_ekf_max = p.acc_ekf_us; }
-            stats_.feedback_us = p.feedback_us;
-            if (p.feedback_us > stats_.feedback_max) { stats_.feedback_max = p.feedback_us; }
-            // [PROFILE] EkfUpdateAcc3 内部分段
-            stats_.acc_phs_us = p.acc_phs_us;
-            if (p.acc_phs_us > stats_.acc_phs_max) { stats_.acc_phs_max = p.acc_phs_us; }
-            stats_.acc_kdx_us = p.acc_kdx_us;
-            if (p.acc_kdx_us > stats_.acc_kdx_max) { stats_.acc_kdx_max = p.acc_kdx_us; }
-            stats_.acc_p_khp_us = p.acc_p_khp_us;
-            if (p.acc_p_khp_us > stats_.acc_p_khp_max) { stats_.acc_p_khp_max = p.acc_p_khp_us; }
-            stats_.acc_p_phkt_us = p.acc_p_phkt_us;
-            if (p.acc_p_phkt_us > stats_.acc_p_phkt_max) { stats_.acc_p_phkt_max = p.acc_p_phkt_us; }
-            stats_.acc_p_ksk_us = p.acc_p_ksk_us;
-            if (p.acc_p_ksk_us > stats_.acc_p_ksk_max) { stats_.acc_p_ksk_max = p.acc_p_ksk_us; }
-            // [ATT_DBG] 姿态/重力/比力一致性
-            stats_.euler_r = p.euler_r_deg;
-            stats_.euler_p = p.euler_p_deg;
-            stats_.euler_y = p.euler_y_deg;
-            stats_.g_l_n[0] = p.g_l_n[0]; stats_.g_l_n[1] = p.g_l_n[1]; stats_.g_l_n[2] = p.g_l_n[2];
-            stats_.g_b[0] = p.g_b_ByImu[0]; stats_.g_b[1] = p.g_b_ByImu[1]; stats_.g_b[2] = p.g_b_ByImu[2];
-            stats_.cbn_f[0] = p.cbn_f_b[0]; stats_.cbn_f[1] = p.cbn_f_b[1]; stats_.cbn_f[2] = p.cbn_f_b[2];
-            stats_.cbn_f_g[0] = p.cbn_f_plus_g[0]; stats_.cbn_f_g[1] = p.cbn_f_plus_g[1]; stats_.cbn_f_g[2] = p.cbn_f_plus_g[2];
-            stats_.cfn_g_norm = p.cbn_f_plus_g_norm;
-            stats_.cos_fg = p.cos_f_gb;
+            CopyInsProfileToStats(InsInstance().GetLastProfile(), stats_);
         }
         else
         {
@@ -255,7 +271,6 @@ namespace aided_ins_service
             latest_imu200_ = pending_imu_;
             has_imu200_ = true;
             ++stats_.queued_imu_samples;
-            ++stats_.ins_run_disabled;
         }
 
         pending_ = false;
