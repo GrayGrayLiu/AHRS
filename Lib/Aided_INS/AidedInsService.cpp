@@ -137,6 +137,28 @@ namespace aided_ins_service
         return stats_;
     }
 
+    AttitudeTelemetry GetAttitudeTelemetry()
+    {
+        AttitudeTelemetry t{};
+        const auto &pva = InsInstance().GetCurrentPVA();
+        t.timestamp = InsInstance().GetCurrentTimestamp();
+        // NED/FRD 约定下的欧拉角（roll=X, pitch=Y, yaw=Z），rad→deg
+        t.roll_deg  = static_cast<float>(pva.att.euler(0) * 57.29577951308232);
+        t.pitch_deg = static_cast<float>(pva.att.euler(1) * 57.29577951308232);
+        t.yaw_deg   = static_cast<float>(pva.att.euler(2) * 57.29577951308232);
+        // 四元数 q_b^n：b 系→n 系（FRD→NED）
+        t.qw = static_cast<float>(pva.att.qbn.w());
+        t.qx = static_cast<float>(pva.att.qbn.x());
+        t.qy = static_cast<float>(pva.att.qbn.y());
+        t.qz = static_cast<float>(pva.att.qbn.z());
+        return t;
+    }
+
+    bool IsInsRunning()
+    {
+        return InsInstance().IsRunning();
+    }
+
     int RunInsConsumerOnce()
     {
         if (!has_imu200_) { return 0; }

@@ -27,6 +27,9 @@ constexpr uint8_t INS_DEBUG_TASK_ENABLED =
      AIDED_INS_ENABLE_PROFILING_PRINT ||
      AIDED_INS_ENABLE_DEBUG_PRINT) ? 1u : 0u;
 constexpr uint32_t IMU_DRDY_DEADLINE_MS = 5u;
+constexpr uint32_t ATTITUDE_TELEMETRY_PERIOD_MS = 40u;  // 25 Hz
+constexpr uint8_t ATTITUDE_TELEMETRY_TASK_ENABLED =
+    AIDED_INS_ENABLE_ATTITUDE_TELEMETRY ? 1u : 0u;
 
 // ============================================================================
 // IMU debug print task — IMU 状态输出
@@ -236,6 +239,43 @@ void ImuDrdyTask(SchedulerRunReason reason, SchedulerEventMask events,
 }
 
 // ============================================================================
+// 姿态遥测 task — 低优先级定时输出（默认关闭）
+// ============================================================================
+
+/**
+ * @brief  姿态遥测 printf task（25 Hz，priority=220，默认关闭）。
+ * @note   不访问 SPI/FIFO/EXTI/ICM42688P，不修改 INS 状态。
+ *         按需启用 AIDED_INS_ENABLE_ATTITUDE_TELEMETRY 后以 25 Hz 输出姿态。
+ *         输出模式由 AIDED_INS_ATTITUDE_TELEMETRY_MODE 控制：
+ *           MODE_QUAT(0)       — qw,qx,qy,qz（q_b^n: FRD→NED）
+ *           MODE_EULER_DEG(1)  — roll_deg,pitch_deg,yaw_deg（NED/FRD 约定）
+ *         仅 INS Running 后才输出；初始对准期间静默。
+ */
+void AttitudeTelemetryTask(SchedulerRunReason reason, SchedulerEventMask events,
+                           uint32_t now_ms, uint64_t now_us, void *context)
+{
+    (void)reason; (void)events; (void)now_ms; (void)now_us; (void)context;
+
+    // 初始对准完成前不输出姿态
+    if (!aided_ins_service::IsInsRunning()) { return; }
+
+    const auto att = aided_ins_service::GetAttitudeTelemetry();
+
+#if AIDED_INS_ATTITUDE_TELEMETRY_MODE == AIDED_INS_ATTITUDE_TELEMETRY_MODE_QUAT
+    printf("%.6f,%.6f,%.6f,%.6f\n",
+           static_cast<double>(att.qw),
+           static_cast<double>(att.qx),
+           static_cast<double>(att.qy),
+           static_cast<double>(att.qz));
+#else
+    printf("%.3f,%.3f,%.3f\n",
+           static_cast<double>(att.roll_deg),
+           static_cast<double>(att.pitch_deg),
+           static_cast<double>(att.yaw_deg));
+#endif
+}
+
+// ============================================================================
 // 统一应用任务注册表
 // ============================================================================
 
@@ -287,6 +327,17 @@ constexpr SchedulerTaskConfig kAppTasks[] = {
         0u,
         0u,
         INS_DEBUG_TASK_ENABLED,
+    },
+    {
+        "att_telem",                        // 姿态遥测 printf（25 Hz，默认关闭）
+        AttitudeTelemetryTask,
+        nullptr,
+        220u,                               // priority: 低于 ins_debug(210)
+        0u,
+        ATTITUDE_TELEMETRY_PERIOD_MS,
+        0u,
+        0u,
+        ATTITUDE_TELEMETRY_TASK_ENABLED,
     },
 };
 

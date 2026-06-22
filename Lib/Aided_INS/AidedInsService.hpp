@@ -140,4 +140,25 @@ namespace aided_ins_service
      * @brief  返回运行统计快照（只读，如需清零则调用 Init()）。
      */
     Stats GetStats();
+
+    /**
+     * @brief  姿态遥测数据快照（供低优先级 telemetry task 使用）。
+     * @details 坐标系为 INS 内部 NED/FRD 约定，未做上位机映射。
+     */
+    struct AttitudeTelemetry
+    {
+        double timestamp{0.0};
+        float  roll_deg{0.0f};
+        float  pitch_deg{0.0f};
+        float  yaw_deg{0.0f};
+        float  qw{0.0f};
+        float  qx{0.0f};
+        float  qy{0.0f};
+        float  qz{0.0f};
+    };
+
+    AttitudeTelemetry GetAttitudeTelemetry();
+
+    /** @brief INS 是否已进入 Running 状态（供 telemetry task 判断是否可输出） */
+    bool IsInsRunning();
 } // namespace aided_ins_service

@@ -105,6 +105,15 @@ public:
     // [PROFILE] 临时：获取最近一次 Run() 的分段耗时
     const InsProfile &GetLastProfile() const { return profile_; }
 
+    /** @brief 获取当前 PVA 状态只读快照（供遥测/调试 task 使用） */
+    const Aided_INS_Space::PVA &GetCurrentPVA() const { return pvaCur_; }
+
+    /** @brief 获取当前 INS 时间戳（供遥测对齐） */
+    double GetCurrentTimestamp() const { return timestamp_; }
+
+    /** @brief INS 是否已进入 Running 状态（初始对准完成） */
+    bool IsRunning() const { return status_ == InsStatus::Running; }
+
 #if AIDED_INS_ENABLE_COV_HEALTH_CHECK
     /**
      * @brief  协方差健康状态
