@@ -32,7 +32,7 @@ struct InsProfile
     uint32_t phi_f_q_g_us{0};
     uint32_t ekf_predict_us{0};
     uint32_t acc_feedback_us{0};
-    // [PROFILE] Phase-2: fmx 子段
+    // [PROFILE] fmx 子段耗时分解
     uint32_t fmx_alc_us{0};
     uint32_t fmx_fill_us{0};
     uint32_t fmx_q1_us{0};
@@ -315,9 +315,20 @@ private:
     static void BuildMTimesPhiTAndAddQ(const StateMatrix &M, const StateMatrix &Phi,
                                        const StateMatrix &Q, StateMatrix &Pout);
 
-#if 1  // 验证用：确认后改为 #if 0 即可关闭
+    /**
+     * @brief AccUpdate 专用结构化 EKF 更新（Joseph form 展开）
+     *        利用 H_acc 只在 PHI/AB/AS 三列有非零 3×3 块的结构。
+     */
+    void EkfUpdateAcc3(const MeasurementVector<3> &dz,
+                       const Matrix3d &H_phi, const Matrix3d &H_ab, const Matrix3d &H_as,
+                       const MeasurementNoise<3> &R);
+
+#if 1  // 结构化矩阵实现数值验证开关；收尾阶段可统一改为 #if 0
     /** @brief 数值验证：确认结构化实现与稠密参考等价 */
     static void VerifyStructuredQ();
+
+    /** @brief 数值验证：AccUpdate 结构化 EKF 更新 vs 稠密 Joseph form */
+    void VerifyAccUpdateStructured();
 #endif
 
     Config config_;

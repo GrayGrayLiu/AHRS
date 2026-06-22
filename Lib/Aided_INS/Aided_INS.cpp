@@ -66,8 +66,9 @@ int Aided_INS::Init()
     Initialize();
     status_ = InsStatus::Unaligned;
 
-#if 1  // 验证 BuildGQGt 等价性（通过后改为 #if 0 关闭）
+#if 1  // 结构化矩阵实现数值验证开关；收尾阶段可统一改为 #if 0
     VerifyStructuredQ();
+    VerifyAccUpdateStructured();
 #endif
 
     return 0;
@@ -421,10 +422,10 @@ void Aided_INS::ImuCompensate(IMU &imu) const
 }
 
 // ============================================================================
-// VerifyStructuredQ — 调用 BuildGQGtFromNoise，确保与正式路径共用同一实现
+// VerifyStructuredQ — 结构化预测传播实现数值验证
 // ============================================================================
 
-#if 1  // 验证：确认等价后改为 #if 0 关闭
+#if 1  // 结构化矩阵实现数值验证开关；收尾阶段统一关闭
 
 void Aided_INS::VerifyStructuredQ()
 {
@@ -530,7 +531,7 @@ void Aided_INS::VerifyStructuredQ()
     const double q2_err = (Q2_ref - Q2_opt).cwiseAbs().maxCoeff();
 
     // -------------------------------
-    // 验证 4: Stage 3a — M = Phi * P 结构化 vs 稠密
+    // 验证 4: M = Phi * P 结构化 vs 稠密
     // -------------------------------
 
     // 构造非平凡对称满矩阵 P_test
@@ -554,16 +555,16 @@ void Aided_INS::VerifyStructuredQ()
     BuildPhiTimesP(Phi_test, P_test, M_opt);
     const double m_err = (M_ref - M_opt).cwiseAbs().maxCoeff();
 
-    // 完整 EKFPredict 结构化路径：BuildPhiTimesP + BuildMTimesPhiTAndAddQ
+    // 预测协方差结构化路径：BuildPhiTimesP + BuildMTimesPhiTAndAddQ
     // 复用已验证的 M_opt，避免重复计算
     const StateMatrix P_ref = Phi_test * P_test * Phi_test.transpose() + Q1_opt;
 
     StateMatrix P_opt;
-    BuildMTimesPhiTAndAddQ(M_opt, Phi_test, Q1_opt, P_opt);  // Stage 3b
+    BuildMTimesPhiTAndAddQ(M_opt, Phi_test, Q1_opt, P_opt);
     const double p_err = (P_ref - P_opt).cwiseAbs().maxCoeff();
 
     // -------------------------------
-    // 验证 5: Stage 3b — BuildMTimesPhiTAndAddQ 对一般满矩阵 M_test
+    // 验证 5: M * Phi^T + Q 结构化 vs 稠密（对一般满矩阵 M_test）
     // -------------------------------
 
     // 构造非平凡、非对称满矩阵 M_test
@@ -622,7 +623,7 @@ void Aided_INS::InsPropagation(const IMU &imuPre, IMU &imuCur)
     const uint64_t t_before_mech = SystemPort_GetMicros();
     //IMU状态更新(机械编排算法)
     INS_Mechanization::INS_Mech(pvaPre_, pvaCur_, imuPre, imuCur);
-    // [PROFILE] INS_Mech 终点，Phi/F/Q/G 构造起点
+    // [PROFILE] INS_Mech 终点，状态转移与传播噪声构造起点
     const uint64_t t_after_mech = SystemPort_GetMicros();
 
     //系统噪声传播，姿态误差采用phi角误差模型（固定尺寸 scratch buffer，避免 malloc）
@@ -725,7 +726,7 @@ void Aided_INS::InsPropagation(const IMU &imuPre, IMU &imuCur)
     BuildGQGt(pvaCur_.att.Cbn, QbaseCur);
     Q = (Q + QbaseCur) * imuCur.dt * 0.5;
 
-    // [PROFILE] Phi/F/Q/G 构造终点，EKFPredict 起点
+    // [PROFILE] 状态转移与传播噪声构造终点，EKFPredict 起点
     const uint64_t t_before_ekf = SystemPort_GetMicros();
     //EKF预测传播系统误差状态和系统协方差
     EKFPredict(Phi, Q);
@@ -737,7 +738,7 @@ void Aided_INS::InsPropagation(const IMU &imuPre, IMU &imuCur)
     profile_.ins_mech_us        = static_cast<uint32_t>(t_after_mech - t_before_mech);
     profile_.phi_f_q_g_us       = static_cast<uint32_t>(t_before_ekf - t_after_mech);
     profile_.ekf_predict_us     = static_cast<uint32_t>(t_after_ekf - t_before_ekf);
-    // [PROFILE] Phase-2: fmx 子段
+    // [PROFILE] fmx 子段耗时分解
     profile_.fmx_alc_us  = static_cast<uint32_t>(t_after_alc  - t_after_mech);
     profile_.fmx_fill_us = static_cast<uint32_t>(t_after_fill - t_after_alc);
     profile_.fmx_q1_us   = static_cast<uint32_t>(t_after_q1   - t_after_fill);
@@ -754,7 +755,7 @@ void Aided_INS::EKFPredict(const StateMatrix &Phi, const StateMatrix &Q)
      *     dx = Phi * dx
      *     P  = Phi * P * Phi^T + Q
      *
-     * Stage 3a/3b 实现（结构化等价计算）：
+     * 结构化协方差传播实现：
      *     M = Phi * P               // BuildPhiTimesP：利用 Phi 的 3×3 块稀疏结构
      *     P = M * Phi^T + Q         // BuildMTimesPhiTAndAddQ：同上，不假设 P 稀疏
      *
@@ -822,6 +823,7 @@ bool Aided_INS::AccUpdate(const IMU& imuData, const PVA& pvaCur, const Config& c
     if (f_b.norm() > 1e-6f && g_b_ByImu.norm() > 1e-6f)
     {
         const double cos_gn_gb = f_b.dot(g_b_ByImu) / ( f_b.norm() * g_b_ByImu.norm() ); //重力测量值与理论值的夹角，如果不是1，说明测量值与理论值方向不重合
+        // 注意：这里比较加速度计比力 f_b 与理论重力方向 g_b_ByImu；静止时二者应反向，因此期望 cos≈-1
         profile_.last_cos_gn_gb = static_cast<float>(cos_gn_gb);
 
         if ( std::fabs(f_b.norm() - gravity) < 0.8 && cos_gn_gb < -0.95) // 比力方向与重力方向相反；运动加速度过大则不用加速度计更新姿态
@@ -832,18 +834,32 @@ bool Aided_INS::AccUpdate(const IMU& imuData, const PVA& pvaCur, const Config& c
             const Vector3d f_b_ByImu = -g_b_ByImu; //IMU测量到的重力加速度（假设没有运动加速度）产生的比力
             const MeasurementVector<3> dz = f_b_ByImu - f_b;
 
-            //构造加速度计观测矩阵
-            MeasurementMatrix<3> H_acc;
-            H_acc.setZero();
-            H_acc.template block<3, 3>(0, PHI_ID) = SkewSymmetric(-f_b_ByImu);
-            H_acc.template block<3, 3>(0, AB_ID)  = -Matrix3d::Identity();
-            H_acc.template block<3, 3>(0, AS_ID)  = (-f_b_ByImu).asDiagonal();
-
             //加速度计观测噪声矩阵
             const MeasurementNoise<3> R_acc = (config.imuNoise.accVrw.cwiseProduct(config.imuNoise.accVrw)  / imuData.dt).asDiagonal();
 
-            // EKF更新协方差和误差状态
-            EkfUpdate<3>(dz, H_acc, R_acc);
+            /*
+             * AccUpdate 的完整观测矩阵 H_acc 为 3×21，状态块顺序：
+             *
+             *   x = [ P | V | PHI | GB | AB | GS | AS ]^T
+             *       0   3    6     9    12   15   18
+             *
+             * 加速度计重力方向更新只直接观测姿态误差 PHI、加速度计零偏 AB、
+             * 加速度计比例因子 AS，因此：
+             *
+             *   H_acc = [ 0_{3×3}  0_{3×3}  H_phi  0_{3×3}  H_ab  0_{3×3}  H_as ]
+             *
+             * 其中：
+             *   H_phi = skew(-f_b_ByImu)       — 比力方向反对称矩阵
+             *   H_ab  = -I                     — 加速度计零偏线性耦合
+             *   H_as  = diag(-f_b_ByImu)       — 比例因子按比力分量缩放
+             *
+             * EkfUpdateAcc3() 只显式传入这 3 个非零 3×3 块，等价于构造完整
+             * H_acc 后调用通用 EkfUpdate<3>()。
+             */
+            const Matrix3d H_phi = SkewSymmetric(-f_b_ByImu);
+            const Matrix3d H_ab  = -Matrix3d::Identity();
+            const Matrix3d H_as  = (-f_b_ByImu).asDiagonal();
+            EkfUpdateAcc3(dz, H_phi, H_ab, H_as, R_acc);
 
             return true;
         }
@@ -1104,18 +1120,34 @@ void Aided_INS::ProcessNewData()
 // G，也没有直接调用所有稠密乘法，而是利用 G、Phi、Qbase 的固定 3×3 块结构。
 // 这些 helper 只改变计算组织形式，不改变数学模型。
 //
-// P 仍按满矩阵处理；目前只结构化计算 Phi * P，第二步 M * Phi^T 仍保留稠密计算。
+// Phi = I + F*dt 的非零 3×3 块（状态块 [P V PHI GB AB GS AS]）：
+//   row P   : P, V
+//   row V   : P, V, PHI, AB, AS
+//   row PHI : P, V, PHI, GB, GS
+//   row GB  : GB
+//   row AB  : AB
+//   row GS  : GS
+//   row AS  : AS
+//
+// P 仍按满矩阵处理，不假设 P 稀疏；不做对称性优化，不改变数学模型。
 // ============================================================================
 
 // --- BuildGQGt / BuildGQGtFromNoise -----------------------------------------
 //
 // 原始公式：Qbase = G * q * G^T
 //
-// G 的固定非零块（kNoiseRank=18, kStateRank=21）：
-//   G(V,   VRW)   = Cbn          G(PHI, ARW)   = Cbn
-//   G(GB,  GBSTD) = I            G(AB,  ABSTD) = I
-//   G(GS,  GSSTD) = I            G(AS,  ASSTD) = I
-//   其余全为零。
+// G 为 21×18，行块 [P V PHI GB AB GS AS]，列块 [VRW ARW GBSTD ABSTD GSSTD ASSTD]：
+//
+//         VRW  ARW  GBSTD ABSTD GSSTD ASSTD
+//   P   [  0    0     0      0      0      0  ]
+//   V   [ Cbn   0     0      0      0      0  ]   ← 速度噪声由姿态 Cbn 耦合
+//   PHI [  0   Cbn    0      0      0      0  ]   ← 姿态噪声由姿态 Cbn 耦合
+//   GB  [  0    0     I      0      0      0  ]
+//   AB  [  0    0     0      I      0      0  ]
+//   GS  [  0    0     0      0      I      0  ]
+//   AS  [  0    0     0      0      0      I  ]
+//
+// 其余全部为零。
 //
 // q 本身是块对角矩阵（6 个 3×3 对角块）。
 // 因为 G 的非零块和 q 的块对角结构，G*q*G^T 仅以下 6 个主对角状态块非零：
@@ -1304,3 +1336,215 @@ void Aided_INS::BuildMTimesPhiTAndAddQ(const StateMatrix &M, const StateMatrix &
     accColumn(GS_ID,  cols_GS,  1);
     accColumn(AS_ID,  cols_AS,  1);
 }
+
+// --- EkfUpdateAcc3 -----------------------------------------------------------
+//
+// AccUpdate 专用结构化 EKF 更新（Joseph form 展开）。
+// 令完整 H_acc = [0_{3×3}, 0_{3×3}, H_phi, 0_{3×3}, H_ab, 0_{3×3}, H_as]。
+//
+// 结构化展开：
+//   PHt = P * H_acc^T
+//       = P(:,PHI) * H_phi^T + P(:,AB) * H_ab^T + P(:,AS) * H_as^T       （21×3）
+//
+//   HP  = H_acc * P
+//       = H_phi * P(PHI,:) + H_ab * P(AB,:) + H_as * P(AS,:)             （3×21）
+//
+//   S   = H_acc * PHt + R
+//       = H_phi * PHt(PHI,:) + H_ab * PHt(AB,:) + H_as * PHt(AS,:) + R   （3×3）
+//
+//   K   = PHt * S^-1                                                     （21×3）
+//
+//   innovation = dz - H_acc * dx
+//              = dz - (H_phi*dx_phi + H_ab*dx_ab + H_as*dx_as)
+//
+//   dx += K * innovation
+//
+// Joseph form 展开（不假设 P 对称）：
+//   P+ = P - K*HP - PHt*K^T + K*S*K^T
+//
+// 与构造完整 H_acc 后调用通用 EkfUpdate<3>() 数学等价。
+// ----------------------------------------------------------------------------
+
+void Aided_INS::EkfUpdateAcc3(const MeasurementVector<3> &dz,
+                               const Matrix3d &H_phi, const Matrix3d &H_ab, const Matrix3d &H_as,
+                               const MeasurementNoise<3> &R)
+{
+    // 1. PHt = P * H^T（21×3）
+    Eigen::Matrix<double, kStateRank, 3> PHt;
+    const auto P_phi = P_.template block<kStateRank, 3>(0, PHI_ID);
+    const auto P_ab  = P_.template block<kStateRank, 3>(0, AB_ID);
+    const auto P_as  = P_.template block<kStateRank, 3>(0, AS_ID);
+    PHt.noalias() = P_phi * H_phi.transpose() + P_ab * H_ab.transpose() + P_as * H_as.transpose();
+
+    // 2. HP = H * P（3×21），不通过 PHt^T
+    Eigen::Matrix<double, 3, kStateRank> HP;
+    HP.noalias() = H_phi * P_.template block<3, kStateRank>(PHI_ID, 0)
+                 + H_ab  * P_.template block<3, kStateRank>(AB_ID, 0)
+                 + H_as  * P_.template block<3, kStateRank>(AS_ID, 0);
+
+    // 3. S = H_phi*PHt_PHI + H_ab*PHt_AB + H_as*PHt_AS + R
+    const auto PHt_phi = PHt.template block<3, 3>(PHI_ID, 0);
+    const auto PHt_ab  = PHt.template block<3, 3>(AB_ID, 0);
+    const auto PHt_as  = PHt.template block<3, 3>(AS_ID, 0);
+    Eigen::Matrix3d S = H_phi * PHt_phi + H_ab * PHt_ab + H_as * PHt_as + R;
+
+    // 4. K = PHt * S^-1
+    const Eigen::Matrix<double, kStateRank, 3> K = PHt * S.inverse();
+
+    // 5. Innovation
+    const auto dx_phi = dx_.template block<3, 1>(PHI_ID, 0);
+    const auto dx_ab  = dx_.template block<3, 1>(AB_ID, 0);
+    const auto dx_as  = dx_.template block<3, 1>(AS_ID, 0);
+    const MeasurementVector<3> innovation = dz - (H_phi * dx_phi + H_ab * dx_ab + H_as * dx_as);
+
+    // 6. dx += K * innovation
+    dx_.noalias() += K * innovation;
+
+    // 7. KHP = K * HP (21×21)，复用 I_scratch_
+    StateMatrix &tmp = I_scratch_;
+    tmp.noalias() = K * HP;
+    P_ -= tmp;
+
+    // 8. P -= PHt * K^T（不假设 P 对称，不用 KHP^T 代替）
+    tmp.noalias() = PHt * K.transpose();
+    P_ -= tmp;
+
+    // 9. P += K * S * K^T
+    tmp.noalias() = K * S * K.transpose();
+    P_.noalias() += tmp;
+}
+
+// ============================================================================
+// VerifyAccUpdateStructured — AccUpdate 结构化 EKF vs 稠密 Joseph form
+// ============================================================================
+
+#if 1  // 结构化矩阵实现数值验证开关；收尾阶段统一关闭
+
+void Aided_INS::VerifyAccUpdateStructured()
+{
+    // 构造非平凡测试矩阵（与现有验证风格一致）
+    auto MakeTestBlock3 = [](double s) -> Eigen::Matrix3d {
+        Eigen::Matrix3d m;
+        m << s,       s*0.1,   s*0.2,
+             s*0.3,   s,       s*0.4,
+             s*0.5,   s*0.6,   s;
+        return m;
+    };
+
+    const Matrix3d H_phi = MakeTestBlock3(0.5);
+    const Matrix3d H_ab  = -Matrix3d::Identity();
+    const Matrix3d H_as  = MakeTestBlock3(0.3).diagonal().asDiagonal();
+
+    // 非平凡正定 R
+    MeasurementNoise<3> R_test = MeasurementNoise<3>::Identity() * 0.01;
+    R_test(0,1) = R_test(1,0) = 0.001;
+
+    // 非零 dz
+    MeasurementVector<3> dz_test;
+    dz_test << 0.01, -0.02, 0.05;
+
+    // 非零 dx
+    StateVector dx_test = StateVector::Zero();
+    dx_test(PHI_ID+0) = 0.001;
+    dx_test(PHI_ID+1) = -0.002;
+    dx_test(AB_ID+0)  = 0.003;
+
+    // 非平凡对称满矩阵 P（用现有验证中的 P_test 构建方式）
+    StateMatrix P_test;
+    P_test.setZero();
+    for (int i = 0; i < kStateRank; ++i) {
+        for (int j = i; j < kStateRank; ++j) {
+            const double val = 1.0 + 0.1 * static_cast<double>(i + j);
+            P_test(i, j) = val;
+            P_test(j, i) = val;
+        }
+    }
+
+    // ----- 稠密参考 -----
+    StateMatrix P_ref = P_test;
+    StateVector dx_ref = dx_test;
+
+    MeasurementMatrix<3> H_dense;
+    H_dense.setZero();
+    H_dense.template block<3, 3>(0, PHI_ID) = H_phi;
+    H_dense.template block<3, 3>(0, AB_ID)  = H_ab;
+    H_dense.template block<3, 3>(0, AS_ID)  = H_as;
+
+    const Eigen::Matrix3d S_ref = H_dense * P_ref * H_dense.transpose() + R_test;
+    const Eigen::Matrix<double, kStateRank, 3> K_ref = P_ref * H_dense.transpose() * S_ref.inverse();
+    dx_ref.noalias() += K_ref * (dz_test - H_dense * dx_ref);
+
+    StateMatrix I_ref = StateMatrix::Identity();
+    I_ref -= K_ref * H_dense;
+    P_ref = I_ref * P_ref * I_ref.transpose() + K_ref * R_test * K_ref.transpose();
+
+    // ----- 结构化路径 -----
+    StateMatrix P_opt = P_test;
+    StateVector dx_opt = dx_test;
+
+    // 临时替换 P_/dx_ 来调用成员函数
+    StateMatrix P_saved = P_;
+    StateVector dx_saved = dx_;
+    P_ = P_test;
+    dx_ = dx_test;
+
+    EkfUpdateAcc3(dz_test, H_phi, H_ab, H_as, R_test);
+
+    P_opt = P_;
+    dx_opt = dx_;
+    P_ = P_saved;
+    dx_ = dx_saved;
+
+    // ----- 比较（对称 P） -----
+    const double sym_dx_err = (dx_ref - dx_opt).cwiseAbs().maxCoeff();
+    const double sym_p_err  = (P_ref - P_opt).cwiseAbs().maxCoeff();
+
+    // ----- 非对称 P_test -----
+    StateMatrix P_nonsym = P_test;
+    for (int i = 0; i < kStateRank; ++i) {
+        for (int j = 0; j < kStateRank; ++j) {
+            if (i != j) {
+                P_nonsym(i, j) += 1.0e-3 * static_cast<double>((i + 1) - (j + 1));
+            }
+        }
+    }
+
+    // 稠密参考（非对称 P）
+    StateMatrix P_ref_ns = P_nonsym;
+    StateVector dx_ref_ns = dx_test;
+    const Eigen::Matrix3d S_ref_ns = H_dense * P_ref_ns * H_dense.transpose() + R_test;
+    const Eigen::Matrix<double, kStateRank, 3> K_ref_ns = P_ref_ns * H_dense.transpose() * S_ref_ns.inverse();
+    dx_ref_ns.noalias() += K_ref_ns * (dz_test - H_dense * dx_ref_ns);
+    StateMatrix I_ref_ns = StateMatrix::Identity();
+    I_ref_ns -= K_ref_ns * H_dense;
+    P_ref_ns = I_ref_ns * P_ref_ns * I_ref_ns.transpose() + K_ref_ns * R_test * K_ref_ns.transpose();
+
+    // 结构化路径（非对称 P）
+    P_ = P_nonsym;
+    dx_ = dx_test;
+    EkfUpdateAcc3(dz_test, H_phi, H_ab, H_as, R_test);
+    StateMatrix P_opt_ns = P_;
+    StateVector dx_opt_ns = dx_;
+    P_ = P_saved;
+    dx_ = dx_saved;
+
+    const double nsym_dx_err = (dx_ref_ns - dx_opt_ns).cwiseAbs().maxCoeff();
+    const double nsym_p_err  = (P_ref_ns - P_opt_ns).cwiseAbs().maxCoeff();
+
+    printf("[ACC_VERIFY] sym dx_err=%.6e p_err=%.6e\r\n", sym_dx_err, sym_p_err);
+    printf("[ACC_VERIFY] nonsym dx_err=%.6e p_err=%.6e\r\n", nsym_dx_err, nsym_p_err);
+
+    constexpr double kAccVerifyThreshold = 1.0e-10;
+    bool fail = (sym_dx_err > kAccVerifyThreshold || sym_p_err > kAccVerifyThreshold ||
+                 nsym_dx_err > kAccVerifyThreshold || nsym_p_err > kAccVerifyThreshold);
+    if (fail)
+    {
+        printf("[ACC_VERIFY] *** WARNING: structured AccUpdate differs from dense ***\r\n");
+    }
+    else
+    {
+        printf("[ACC_VERIFY] all checks pass (err < 1e-10)\r\n");
+    }
+}
+
+#endif
