@@ -8,7 +8,11 @@
  *   2. 判断 sample 有效性：data_valid、delta_time_s、delta_samples；
  *   3. 利用 timestamp_us 去重（跳过与上一 sample 相同时间戳的 sample）；
  *   4. 每两个有效 400 Hz sample 聚合成一个 200 Hz IMU delta；
- *   5. 聚合完成后缓存 200 Hz IMU；当前诊断阶段暂不调用 Aided_INS::Run()。
+ *   5. 聚合完成后缓存 200 Hz IMU（latest_imu200_）；
+ *      默认不在 IMU DRDY producer 路径同步运行 INS；
+ *      由独立 ins_consumer task 通过 RunInsConsumerOnce() 消费缓存，
+ *      注入 Aided_INS 并调用 Aided_INS::Run()。
+ *      kRunInsInDrdyForProfiling=true 时仍在 producer 路径同步调用（仅 profiling）。
  */
 
 #include "AidedInsService.hpp"

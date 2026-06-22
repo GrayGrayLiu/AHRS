@@ -7,9 +7,12 @@
  *   1. 从 icm42688_service 读取最新 Sample；
  *   2. 将 Sample 转换为 Aided_INS_Space::IMU；
  *   3. 每两个连续 400 Hz IMU delta 聚合成一个 200 Hz IMU delta；
- *   4. 聚合完成后注入 Aided_INS 并调用 Run()。
+ *   4. 聚合完成后缓存 latest_imu200_（producer 路径不直接运行 INS）；
+ *   5. 独立 ins_consumer task 通过 RunInsConsumerOnce() 消费缓存：
+ *      SetImuData() 注入后调用 Aided_INS::Run()。
  *
- * 当前 Service 已由 IMU DRDY 路径调用；本文件仅提供初始化、运行和统计读取接口。
+ * 当前 Run() 由 IMU DRDY task 调用（producer），RunInsConsumerOnce() 由
+ * ins_consumer task 调用（consumer）；本文件提供初始化、运行、统计读取和遥测接口。
  */
 
 #pragma once

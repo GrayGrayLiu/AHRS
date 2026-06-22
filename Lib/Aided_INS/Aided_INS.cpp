@@ -137,7 +137,7 @@ int Aided_INS::InitialAlignment()
         return -1;
     }
 
-    constexpr float ALIGN_ACCELERATION_MPS2 = 0.2; //载体运动角速度过大，退出初始对准
+    constexpr float ALIGN_ACCELERATION_MPS2 = 0.2; //载体线运动加速度过大（比力偏离重力），退出初始对准
     if (std::fabs(acc.norm() - Gravity(config_.initState.pos)) > ALIGN_ACCELERATION_MPS2)
     {
         status_ = InsStatus::Unaligned;
