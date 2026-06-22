@@ -19,6 +19,7 @@
  ******************************************************************************/
 
 #include "Aided_INS.hpp"
+#include "Aided_INS_DebugConfig.hpp"
 #include "Configuration.hpp"
 #include "AngleUtilities.hpp"
 #include "EarthUtilities.hpp"
@@ -66,7 +67,7 @@ int Aided_INS::Init()
     Initialize();
     status_ = InsStatus::Unaligned;
 
-#if 1  // 结构化矩阵实现数值验证开关；收尾阶段可统一改为 #if 0
+#if AIDED_INS_ENABLE_STARTUP_VERIFY
     VerifyStructuredQ();
     VerifyAccUpdateStructured();
     VerifyMagUpdateStructured();
@@ -426,7 +427,7 @@ void Aided_INS::ImuCompensate(IMU &imu) const
 // VerifyStructuredQ — 结构化预测传播实现数值验证
 // ============================================================================
 
-#if 1  // 结构化矩阵实现数值验证开关；收尾阶段统一关闭
+#if AIDED_INS_ENABLE_STARTUP_VERIFY
 
 void Aided_INS::VerifyStructuredQ()
 {
@@ -1522,7 +1523,7 @@ void Aided_INS::EkfUpdateMagYaw1(const MeasurementVector<1> &dz,
 // VerifyAccUpdateStructured — AccUpdate 结构化 EKF vs 稠密 Joseph form
 // ============================================================================
 
-#if 1  // 结构化矩阵实现数值验证开关；收尾阶段统一关闭
+#if AIDED_INS_ENABLE_STARTUP_VERIFY
 
 void Aided_INS::VerifyAccUpdateStructured()
 {
@@ -1657,7 +1658,7 @@ void Aided_INS::VerifyAccUpdateStructured()
 // VerifyMagUpdateStructured — MagUpdate 结构化 EKF vs 稠密 Joseph form
 // ============================================================================
 
-#if 1  // 结构化矩阵实现数值验证开关；收尾阶段统一关闭
+#if AIDED_INS_ENABLE_STARTUP_VERIFY
 
 void Aided_INS::VerifyMagUpdateStructured()
 {

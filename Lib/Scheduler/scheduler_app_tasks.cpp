@@ -12,6 +12,7 @@
 #include "scheduler_app_events.h"
 #include "ICM42688_Service.hpp"
 #include "AidedInsService.hpp"
+#include "Aided_INS_DebugConfig.hpp"
 #include <cstring>
 #include <stdio.h>
 
@@ -113,7 +114,8 @@ void InsDebugTask(SchedulerRunReason reason, SchedulerEventMask events,
            static_cast<unsigned long>(stats.service_run_last_us),
            static_cast<unsigned long>(stats.service_run_max_us));
 
-    // [PROFILE] 临时分段耗时输出
+#if AIDED_INS_ENABLE_PROFILING_PRINT
+    // [PROFILE] 分段耗时输出
     printf("[INS_PROF] pnd=%lu %lu prp=%lu %lu mec=%lu %lu fmx=%lu %lu ekf=%lu %lu afb=%lu %lu\r\n",
            static_cast<unsigned long>(stats.pnd_us),
            static_cast<unsigned long>(stats.pnd_max),
@@ -160,8 +162,10 @@ void InsDebugTask(SchedulerRunReason reason, SchedulerEventMask events,
            static_cast<unsigned long>(stats.acc_p_phkt_max),
            static_cast<unsigned long>(stats.acc_p_ksk_us),
            static_cast<unsigned long>(stats.acc_p_ksk_max));
+#endif // AIDED_INS_ENABLE_PROFILING_PRINT
 
-    // [ACC_DBG] 临时 AccUpdate 触发诊断
+#if AIDED_INS_ENABLE_DEBUG_PRINT
+    // [ACC_DBG] AccUpdate 触发诊断
     printf("[ACC_DBG] try=%lu ok=%lu small=%lu norm=%lu cos=%lu fb=%lu f_norm=%.3f g=%.3f diff=%.3f cos_last=%.4f f=(%.2f,%.2f,%.2f) g_b=(%.2f,%.2f,%.2f)\r\n",
            static_cast<unsigned long>(stats.acc_try),
            static_cast<unsigned long>(stats.acc_accept),
@@ -190,6 +194,7 @@ void InsDebugTask(SchedulerRunReason reason, SchedulerEventMask events,
            static_cast<double>(stats.cbn_f[0]), static_cast<double>(stats.cbn_f[1]), static_cast<double>(stats.cbn_f[2]),
            static_cast<double>(stats.cbn_f_g[0]), static_cast<double>(stats.cbn_f_g[1]), static_cast<double>(stats.cbn_f_g[2]),
            static_cast<double>(stats.cfn_g_norm), static_cast<double>(stats.cos_fg));
+#endif // AIDED_INS_ENABLE_DEBUG_PRINT
 }
 
 // ============================================================================

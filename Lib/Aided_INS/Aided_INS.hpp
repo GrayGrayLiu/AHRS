@@ -22,6 +22,7 @@
 #include <cstdio>
 #include <Eigen/Dense>
 #include "Aided_INS_Types.hpp"
+#include "Aided_INS_DebugConfig.hpp"
 
 // [PROFILE] 临时：分段耗时诊断结构体
 struct InsProfile
@@ -333,7 +334,7 @@ private:
                        const Matrix3d &H_phi, const Matrix3d &H_ab, const Matrix3d &H_as,
                        const MeasurementNoise<3> &R);
 
-#if 1  // 结构化矩阵实现数值验证开关；收尾阶段可统一改为 #if 0
+#if AIDED_INS_ENABLE_STARTUP_VERIFY
     /** @brief 数值验证：确认结构化实现与稠密参考等价 */
     static void VerifyStructuredQ();
 
