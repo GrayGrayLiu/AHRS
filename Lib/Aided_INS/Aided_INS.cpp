@@ -57,8 +57,7 @@ using Aided_INS_Space::Config;
 Aided_INS::Aided_INS(const uint8_t id)
     : id_(id)
 {
-    config_ = LoadConfig();
-    Initialize();
+    // 只提供轻量安全初值；完整算法初始化由 Init() 统一完成。
 }
 
 int Aided_INS::Init()

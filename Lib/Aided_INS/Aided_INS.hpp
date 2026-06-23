@@ -406,9 +406,9 @@ private:
     ImuError imuError_;
 
     // Kalman滤波相关
-    StateMatrix P_;  //协方差矩阵
-    NoiseMatrix q_;  //系统噪声矩阵
-    StateVector dx_; //误差状态向量
+    StateMatrix P_ = StateMatrix::Zero();  //协方差矩阵
+    NoiseMatrix q_ = NoiseMatrix::Zero();  //系统噪声矩阵
+    StateVector dx_ = StateVector::Zero(); //误差状态向量
 
     // 状态ID和噪声ID
     enum StateID { P_ID = 0, V_ID = 3, PHI_ID = 6, GB_ID = 9, AB_ID = 12, GS_ID = 15, AS_ID = 18 };
@@ -422,13 +422,13 @@ private:
 #endif
 
     // 固定尺寸 scratch buffer：避免每次调用 InsPropagation/EkfUpdate 都 malloc
-    StateMatrix      Phi_scratch_;   // 状态转移矩阵（复用）
-    StateMatrix      F_scratch_;     // F 矩阵（复用）
-    StateMatrix      Q_scratch_;     // Q 传播噪声矩阵（复用）
-    StateMatrix      I_scratch_;     // EkfUpdate 临时 I 矩阵（复用）
-    StateMatrix      Qbase_pre_scratch_; // BuildGQGt(pre-Cbn) 输出（复用）
-    StateMatrix      Qbase_cur_scratch_; // BuildGQGt(cur-Cbn) 输出（复用）
-    StateMatrix      M_scratch_;         // EKFPredict: M = Phi * P_ 临时矩阵
+    StateMatrix      Phi_scratch_ = StateMatrix::Zero();   // 状态转移矩阵（复用）
+    StateMatrix      F_scratch_ = StateMatrix::Zero();     // F 矩阵（复用）
+    StateMatrix      Q_scratch_ = StateMatrix::Zero();     // Q 传播噪声矩阵（复用）
+    StateMatrix      I_scratch_ = StateMatrix::Zero();     // EkfUpdate 临时 I 矩阵（复用）
+    StateMatrix      Qbase_pre_scratch_ = StateMatrix::Zero(); // BuildGQGt(pre-Cbn) 输出（复用）
+    StateMatrix      Qbase_cur_scratch_ = StateMatrix::Zero(); // BuildGQGt(cur-Cbn) 输出（复用）
+    StateMatrix      M_scratch_ = StateMatrix::Zero();         // EKFPredict: M = Phi * P_ 临时矩阵
 
     //传感器驱动类
     // ImuDriver& imu_;
