@@ -31,7 +31,6 @@
 #include "scheduler.h"
 #include "SystemPort.h"
 #include "scheduler_app_tasks.h"
-#include "Aided_INS_API.h"
 #include "TimeBase.h"
 /* USER CODE END Includes */
 
