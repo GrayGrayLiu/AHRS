@@ -13,6 +13,7 @@
 #include "ICM42688_Service.hpp"
 #include "AidedInsService.hpp"
 #include "Aided_INS_DebugConfig.hpp"
+#include "IST8310_DebugConfig.hpp"
 #include "IST8310_Service.hpp"
 #include "IST8310_Registers.hpp"
 #include "i2c.h"
@@ -26,6 +27,9 @@ constexpr uint32_t IMU_DEBUG_PERIOD_MS = 1000u;
 constexpr uint32_t INS_DEBUG_PERIOD_MS = 5000u;
 constexpr uint32_t INS_CONSUMER_PERIOD_MS = 1u;
 constexpr uint32_t MAG_TASK_PERIOD_MS = 1u;
+constexpr uint32_t MAG_DEBUG_PERIOD_MS = 1000u;
+constexpr uint8_t MAG_DEBUG_TASK_ENABLED =
+    IST8310_ENABLE_MAG_DEBUG_PRINT ? 1u : 0u;
 constexpr uint8_t INS_DEBUG_TASK_ENABLED =
     (AIDED_INS_ENABLE_SERVICE_PRINT ||
      AIDED_INS_ENABLE_PROFILING_PRINT ||
@@ -304,6 +308,62 @@ void MagTask(SchedulerTaskId self_id, SchedulerRunReason reason, SchedulerEventM
 }
 
 // ============================================================================
+// IST8310 mag debug print task — 硬件验证用低频输出（默认关闭）
+// ============================================================================
+
+/**
+ * @brief  IST8310 磁力计 debug print task（1 Hz，priority=205，默认关闭）。
+ * @note   只读取 ist8310_service::CopyLatest() 缓存，不访问 driver/I2C/Aided_INS。
+ *
+ *         **启用后仅用于硬件验证**：printf 可能阻塞 cooperative scheduler
+ *         数 ms 到十几 ms（浮点格式化 + UART TX），应同时观察 IMU FIFO/INS
+ *         是否受影响，不应长期在飞行运行路径中开启。
+ */
+void MagDebugTask(SchedulerTaskId self_id, SchedulerRunReason reason, SchedulerEventMask events,
+                  uint32_t now_ms, uint64_t now_us, void *context)
+{
+    (void)self_id; (void)reason; (void)events; (void)now_ms; (void)now_us; (void)context;
+
+    if (ist8310_service::IsFault()) {
+        static uint32_t s_fault_counter = 0u;
+        if ((s_fault_counter++ & 0x0Fu) == 0u) {
+            printf("[mag] fault\r\n");
+        }
+        return;
+    }
+
+    if (!ist8310_service::IsStarted()) {
+        static uint32_t s_not_started_counter = 0u;
+        if ((s_not_started_counter++ & 0x0Fu) == 0u) {
+            printf("[mag] not started\r\n");
+        }
+        return;
+    }
+
+    ist8310_service::MagSample sample{};
+    if (!ist8310_service::CopyLatest(&sample)) {
+        return;
+    }
+
+    static uint32_t s_last_mag_counter = 0u;
+    if (sample.sample_counter == s_last_mag_counter) {
+        return;
+    }
+    s_last_mag_counter = sample.sample_counter;
+
+    printf("[mag] c=%lu raw=%d %d %d uT=%.1f %.1f %.1f err=%lu ovr=%lu\r\n",
+           static_cast<unsigned long>(sample.sample_counter),
+           static_cast<int>(sample.raw[0]),
+           static_cast<int>(sample.raw[1]),
+           static_cast<int>(sample.raw[2]),
+           static_cast<double>(sample.mag_uT[0]),
+           static_cast<double>(sample.mag_uT[1]),
+           static_cast<double>(sample.mag_uT[2]),
+           static_cast<unsigned long>(sample.error_counter),
+           static_cast<unsigned long>(sample.overrun_counter));
+}
+
+// ============================================================================
 // 统一应用任务注册表
 // ============================================================================
 
@@ -355,6 +415,17 @@ constexpr SchedulerTaskConfig kAppTasks[] = {
         0u,
         0u,
         1u,                                 // enabled=1
+    },
+    {
+        "mag_debug",                        // IST8310 debug print task（1 Hz，默认关闭，仅硬件验证）
+        MagDebugTask,
+        nullptr,
+        205u,                               // priority: debug 区间，低于 mag(30)
+        0u,
+        MAG_DEBUG_PERIOD_MS,
+        0u,
+        0u,
+        MAG_DEBUG_TASK_ENABLED,
     },
     {
         "ins_debug",                        // Aided INS Service 统计 print task（周期由 INS_DEBUG_PERIOD_MS 决定，默认关闭）
