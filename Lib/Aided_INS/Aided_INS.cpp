@@ -1136,7 +1136,8 @@ void Aided_INS::ProcessNewData()
 // 结构化传播辅助函数
 // ============================================================================
 //
-// 【性能基线（STM32H723 + RelWithDebInfo + 当前调度配置下的典型观测值，非实时上界）】
+// 【性能基线（STM32H723 cortex-m7 + FPU fpv5-d16 硬浮点 + RelWithDebInfo，
+//   runtime printf 及 profiling/debug/telemetry 输出默认关闭条件下的典型观测值，非实时上界）】
 //   优化前：Aided_INS::Run() 整体约 3.4~3.6 ms，
 //           主要耗时在完整矩阵形式的状态转移/传播噪声构造（约 2.4 ms）和 EKFPredict() 协方差预测（约 0.94 ms）。
 //   结构化 predict 后：InsPropagation() 整体约 0.60 ms，
@@ -1144,7 +1145,7 @@ void Aided_INS::ProcessNewData()
 //           状态转移矩阵 Φ 与传播噪声 Q 构造约 0.16 ms，
 //           EKFPredict() 协方差预测约 0.37 ms。
 //   producer/consumer 解耦后：ins_consumer 中 Aided_INS::Run() 约 0.93 ms。
-//   这些数据仅记录当前硬件的实测数量级，不是实时性保证值。
+//   这些数据为历史测量参考，不作为跨编译配置、跨平台或最坏情况实时上界。
 //
 // 下列 helper 是对教材/论文中 Kalman 传播公式的等价块结构实现。
 //

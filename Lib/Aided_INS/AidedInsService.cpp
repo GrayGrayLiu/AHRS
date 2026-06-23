@@ -28,9 +28,12 @@ namespace aided_ins_service
     namespace
     {
         // producer/consumer 解耦模式。
-        // 历史观测：ins_consumer 中 Aided_INS::Run() 约 0.93 ms，明显长于 IMU DRDY producer/service
-        // 路径的数微秒级耗时；因此 INS 不在 DRDY producer 路径同步运行，
-        // 由独立 ins_consumer task（1 ms polling）异步消费。
+        // 观测条件：STM32H723 (cortex-m7)，FPU fpv5-d16 硬浮点，RelWithDebInfo 工程配置，
+        // runtime printf 及 profiling/debug/telemetry 输出默认关闭。
+        // 在上述条件下：ins_consumer 中 Aided_INS::Run() 约 0.93 ms，明显长于
+        // IMU DRDY producer/service 路径的数微秒级耗时；因此 INS 不在 DRDY producer
+        // 路径同步运行，由独立 ins_consumer task（1 ms polling）异步消费。
+        // 上述耗时为历史测量参考，不作为跨编译配置、跨平台或最坏情况实时上界。
 
         bool      pending_{false};
         IMU       pending_imu_{};
