@@ -35,6 +35,8 @@ namespace aided_ins_service
         // 路径同步运行，由独立 ins_consumer task（1 ms polling）异步消费。
         // 上述耗时为历史测量参考，不作为跨编译配置、跨平台或最坏情况实时上界。
 
+        Aided_INS aided_ins{0};
+
         bool      pending_{false};
         IMU       pending_imu_{};
         uint64_t  last_timestamp_us_{0u};
@@ -60,12 +62,6 @@ namespace aided_ins_service
             has_last_timestamp_ = false;
             latest_imu200_ = IMU{};
             has_imu200_ = false;
-        }
-
-        Aided_INS &InsInstance()
-        {
-            static Aided_INS aided_ins{0};
-            return aided_ins;
         }
 
         // 将最近一次 INS profile 快照拷贝到 service stats，供调试统计输出使用
@@ -132,7 +128,7 @@ namespace aided_ins_service
 #if AIDED_INS_ENABLE_COV_HEALTH_CHECK
         void CopyCovHealthToStats(Stats &s)
         {
-            const auto &h = InsInstance().GetCovHealth();
+            const auto &h = aided_ins.GetCovHealth();
             s.cov_has_nan_inf       = h.has_nan_inf;
             s.cov_has_neg_diag      = h.has_neg_diag;
             s.cov_max_asymmetry_last = h.max_asymmetry_last;
@@ -149,7 +145,7 @@ namespace aided_ins_service
     {
         ResetAggregationState();
         ResetStats();
-        return InsInstance().Init();
+        return aided_ins.Init();
     }
 
     // 返回 service 统计快照（只读），供 ins_debug 等统计输出任务使用。
@@ -163,8 +159,8 @@ namespace aided_ins_service
     AttitudeTelemetry GetAttitudeTelemetry()
     {
         AttitudeTelemetry t{};
-        const auto &pva = InsInstance().GetCurrentPVA();
-        t.timestamp = InsInstance().GetCurrentTimestamp();
+        const auto &pva = aided_ins.GetCurrentPVA();
+        t.timestamp = aided_ins.GetCurrentTimestamp();
         // NED/FRD 约定下的欧拉角（roll=X, pitch=Y, yaw=Z），rad→deg
         t.roll_deg  = static_cast<float>(pva.att.euler(0) * 57.29577951308232);
         t.pitch_deg = static_cast<float>(pva.att.euler(1) * 57.29577951308232);
@@ -180,7 +176,7 @@ namespace aided_ins_service
     // 供姿态遥测等调用方判断 INS 是否已完成初始对准；对准完成前不输出姿态。
     bool IsInsRunning()
     {
-        return InsInstance().IsRunning();
+        return aided_ins.IsRunning();
     }
 
     // consumer 路径：消费缓存的 200 Hz IMU 并运行一次 INS。
@@ -193,10 +189,10 @@ namespace aided_ins_service
         const IMU local_imu = latest_imu200_;
         has_imu200_ = false;
 
-        InsInstance().SetImuData(local_imu);
+        aided_ins.SetImuData(local_imu);
 
         const uint64_t t_ins_start = SystemPort_GetMicros();
-        InsInstance().Run();
+        aided_ins.Run();
         const uint64_t t_ins_end = SystemPort_GetMicros();
 
         const uint32_t ins_elapsed = static_cast<uint32_t>(t_ins_end - t_ins_start);
@@ -204,7 +200,7 @@ namespace aided_ins_service
         if (ins_elapsed > stats_.ins_run_max_us) { stats_.ins_run_max_us = ins_elapsed; }
         ++stats_.ins_run_calls;
 
-        CopyInsProfileToStats(InsInstance().GetLastProfile(), stats_);
+        CopyInsProfileToStats(aided_ins.GetLastProfile(), stats_);
 
 #if AIDED_INS_ENABLE_COV_HEALTH_CHECK
         CopyCovHealthToStats(stats_);
