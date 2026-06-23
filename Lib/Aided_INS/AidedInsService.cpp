@@ -141,6 +141,7 @@ namespace aided_ins_service
 #endif
     } // namespace
 
+    // 初始化 service 层：重置聚合状态、统计和 INS 实例。
     int Init()
     {
         ResetAggregationState();
@@ -148,11 +149,14 @@ namespace aided_ins_service
         return InsInstance().Init();
     }
 
+    // 返回 service 统计快照（只读），供 ins_debug 等统计输出任务使用。
     Stats GetStats()
     {
         return stats_;
     }
 
+    // 获取当前 INS 姿态遥测快照：只读访问 pvaCur_，不触发 INS 运算。
+    // 用于 att_telem task 以低优先级输出四元数或欧拉角。
     AttitudeTelemetry GetAttitudeTelemetry()
     {
         AttitudeTelemetry t{};
@@ -170,11 +174,15 @@ namespace aided_ins_service
         return t;
     }
 
+    // 供姿态遥测等调用方判断 INS 是否已完成初始对准；对准完成前不输出姿态。
     bool IsInsRunning()
     {
         return InsInstance().IsRunning();
     }
 
+    // consumer 路径：消费缓存的 200 Hz IMU 并运行一次 INS。
+    // 由 ins_consumer task（1 ms polling，priority=20）调用。
+    // 返回 0=无缓存数据，1=成功执行 INS Run。
     int RunInsConsumerOnce()
     {
         if (!has_imu200_) { return 0; }
@@ -202,6 +210,9 @@ namespace aided_ins_service
         return 1;
     }
 
+    // producer 路径：由 imu_drdy task（priority=10）调用。
+    // 负责读取 sample、有效性检查、timestamp 去重/gap 检测、400 Hz ×2→200 Hz 聚合、
+    // 缓存 latest_imu200_。不调用 Aided_INS::Run()。
     int Run()
     {
         const uint64_t t_total_start = SystemPort_GetMicros();

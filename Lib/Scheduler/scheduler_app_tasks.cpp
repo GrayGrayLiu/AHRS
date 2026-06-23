@@ -202,23 +202,23 @@ void InsDebugTask(SchedulerRunReason reason, SchedulerEventMask events,
 #endif // AIDED_INS_ENABLE_DEBUG_PRINT
 }
 
-        // ============================================================================
-        // INS consumer task — 定期消费聚合后的 200 Hz IMU
-        // ============================================================================
+// ============================================================================
+// INS consumer task — 定期消费聚合后的 200 Hz IMU
+// ============================================================================
 
-        /**
-         * @brief  INS consumer task（1 ms polling，priority=20）。
-         * @note   不访问 ICM42688P；只从 AidedInsService 取最新聚合 IMU 并调用 INS Run。
-         *         producer/consumer 解耦原因：历史观测中 ins_consumer 内 Aided_INS::Run()
-         *         约 0.93 ms，明显长于 IMU DRDY producer 路径的数微秒级耗时；若在 DRDY producer
-         *         同步执行会阻塞后续 400 Hz sample，因此交由独立 1 ms task 异步消费。
-         */
-        void InsConsumerTask(SchedulerRunReason reason, SchedulerEventMask events,
-                             uint32_t now_ms, uint64_t now_us, void *context)
-        {
-            (void)reason; (void)events; (void)now_ms; (void)now_us; (void)context;
-            (void)aided_ins_service::RunInsConsumerOnce();
-        }
+/**
+ * @brief  INS consumer task（1 ms polling，priority=20）。
+ * @note   不访问 ICM42688P；只从 AidedInsService 取最新聚合 IMU 并调用 INS Run。
+ *         producer/consumer 解耦原因：历史观测中 ins_consumer 内 Aided_INS::Run()
+ *         约 0.93 ms，明显长于 IMU DRDY producer 路径的数微秒级耗时；若在 DRDY producer
+ *         同步执行会阻塞后续 400 Hz sample，因此交由独立 1 ms task 异步消费。
+ */
+void InsConsumerTask(SchedulerRunReason reason, SchedulerEventMask events,
+                     uint32_t now_ms, uint64_t now_us, void *context)
+{
+    (void)reason; (void)events; (void)now_ms; (void)now_us; (void)context;
+    (void)aided_ins_service::RunInsConsumerOnce();
+}
 // ============================================================================
 // ICM42688P event+deadline task — IMU data-ready 主处理路径
 // ============================================================================
