@@ -13,6 +13,10 @@
 #include "ICM42688_Service.hpp"
 #include "AidedInsService.hpp"
 #include "Aided_INS_DebugConfig.hpp"
+#include "IST8310_Service.hpp"
+#include "IST8310_Registers.hpp"
+#include "i2c.h"
+#include "main.h"
 #include <stdio.h>
 
 namespace
@@ -21,6 +25,7 @@ namespace
 constexpr uint32_t IMU_DEBUG_PERIOD_MS = 1000u;
 constexpr uint32_t INS_DEBUG_PERIOD_MS = 5000u;
 constexpr uint32_t INS_CONSUMER_PERIOD_MS = 1u;
+constexpr uint32_t MAG_TASK_PERIOD_MS = 1u;
 constexpr uint8_t INS_DEBUG_TASK_ENABLED =
     (AIDED_INS_ENABLE_SERVICE_PRINT ||
      AIDED_INS_ENABLE_PROFILING_PRINT ||
@@ -282,6 +287,23 @@ void AttitudeTelemetryTask(SchedulerTaskId self_id, SchedulerRunReason reason, S
 }
 
 // ============================================================================
+// IST8310 mag task — 磁力计非阻塞周期性采样
+// ============================================================================
+
+/**
+ * @brief  IST8310 磁力计周期性采样 task（1 ms，priority=30）。
+ * @note   本 callback 本身不直接访问 I2C 寄存器、不直接调用 driver 接口；
+ *         实际采样由 ist8310_service::Run() 内部非阻塞状态机推进。
+ *         不接 Aided_INS，不触发 MagUpdate。
+ */
+void MagTask(SchedulerTaskId self_id, SchedulerRunReason reason, SchedulerEventMask events,
+             uint32_t now_ms, uint64_t now_us, void *context)
+{
+    (void)self_id; (void)reason; (void)events; (void)now_ms; (void)now_us; (void)context;
+    ist8310_service::Run();
+}
+
+// ============================================================================
 // 统一应用任务注册表
 // ============================================================================
 
@@ -324,6 +346,17 @@ constexpr SchedulerTaskConfig kAppTasks[] = {
         1u,
     },
     {
+        "mag",                              // IST8310 磁力计非阻塞周期性采样
+        MagTask,
+        nullptr,
+        30u,                                // priority: 低于 imu_drdy(10) 和 ins_consumer(20)
+        0u,
+        MAG_TASK_PERIOD_MS,
+        0u,
+        0u,
+        1u,                                 // enabled=1
+    },
+    {
         "ins_debug",                        // Aided INS Service 统计 print task（周期由 INS_DEBUG_PERIOD_MS 决定，默认关闭）
         InsDebugTask,
         nullptr,
@@ -354,13 +387,17 @@ constexpr SchedulerTaskConfig kAppTasks[] = {
 // ============================================================================
 
 /**
- * @brief  应用/业务模块初始化入口。
- * @note   当前用于初始化 Aided INS Service；
+ * @brief  应用层 Service 初始化入口。
+ * @note   初始化 Aided INS Service 和 IST8310 Service；
  *         本函数不注册 scheduler task；任务注册由 SchedulerAppTasks_RegisterAll() 负责。
  */
 extern "C" void App_Init(void)
 {
     (void)aided_ins_service::Init();
+    (void)ist8310_service::Init(&hi2c1,
+                                IST8310_Regs::DATASHEET_DEFAULT_I2C_ADDRESS_7BIT,
+                                MAG_RSTN_GPIO_Port,
+                                MAG_RSTN_Pin);
 }
 
 // ============================================================================
