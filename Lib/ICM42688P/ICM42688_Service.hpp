@@ -54,13 +54,12 @@ void NotifyDataReadyFromISR(uint64_t timestamp_us);
  *         驱动未启动时按固定节拍尝试构造和 Init，启动后调用 Update() 推进 RunImpl。
  *         内部 polling 标志防止嵌套重入。
  */
-void Run();
-
 /**
- * @brief  向 Service 注入 imu_drdy 等关键任务的 Scheduler task ID。
- * @note   由 scheduler_app_tasks 注册成功后调用，用于 Run() 后续调用 Scheduler_ScheduleNow/Delayed。
+ * @brief  推进 ICM42688P driver 状态机。
+ * @param  self_id  当前调用方（imu_drdy task）的 SchedulerTaskId，
+ *                  用于 Run() 内部调用 Scheduler_ScheduleNow/Delayed。
  */
-void SetSchedulerTaskId(SchedulerTaskId task_id);
+void Run(SchedulerTaskId self_id);
 
 /**
  * @brief  读取驱动缓存中的完整最新 Sample，不访问 SPI，不消费缓存

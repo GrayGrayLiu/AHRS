@@ -13,7 +13,6 @@
 #include "ICM42688_Service.hpp"
 #include "AidedInsService.hpp"
 #include "Aided_INS_DebugConfig.hpp"
-#include <cstring>
 #include <stdio.h>
 
 namespace
@@ -40,10 +39,10 @@ constexpr uint8_t ATTITUDE_TELEMETRY_TASK_ENABLED =
  * @note   只读取 Service 缓存，不访问 SPI / FIFO / EXTI，不修改 ICM42688P 驱动状态机。
  *         自行维护 sample_counter 去重，避免相同数据重复输出。
  */
-void ImuDebugTask(SchedulerRunReason reason, SchedulerEventMask events,
+void ImuDebugTask(SchedulerTaskId self_id, SchedulerRunReason reason, SchedulerEventMask events,
                   uint32_t now_ms, uint64_t now_us, void *context)
 {
-    (void)reason; (void)events; (void)now_ms; (void)now_us; (void)context;
+    (void)self_id; (void)reason; (void)events; (void)now_ms; (void)now_us; (void)context;
 
     icm42688_service::DeltaSample imu{};
     const ICM42688P::Status status = icm42688_service::GetDeltaLatest(&imu);
@@ -99,10 +98,10 @@ void ImuDebugTask(SchedulerRunReason reason, SchedulerEventMask events,
  * @note   只读取 aided_ins_service::GetStats() 并 printf；
  *         不访问 SPI/FIFO/EXTI，不修改驱动或算法状态。
  */
-void InsDebugTask(SchedulerRunReason reason, SchedulerEventMask events,
+void InsDebugTask(SchedulerTaskId self_id, SchedulerRunReason reason, SchedulerEventMask events,
                   uint32_t now_ms, uint64_t now_us, void *context)
 {
-    (void)reason; (void)events; (void)now_ms; (void)now_us; (void)context;
+    (void)self_id; (void)reason; (void)events; (void)now_ms; (void)now_us; (void)context;
 
     const auto stats = aided_ins_service::GetStats();
 #if AIDED_INS_ENABLE_SERVICE_PRINT
@@ -222,10 +221,10 @@ void InsDebugTask(SchedulerRunReason reason, SchedulerEventMask events,
  *
  *         上述耗时为历史测量参考，不作为跨编译配置、跨平台或最坏情况实时上界。
  */
-void InsConsumerTask(SchedulerRunReason reason, SchedulerEventMask events,
+void InsConsumerTask(SchedulerTaskId self_id, SchedulerRunReason reason, SchedulerEventMask events,
                      uint32_t now_ms, uint64_t now_us, void *context)
 {
-    (void)reason; (void)events; (void)now_ms; (void)now_us; (void)context;
+    (void)self_id; (void)reason; (void)events; (void)now_ms; (void)now_us; (void)context;
     (void)aided_ins_service::RunInsConsumerOnce();
 }
 // ============================================================================
@@ -234,14 +233,14 @@ void InsConsumerTask(SchedulerRunReason reason, SchedulerEventMask events,
 
 /**
  * @brief  ICM42688P data-ready event+deadline task（priority=10）。
- * @note   不直接访问 SPI/FIFO，只调用 icm42688_service::Run()。
+ * @note   不直接访问 SPI/FIFO，只将当前 task id 传给 icm42688_service::Run(self_id)。
  */
-void ImuDrdyTask(SchedulerRunReason reason, SchedulerEventMask events,
+void ImuDrdyTask(SchedulerTaskId self_id, SchedulerRunReason reason, SchedulerEventMask events,
                  uint32_t now_ms, uint64_t now_us, void *context)
 {
     (void)reason; (void)events; (void)now_ms; (void)now_us; (void)context;
 
-    icm42688_service::Run();
+    icm42688_service::Run(self_id);
     (void)aided_ins_service::Run();
 }
 
@@ -258,10 +257,10 @@ void ImuDrdyTask(SchedulerRunReason reason, SchedulerEventMask events,
  *           MODE_EULER_DEG(1)  — roll_deg,pitch_deg,yaw_deg（NED/FRD 约定）
  *         仅 INS Running 后才输出；初始对准期间静默。
  */
-void AttitudeTelemetryTask(SchedulerRunReason reason, SchedulerEventMask events,
+void AttitudeTelemetryTask(SchedulerTaskId self_id, SchedulerRunReason reason, SchedulerEventMask events,
                            uint32_t now_ms, uint64_t now_us, void *context)
 {
-    (void)reason; (void)events; (void)now_ms; (void)now_us; (void)context;
+    (void)self_id; (void)reason; (void)events; (void)now_ms; (void)now_us; (void)context;
 
     // 初始对准完成前不输出姿态
     if (!aided_ins_service::IsInsRunning()) { return; }
@@ -380,9 +379,6 @@ extern "C" void SchedulerAppTasks_RegisterAll(void)
         if (id == SCHEDULER_TASK_ID_INVALID) {
             printf("[sched] %s register failed\r\n",
                    kAppTasks[i].name != nullptr ? kAppTasks[i].name : "<unnamed>");
-        } else if (kAppTasks[i].name != nullptr && std::strcmp(kAppTasks[i].name, "imu_drdy") == 0) {
-            // 仅在注册成功时将 imu_drdy task id 注入 Service，使其能在 Run() 中调用 Scheduler_Schedule*
-            icm42688_service::SetSchedulerTaskId(id);
         }
     }
 }

@@ -910,7 +910,7 @@ extern "C" void Scheduler_RunOnce(void)
         {
             TaskSlot &slot = scheduler_tasks[best_id];
             const uint64_t before_us = scheduler_port->get_time_us();
-            slot.fn(reason, events, now_ms, now_us, slot.context);
+            slot.fn(best_id, reason, events, now_ms, now_us, slot.context);
             const uint64_t after_us = scheduler_port->get_time_us();
 
             // 5. 在临界区内统一收尾：更新统计并释放 in_progress。

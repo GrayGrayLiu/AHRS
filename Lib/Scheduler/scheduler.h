@@ -49,8 +49,10 @@
  *        在当前注册表顺序注册方式下，可理解为先注册者优先。
  *
  * 七、callback 统一参数
- *     void callback(SchedulerRunReason reason, SchedulerEventMask events,
- *                   uint32_t now_ms, uint64_t now_us, void *context);
+ *     void callback(SchedulerTaskId self_id, SchedulerRunReason reason,
+ *                   SchedulerEventMask events, uint32_t now_ms, uint64_t now_us,
+ *                   void *context);
+ *     self_id — 当前正在执行的任务的 SchedulerTaskId。
  *     reason  — 本次运行原因 bitmask（可同时含 EVENT/DEADLINE/INTERVAL/MANUAL）。
  *     events — 本次匹配到的事件位（仅当 reason 含 EVENT 时非零）。
  *     now_ms / now_us — 调度器在本轮 RunOnce 中读取的时间戳。
@@ -176,6 +178,7 @@ typedef struct {
 
 // ── Task callback 签名 ──
 typedef void (*SchedulerTaskFn)(
+    SchedulerTaskId     self_id,
     SchedulerRunReason reason,
     SchedulerEventMask events,
     uint32_t            now_ms,
