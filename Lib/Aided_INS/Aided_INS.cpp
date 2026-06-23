@@ -199,11 +199,15 @@ int Aided_INS::InitialAlignment()
     pvaCur_.att.Cbn = Euler2DCM(pvaCur_.att.euler);
     pvaCur_.att.qbn = Euler2Quaternion(pvaCur_.att.euler);
 
-    pvaPre_ = pvaCur_;
-    imuPre_ = imuCur_;
-
     // 估计初始陀螺零偏，扣除地球自转角速度
     imuError_.gyrBias = gyroMean - pvaCur_.att.Cbn.transpose() * w_ie_n(config_.initState.pos[0]);
+
+    // 给上一时刻状态赋同样的初值。
+    // InsPropagation() 只补偿当前 imuCur，并假设传入的 imuPre 已经补偿过；
+    // 初始对准刚结束时的 imuPre_ 尚未经过传播流程，因此这里按当前 imuError_ 补偿一次。
+    pvaPre_ = pvaCur_;
+    imuPre_ = imuCur_;
+    ImuCompensate(imuPre_);
 
     // 清零误差状态
     dx_.setZero();
