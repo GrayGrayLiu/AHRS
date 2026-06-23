@@ -83,6 +83,18 @@ public:
     [[nodiscard]] Status ReadRawMag(RawMagData& data);
     [[nodiscard]] Status ReadMag_uT(MagData_uT& data);
 
+    /**
+     * @brief  从已就绪芯片读取磁力计原始数据（不触发测量，不等待 DRDY，不 delay）
+     * @param  data 输出：二补码原始数据 x/y/z
+     * @retval Ok / I2cError / DataOverrun / DataNotReady
+     *
+     * @note   调用方必须先写 CNTL1[3:0] = Single Measurement 触发测量，
+     *         等待至少 6 ms（低噪声配置），并轮询 STAT1.DRDY 确认数据就绪。
+     *         本函数仅执行 burst read + 校验 + 小端拼接，
+     *         适合非阻塞 service 状态机的 READ 阶段。
+     */
+    [[nodiscard]] Status ReadMeasurement(RawMagData& data) const;
+
 private:
     using Register = IST8310_Regs::Register;
 

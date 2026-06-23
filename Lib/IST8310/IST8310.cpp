@@ -192,11 +192,19 @@ IST8310::Status IST8310::ReadRawMag(RawMagData& data)
         return status;
     }
 
-    // Datasheet read flow polls STAT1 before reading measurement registers
-    // 0x03-0x08. This driver combines STAT1 and those six data bytes into one
-    // I2C auto-increment transaction: STAT1, X_L, X_H, Y_L, Y_H, Z_L, Z_H.
+    return ReadMeasurement(data);
+}
+
+IST8310::Status IST8310::ReadMeasurement(RawMagData& data) const
+{
+    // 手册 Section 3.4 的读流程是：先读 STAT1 轮询 DRDY/DOR，
+    // 再读 0x03..0x08 的三轴测量数据。
+    // 本实现把 STAT1 和 6 个数据字节合并到一次从 STAT1(0x02)
+    // 开始的 I2C auto-increment burst read 中。
+    // 调用方须已完成手册步骤(1)：触发测量 → 等待 ≥6 ms → 确认 DRDY=1。
+    // 本函数不写 CNTL1、不等 DRDY、不 HAL_Delay。
     uint8_t buffer[IST8310_Regs::DATA_BURST_LENGTH]{};
-    status = ReadBuffer(IST8310_Regs::Register::STAT1, buffer, IST8310_Regs::DATA_BURST_LENGTH);
+    Status status = ReadBuffer(IST8310_Regs::Register::STAT1, buffer, IST8310_Regs::DATA_BURST_LENGTH);
 
     if (status != Status::Ok)
     {
