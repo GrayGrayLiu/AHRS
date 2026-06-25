@@ -13,6 +13,7 @@
 #include "ICM42688_Service.hpp"
 #include "AidedInsService.hpp"
 #include "Aided_INS_DebugConfig.hpp"
+#include "IST8310_Calibration.hpp"
 #include "IST8310_DebugConfig.hpp"
 #include "IST8310_Service.hpp"
 #include "IST8310_Registers.hpp"
@@ -308,6 +309,141 @@ void MagTask(SchedulerTaskId self_id, SchedulerRunReason reason, SchedulerEventM
 }
 
 // ============================================================================
+// IST8310 磁力计校准 task — 按键触发 + 30s 收集 + printf 输出参数
+// ============================================================================
+
+enum class MagCalUiState : uint8_t
+{
+    Idle,
+    WaitingRelease,
+    Collecting,
+    Success,
+    Failed,
+};
+
+/**
+ * @brief  IST8310 磁力计 MCU 端校准 task（10 ms，priority=100）。
+ * @note   按键触发（PE15, PULLDOWN, 按下=SET）。
+ *         收集 30s body-frame uT sample，计算 hard-iron bias + 三轴 scale。
+ *         不控制 LED，不访问 driver/I2C，不接 Aided_INS。
+ *         校准结果通过 printf 输出，用户手动复制到代码常量后重新编译烧录。
+ */
+void MagCalTask(SchedulerTaskId self_id, SchedulerRunReason reason, SchedulerEventMask events,
+                uint32_t now_ms, uint64_t now_us, void *context)
+{
+    (void)self_id; (void)reason; (void)events; (void)now_us; (void)context;
+
+    static MagCalUiState ui_state = MagCalUiState::Idle;
+    static uint8_t  key_cnt = 0u;
+    static uint32_t cal_start_ms = 0u;
+    static uint32_t last_sample_counter = 0u;
+    static uint32_t last_progress_ms = 0u;
+
+    const bool key_down = (HAL_GPIO_ReadPin(KEY_GPIO_Port, KEY_Pin) == GPIO_PIN_SET);
+
+    switch (ui_state) {
+    case MagCalUiState::Idle:
+        if (key_down) {
+            ++key_cnt;
+            if (key_cnt >= 3u) {
+                ui_state = MagCalUiState::WaitingRelease;
+                key_cnt = 0u;
+                printf("[mag_cal] key detected, release to start\r\n");
+            }
+        } else {
+            key_cnt = 0u;
+        }
+        break;
+
+    case MagCalUiState::WaitingRelease:
+        if (!key_down) {
+            ++key_cnt;
+            if (key_cnt >= 3u) {
+                ist8310_calibration::Reset();
+                cal_start_ms = now_ms;
+                last_sample_counter = 0u;
+                last_progress_ms = now_ms;
+                ui_state = MagCalUiState::Collecting;
+                key_cnt = 0u;
+                printf("[mag_cal] start: 30s, rotate board through all orientations\r\n");
+            }
+        } else {
+            key_cnt = 0u;
+        }
+        break;
+
+    case MagCalUiState::Collecting: {
+        // 按键在收集期间被忽略
+
+        // 消费新 sample
+        ist8310_service::MagSample s{};
+        if (ist8310_service::CopyLatest(&s) && s.sample_counter != last_sample_counter) {
+            last_sample_counter = s.sample_counter;
+            ist8310_calibration::FeedSample(s.mag_uT_body);
+        }
+
+        // 进度输出（每 10s 一次）
+        if (now_ms - last_progress_ms >= 10000u) {
+            last_progress_ms = now_ms;
+            printf("[mag_cal] progress: %lu/30s samples=%lu\r\n",
+                   static_cast<unsigned long>((now_ms - cal_start_ms) / 1000u),
+                   static_cast<unsigned long>(ist8310_calibration::GetSampleCount()));
+        }
+
+        // 30s 到期
+        if (now_ms - cal_start_ms >= 30000u) {
+            printf("[mag_cal] done: calculating\r\n");
+            const auto result = ist8310_calibration::Finish();
+
+            if (result.valid) {
+                printf("[mag_cal] success samples=%lu quality=%.2f radius_avg_uT=%.2f\r\n",
+                       static_cast<unsigned long>(result.sample_count),
+                       static_cast<double>(result.quality_score),
+                       static_cast<double>(result.radius_avg_uT));
+                ui_state = MagCalUiState::Success;
+            } else {
+                printf("[mag_cal] failed samples=%lu\r\n"
+                       "[mag_cal] reason: insufficient coverage or invalid scale\r\n",
+                       static_cast<unsigned long>(result.sample_count));
+                ui_state = MagCalUiState::Failed;
+            }
+
+            // 无论成功失败，都打印完整结果供诊断
+            printf("[mag_cal] span_body_uT  = { %.2fF, %.2fF, %.2fF };\r\n",
+                   static_cast<double>(result.span_body_uT[0]),
+                   static_cast<double>(result.span_body_uT[1]),
+                   static_cast<double>(result.span_body_uT[2]));
+            printf("[mag_cal] bias_body_uT  = { %.2fF, %.2fF, %.2fF };\r\n",
+                   static_cast<double>(result.bias_body_uT[0]),
+                   static_cast<double>(result.bias_body_uT[1]),
+                   static_cast<double>(result.bias_body_uT[2]));
+            printf("[mag_cal] scale_body     = { %.2fF, %.2fF, %.2fF };\r\n",
+                   static_cast<double>(result.scale_body[0]),
+                   static_cast<double>(result.scale_body[1]),
+                   static_cast<double>(result.scale_body[2]));
+
+            key_cnt = 0u;
+        }
+        break;
+    }
+
+    case MagCalUiState::Success:
+    case MagCalUiState::Failed:
+        if (key_down) {
+            ++key_cnt;
+            if (key_cnt >= 3u) {
+                ui_state = MagCalUiState::Idle;
+                key_cnt = 0u;
+                printf("[mag_cal] idle\r\n");
+            }
+        } else {
+            key_cnt = 0u;
+        }
+        break;
+    }
+}
+
+// ============================================================================
 // IST8310 mag debug print task — 硬件验证用低频输出（默认关闭）
 // ============================================================================
 
@@ -416,6 +552,17 @@ constexpr SchedulerTaskConfig kAppTasks[] = {
         30u,                                // priority: 低于 imu_drdy(10) 和 ins_consumer(20)
         0u,
         MAG_TASK_PERIOD_MS,
+        0u,
+        0u,
+        1u,                                 // enabled=1
+    },
+    {
+        "mag_cal",                          // IST8310 磁力计 MCU 端校准 task（10 ms）
+        MagCalTask,
+        nullptr,
+        100u,                               // priority: 低于 imu_drdy(10)/ins(20)/mag(30)，高于 debug(200+)
+        0u,
+        10u,                                // period_ms: 10 ms
         0u,
         0u,
         1u,                                 // enabled=1
