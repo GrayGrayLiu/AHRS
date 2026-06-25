@@ -7,13 +7,14 @@
  *   - 拥有并管理全工程唯一的 IST8310 驱动实例；
  *   - 提供 Init() 作为完整硬件初始化入口（含 driver.Init() 的 POR/Configure）；
  *   - 提供 Run() 作为非阻塞 scheduler 执行入口；
- *   - 提供 CopyLatest() 非破坏性缓存读取接口。
+ *   - sensor-frame → board/body-frame 坐标映射；
+ *   - 提供 CopyLatest() 非破坏性缓存读取接口（返回 body-frame 数据）。
  *
  * 不负责：
  *   - 底层 HAL I2C 事务实现、数据字节拼接（由 IST8310 driver 负责）；
  *   - Aided_INS 数学更新；
  *   - scheduler 调度策略；
- *   - 坐标映射。
+ *   - hard-iron / soft-iron 校准（后续独立轮次）。
  *
  * ISR 边界：
  *   当前版本无 ISR 桥接。IST8310 DRDY 引脚未接入 EXTI。
@@ -34,13 +35,26 @@ namespace ist8310_service
  * @note   trigger_timestamp_us 近似采样时刻（写 CNTL1 时记录），
  *         read_timestamp_us 为实际读出时刻（burst read 前记录）。
  *         调用方自行比较 sample_counter 去重。
+ *
+ *         raw_sensor / mag_uT_sensor 为 IST8310 芯片原生 sensor-frame 数据
+ *         (X_s/Y_s/Z_s)，仅用于调试和硬件追溯。
+ *
+ *         raw_body / mag_uT_body 为 board/body-frame 数据 (X_b=前/Y_b=右/Z_b=下)，
+ *         由 service 内部坐标映射生成，是对上层（Aided_INS 等）发布的统一机体系数据。
  */
 struct MagSample
 {
     uint64_t trigger_timestamp_us{0};   // 写 CNTL1 后的 MCU 微秒时刻
     uint64_t read_timestamp_us{0};      // burst read 前的 MCU 微秒时刻
-    int16_t  raw[3]{0, 0, 0};           // 原始二补码 LSB 值
-    float    mag_uT[3]{0.0F, 0.0F, 0.0F}; // 微特斯拉值
+
+    // IST8310 sensor-frame 原始数据（芯片原生 X_s/Y_s/Z_s，仅调试）
+    int16_t raw_sensor[3]{0, 0, 0};
+    float   mag_uT_sensor[3]{0.0F, 0.0F, 0.0F};
+
+    // Board/body-frame 数据（X_b=前, Y_b=右, Z_b=下，对外发布）
+    int16_t raw_body[3]{0, 0, 0};
+    float   mag_uT_body[3]{0.0F, 0.0F, 0.0F};
+
     uint8_t  status{0};                 // 当前仅发布成功 sample，恒为 0；保留给后续扩展
     bool     valid{false};              // 本次 sample 数据有效
     uint32_t sample_counter{0};         // 累计成功 sample 数（调用方去重用）

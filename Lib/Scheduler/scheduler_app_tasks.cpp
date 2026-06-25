@@ -351,14 +351,18 @@ void MagDebugTask(SchedulerTaskId self_id, SchedulerRunReason reason, SchedulerE
     }
     s_last_mag_counter = sample.sample_counter;
 
-    printf("[mag] c=%lu raw=%d %d %d uT=%.1f %.1f %.1f err=%lu ovr=%lu\r\n",
+    printf("[mag] c=%lu body_raw=%d %d %d body_uT=%.1f %.1f %.1f "
+           "sensor_raw=%d %d %d err=%lu ovr=%lu\r\n",
            static_cast<unsigned long>(sample.sample_counter),
-           static_cast<int>(sample.raw[0]),
-           static_cast<int>(sample.raw[1]),
-           static_cast<int>(sample.raw[2]),
-           static_cast<double>(sample.mag_uT[0]),
-           static_cast<double>(sample.mag_uT[1]),
-           static_cast<double>(sample.mag_uT[2]),
+           static_cast<int>(sample.raw_body[0]),
+           static_cast<int>(sample.raw_body[1]),
+           static_cast<int>(sample.raw_body[2]),
+           static_cast<double>(sample.mag_uT_body[0]),
+           static_cast<double>(sample.mag_uT_body[1]),
+           static_cast<double>(sample.mag_uT_body[2]),
+           static_cast<int>(sample.raw_sensor[0]),
+           static_cast<int>(sample.raw_sensor[1]),
+           static_cast<int>(sample.raw_sensor[2]),
            static_cast<unsigned long>(sample.error_counter),
            static_cast<unsigned long>(sample.overrun_counter));
 }

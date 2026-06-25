@@ -7,13 +7,14 @@
  *   - 拥有并管理全工程唯一的 IST8310 驱动实例；
  *   - 提供 Init() 作为完整硬件初始化入口（placement new + driver.Init()）；
  *   - 提供 Run() 作为非阻塞 scheduler 执行入口（每次最多一次 I2C 事务）；
- *   - 提供 CopyLatest() 非破坏性缓存读取接口。
+ *   - sensor-frame → board/body-frame 坐标映射；
+ *   - 提供 CopyLatest() 非破坏性缓存读取接口（返回包含 sensor-frame 与 body-frame 的 sample）。
  *
  * 不负责：
  *   - 底层 HAL I2C 事务实现、数据字节拼接（由 IST8310 driver 负责）；
  *   - Aided_INS 数学更新；
  *   - scheduler 调度策略；
- *   - 坐标映射。
+ *   - hard-iron / soft-iron 校准（后续独立轮次）。
  */
 
 #include "IST8310_Service.hpp"
@@ -96,6 +97,21 @@ void RecordError()
     if (consecutive_errors_ >= MAX_CONSECUTIVE_ERRORS) {
         EnterFault();
     }
+}
+
+// ============================================================================
+// 坐标映射
+// ============================================================================
+
+// IST8310 sensor-frame → board/body-frame 安装映射（硬件确认）：
+//   X_b =  Y_s    （sensor Y → board X，前向）
+//   Y_b = -X_s    （-sensor X → board Y，右向）
+//   Z_b = -Z_s    （-sensor Z → board Z，下向）
+void TranslateSensorToBody(const int16_t sensor[3], int16_t body[3])
+{
+    body[0] =  sensor[1];  // X_b =  Y_s
+    body[1] = -sensor[0];  // Y_b = -X_s
+    body[2] = -sensor[2];  // Z_b = -Z_s
 }
 
 // ============================================================================
@@ -185,23 +201,33 @@ void HandleReady()
         return;
     }
 
-    // ── 填充 sample ──
+    // ── sensor-frame 原始数据 ──
+    latest_sample_.raw_sensor[0] = raw_data.x;
+    latest_sample_.raw_sensor[1] = raw_data.y;
+    latest_sample_.raw_sensor[2] = raw_data.z;
+
+    constexpr float scale = IST8310_Regs::DATASHEET_DEFAULT_UT_PER_LSB;
+    latest_sample_.mag_uT_sensor[0] = static_cast<float>(raw_data.x) * scale;
+    latest_sample_.mag_uT_sensor[1] = static_cast<float>(raw_data.y) * scale;
+    latest_sample_.mag_uT_sensor[2] = static_cast<float>(raw_data.z) * scale;
+
+    // ── board/body-frame 数据 ──
+    int16_t body_raw[3]{};
+    TranslateSensorToBody(latest_sample_.raw_sensor, body_raw);
+    latest_sample_.raw_body[0] = body_raw[0];
+    latest_sample_.raw_body[1] = body_raw[1];
+    latest_sample_.raw_body[2] = body_raw[2];
+    latest_sample_.mag_uT_body[0] = static_cast<float>(body_raw[0]) * scale;
+    latest_sample_.mag_uT_body[1] = static_cast<float>(body_raw[1]) * scale;
+    latest_sample_.mag_uT_body[2] = static_cast<float>(body_raw[2]) * scale;
+
+    // ── 通用字段 ──
     latest_sample_.trigger_timestamp_us = trigger_timestamp_us_;
     latest_sample_.read_timestamp_us    = read_us;
-    latest_sample_.raw[0] = raw_data.x;
-    latest_sample_.raw[1] = raw_data.y;
-    latest_sample_.raw[2] = raw_data.z;
-
-    // scale 使用 IST8310_Regs 公开常量：手册 Section 4.4 14-bit 输出规格。
-    constexpr float scale = IST8310_Regs::DATASHEET_DEFAULT_UT_PER_LSB;
-    latest_sample_.mag_uT[0] = static_cast<float>(raw_data.x) * scale;
-    latest_sample_.mag_uT[1] = static_cast<float>(raw_data.y) * scale;
-    latest_sample_.mag_uT[2] = static_cast<float>(raw_data.z) * scale;
-
-    latest_sample_.status          = 0u;                     // 成功路径恒为 0
-    latest_sample_.valid           = true;
-    latest_sample_.error_counter   = total_error_counter_;   // 累计统计快照
-    latest_sample_.overrun_counter = total_overrun_counter_; // 累计统计快照
+    latest_sample_.status               = 0u;
+    latest_sample_.valid                = true;
+    latest_sample_.error_counter        = total_error_counter_;
+    latest_sample_.overrun_counter      = total_overrun_counter_;
     ++latest_sample_.sample_counter;
 
     ResetConsecutiveErrors();
