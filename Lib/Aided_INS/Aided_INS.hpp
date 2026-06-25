@@ -398,6 +398,7 @@ private:
     IMU imuCur_;
     bool imuReady_{false};
     Mag magData_;
+    uint32_t lastMagSampleCounter_{0u};  // 上次接收的 IST8310 sample_counter，用于去重
     GNSS gnssData_;
 
     // IMU状态（位置、速度、姿态和IMU误差）

@@ -25,6 +25,7 @@
 #include "EarthUtilities.hpp"
 #include "RotationUtilities.hpp"
 #include "INS_Mechanization.hpp"
+#include "IST8310_Service.hpp"
 #include "SystemPort.h"  // [PROFILE]
 #include "stm32h7xx.h"
 
@@ -240,9 +241,44 @@ bool Aided_INS::GetImuData()
 
 bool Aided_INS::GetMagData()
 {
-    // TODO: 接入真实磁力计 service 后，在此更新 magData_、设置 isUpdate=true 并返回 true。
-    // 当前磁力计链路未接入，运行期不触发 MagUpdate。
+#if AIDED_INS_ENABLE_MAG_UPDATE
+    if (ist8310_service::IsFault()) {
+        return false;
+    }
+
+    ist8310_service::MagSample sample{};
+    if (!ist8310_service::CopyLatest(&sample)) {
+        return false;
+    }
+
+    if (!sample.valid || !sample.calibration_applied) {
+        return false;
+    }
+
+    if (sample.sample_counter == lastMagSampleCounter_) {
+        return false;
+    }
+
+    const double mx = static_cast<double>(sample.mag_uT_body_calibrated[0]);
+    const double my = static_cast<double>(sample.mag_uT_body_calibrated[1]);
+    const double mz = static_cast<double>(sample.mag_uT_body_calibrated[2]);
+    const double norm = std::sqrt(mx * mx + my * my + mz * mz);
+
+    if (norm < 10.0 || norm > 100.0) {
+        return false;
+    }
+
+    lastMagSampleCounter_ = sample.sample_counter;
+
+    // 第一版使用 read_timestamp_us：量测已可用时刻，更不容易落到已过期 IMU 时间窗。
+    magData_.time = static_cast<double>(sample.read_timestamp_us) * 1.0e-6;
+    magData_.mag = Eigen::Vector3d(mx, my, mz);
+    magData_.isUpdate = true;
+
+    return true;
+#else
     return false;
+#endif
 }
 
 Config Aided_INS::LoadConfig()
