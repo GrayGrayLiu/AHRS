@@ -8,13 +8,16 @@
  *   - 提供 Init() 作为完整硬件初始化入口（placement new + driver.Init()）；
  *   - 提供 Run() 作为非阻塞 scheduler 执行入口（每次最多一次 I2C 事务）；
  *   - sensor-frame → board/body-frame 坐标映射；
- *   - 提供 CopyLatest() 非破坏性缓存读取接口（返回包含 sensor-frame 与 body-frame 的 sample）。
+ *   - 应用已配置的 hard-iron bias + per-axis scale 校准参数；
+ *   - 提供 CopyLatest() 非破坏性缓存读取接口（返回 sensor-frame、
+ *     未校准 body-frame、校准后 body-frame 三个坐标系的 sample）。
  *
  * 不负责：
  *   - 底层 HAL I2C 事务实现、数据字节拼接（由 IST8310 driver 负责）；
+ *   - 校准参数估计（由 ist8310_calibration 模块负责）；
+ *   - Flash / 文件系统保存校准参数；
  *   - Aided_INS 数学更新；
- *   - scheduler 调度策略；
- *   - hard-iron / soft-iron 校准（后续独立轮次）。
+ *   - scheduler 调度策略。
  */
 
 #include "IST8310_Service.hpp"
@@ -23,6 +26,7 @@
 #include <new>
 
 #include "IST8310.hpp"
+#include "IST8310_Calibration_Config.hpp"
 #include "TimeBase.h"
 
 namespace ist8310_service
@@ -112,6 +116,26 @@ void TranslateSensorToBody(const int16_t sensor[3], int16_t body[3])
     body[0] =  sensor[1];  // X_b =  Y_s
     body[1] = -sensor[0];  // Y_b = -X_s
     body[2] = -sensor[2];  // Z_b = -Z_s
+}
+
+// ============================================================================
+// 校准应用
+// ============================================================================
+
+// 将未校准 body-frame uT 应用 hard-iron bias + scale 得到校准后 body-frame uT。
+void ApplyMagCalibration(const float in_body_uT[3], float out_body_uT[3])
+{
+#if IST8310_ENABLE_MAG_CALIBRATION
+    for (int i = 0; i < 3; ++i) {
+        out_body_uT[i] =
+            (in_body_uT[i] - ist8310_calibration_config::kMagHardIronBiasBody_uT[i])
+            * ist8310_calibration_config::kMagScaleBody[i];
+    }
+#else
+    for (int i = 0; i < 3; ++i) {
+        out_body_uT[i] = in_body_uT[i];
+    }
+#endif
 }
 
 // ============================================================================
@@ -220,6 +244,15 @@ void HandleReady()
     latest_sample_.mag_uT_body[0] = static_cast<float>(body_raw[0]) * scale;
     latest_sample_.mag_uT_body[1] = static_cast<float>(body_raw[1]) * scale;
     latest_sample_.mag_uT_body[2] = static_cast<float>(body_raw[2]) * scale;
+
+    // ── 校准后 body-frame 数据 ──
+    ApplyMagCalibration(latest_sample_.mag_uT_body,
+                        latest_sample_.mag_uT_body_calibrated);
+#if IST8310_ENABLE_MAG_CALIBRATION
+    latest_sample_.calibration_applied = true;
+#else
+    latest_sample_.calibration_applied = false;
+#endif
 
     // ── 通用字段 ──
     latest_sample_.trigger_timestamp_us = trigger_timestamp_us_;

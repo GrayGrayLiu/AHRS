@@ -8,13 +8,16 @@
  *   - 提供 Init() 作为完整硬件初始化入口（含 driver.Init() 的 POR/Configure）；
  *   - 提供 Run() 作为非阻塞 scheduler 执行入口；
  *   - sensor-frame → board/body-frame 坐标映射；
- *   - 提供 CopyLatest() 非破坏性缓存读取接口（返回 body-frame 数据）。
+ *   - 应用已配置的 hard-iron bias + per-axis scale 校准参数；
+ *   - 提供 CopyLatest() 非破坏性缓存读取接口（返回 sensor-frame、
+ *     未校准 body-frame、校准后 body-frame 三个坐标系的 sample）。
  *
  * 不负责：
  *   - 底层 HAL I2C 事务实现、数据字节拼接（由 IST8310 driver 负责）；
+ *   - 校准参数估计（由 ist8310_calibration 模块负责）；
+ *   - Flash / 文件系统保存校准参数；
  *   - Aided_INS 数学更新；
- *   - scheduler 调度策略；
- *   - hard-iron / soft-iron 校准（后续独立轮次）。
+ *   - scheduler 调度策略。
  *
  * ISR 边界：
  *   当前版本无 ISR 桥接。IST8310 DRDY 引脚未接入 EXTI。
@@ -36,11 +39,17 @@ namespace ist8310_service
  *         read_timestamp_us 为实际读出时刻（burst read 前记录）。
  *         调用方自行比较 sample_counter 去重。
  *
- *         raw_sensor / mag_uT_sensor 为 IST8310 芯片原生 sensor-frame 数据
- *         (X_s/Y_s/Z_s)，仅用于调试和硬件追溯。
+ *         raw_sensor / mag_uT_sensor:
+ *           IST8310 芯片原生 sensor-frame 数据 (X_s/Y_s/Z_s)，
+ *           仅用于调试和硬件追溯。
  *
- *         raw_body / mag_uT_body 为 board/body-frame 数据 (X_b=前/Y_b=右/Z_b=下)，
- *         由 service 内部坐标映射生成，是对上层（Aided_INS 等）发布的统一机体系数据。
+ *         raw_body / mag_uT_body:
+ *           board/body-frame 未校准磁场 (X_b=前/Y_b=右/Z_b=下)，
+ *           由 service 内部坐标映射生成。
+ *
+ *         mag_uT_body_calibrated / calibration_applied:
+ *           body-frame 校准后磁场，应用编译期 hard-iron bias + per-axis scale。
+ *           后续 Aided_INS 接入磁力计时应优先使用此字段。
  */
 struct MagSample
 {
@@ -51,9 +60,13 @@ struct MagSample
     int16_t raw_sensor[3]{0, 0, 0};
     float   mag_uT_sensor[3]{0.0F, 0.0F, 0.0F};
 
-    // Board/body-frame 数据（X_b=前, Y_b=右, Z_b=下，对外发布）
+    // Board/body-frame 未校准磁场（X_b=前, Y_b=右, Z_b=下）
     int16_t raw_body[3]{0, 0, 0};
     float   mag_uT_body[3]{0.0F, 0.0F, 0.0F};
+
+    // Board/body-frame 校准后磁场（应用 hard-iron bias + scale）
+    float   mag_uT_body_calibrated[3]{0.0F, 0.0F, 0.0F};
+    bool    calibration_applied{false};
 
     uint8_t  status{0};                 // 当前仅发布成功 sample，恒为 0；保留给后续扩展
     bool     valid{false};              // 本次 sample 数据有效
