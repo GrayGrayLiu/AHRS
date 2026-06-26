@@ -3,7 +3,7 @@
  * @brief   AHRS INS 开发/调试阶段统一 compile-time 开关
  *
  * @details
- * 四个宏分别控制：
+ * 宏分别控制：
  *   AIDED_INS_ENABLE_STARTUP_VERIFY    — 启动阶段结构化矩阵数值验证
  *   AIDED_INS_ENABLE_SERVICE_PRINT     — 运行期 [INS_SVC] 基础统计 printf
  *   AIDED_INS_ENABLE_PROFILING_PRINT   — 运行期 [INS_PROF]~[INS_PROF4] printf
@@ -11,7 +11,7 @@
  *   AIDED_INS_ENABLE_COV_HEALTH_CHECK  — 运行期协方差健康检查（纯计数，无 printf）
  *   AIDED_INS_ENABLE_ATTITUDE_TELEMETRY — 运行期姿态遥测 printf（低优先级 task，默认关闭）
  *   AIDED_INS_ATTITUDE_TELEMETRY_MODE    — 遥测输出模式：0=四元数, 1=欧拉角deg（默认）
- *   AIDED_INS_ENABLE_MAG_UPDATE           — 是否启用 IST8310 磁力计 yaw 更新，默认关闭，验证时临时开启
+ *   AIDED_INS_ENABLE_MAG_UPDATE        — 是否启用 IST8310 磁力计 yaw 更新，默认关闭
  *
  * 运行期 UART printf 会阻塞主循环，可能导致 false timestamp_errors；
  * 正式运行默认关闭运行期输出，需要调试时再临时打开。启动验证默认保留。

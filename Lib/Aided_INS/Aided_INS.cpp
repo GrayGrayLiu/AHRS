@@ -931,27 +931,65 @@ bool Aided_INS::AccUpdate(const IMU& imuData, const PVA& pvaCur, const Config& c
 
 void Aided_INS::MagUpdate(const Mag &magData, const PVA &pvaCur, const Config &config)
 {
-    /**
-     *认为roll、pitch是准确的，认为pvaCur的估计结果只存在yaw误差，所以先将磁力计测量值转到n系，
-     *此时，hx_n、hy_n理论上就是地磁的水平分量。如果无磁偏角、yaw误差，hy_n应该为0，所以
-     *hy_n、hx_n形成的夹角就是磁偏角与yaw误差的总和。
+    /*
+     * 磁力计 yaw 更新只约束偏航姿态失准角，不直接修正 roll/pitch。
+     *
+     * h_n = Cbn_hat * mag_b 将 body-frame 磁场转到当前 INS 推算姿态补偿后的
+     * 估计导航系中。代码变量名仍沿用 h_n。经过当前 INS 推算姿态补偿后，
+     * 在这个估计导航系中，可以把 INS 推算航向作为零参考：
+     *
+     *   psi_hat_IMU = 0
+     *
+     * 记：
+     *   psi        ：真实偏航角；
+     *   delta_psi  ：偏航姿态失准角，对应误差状态 PHI_D；
+     *                这里不是普通的"推算值减真值"的 yaw 误差，而是姿态失准角意义下的
+     *                偏航误差。若推算系 p 相对真实系 n 偏航 delta_psi，则绝对航向上有：
+     *
+     *   psi_INS = psi - delta_psi
+     *
+     * 磁力计绝对磁航向可写为：
+     *
+     *   psi_mag_abs = psi + eta + w_m
+     *
+     * 其中：
+     *   eta ：磁偏角；
+     *   w_m ：磁力计航向测量噪声/扰动。
+     *
+     * 因此，经过当前 INS 推算姿态补偿后，磁力计在估计导航系中的相对磁航向为：
+     *
+     *   psi_hat_mag = psi_mag_abs - psi_INS
+     *               = (psi + eta + w_m) - (psi - delta_psi)
+     *               = delta_psi + eta + w_m
+     *
+     * 代码中由水平磁场分量计算该相对磁航向：
+     *
+     *   psi_hat_mag = atan2(-h_y, h_x)
+     *
+     * 当前残差沿用"INS 推算航向 - 磁力计航向"：
+     *
+     *   dz = psi_hat_IMU - psi_hat_mag
+     *      = -psi_hat_mag
+     *      = -(delta_psi + eta + w_m)
+     *
+     * 当前暂不补偿磁偏角，eta 表现为常值航向偏置；
+     * 因此对偏航姿态失准角 PHI_D 的线性观测系数为 -1。
      */
     Vector3d h_n = pvaCur.att.Cbn * magData.mag;
-
-    //构造输入磁力计观测方程的测量误差（先不修正磁偏角）
     MeasurementVector<1> dz;
-    dz(0, 0) = -atan2(-h_n(1), h_n(0)); //磁力计测得的航向误差 = 偏航角误差 + 磁偏角
+    dz(0, 0) = -atan2(-h_n(1), h_n(0));
 
     /*
      * MagUpdate 的完整 H_mag 为 1×21，状态块顺序：
      *   x = [ P | V | PHI | GB | AB | GS | AS ]^T
      *
      * 当前磁力计更新只把水平磁航向误差作为 yaw 误差观测：
-     *   H_mag = [ 0  0  (0 0 1)  0  0  0  0 ]
+     *   H_mag = [ 0  0  (0 0 H_phi_yaw)  0  0  0  0 ]
      *
-     * 因此 EkfUpdateMagYaw1 只需传入 PHI_z 对应的标量 H_phi_yaw = 1。
+     * 其中 H_phi_yaw = -1.0，由当前 dz = psi_IMU - psi_mag 与
+     * 偏航姿态失准角 PHI_D 之间的线性关系决定。
      */
-    constexpr double H_phi_yaw = 1.0;
+    constexpr double H_phi_yaw = -1.0;
 
     //磁力计观测噪声矩阵
     MeasurementNoise<1> R_mag;
@@ -1516,10 +1554,12 @@ void Aided_INS::EkfUpdateAcc3(const MeasurementVector<3> &dz,
 //
 // 当前磁力计只把水平磁航向误差作为 yaw 误差观测：
 //
-//   H_mag = [ 0  0  (0 0 1)  0  0  0  0 ]
-//            P     V   PHI     GB AB GS AS
+//   H_mag = [ 0  0  (0 0 H_phi_yaw)  0  0  0  0 ]
+//            P     V       PHI        GB AB GS AS
 //
-// 因此只需处理 PHI_z（PHI_ID+2）位置的标量 H_phi_yaw = 1。
+// 其中 H_phi_yaw = -1.0，由 dz = psi_IMU - psi_mag 与
+// 偏航姿态失准角 PHI_D 之间的线性关系决定。
+// 本函数不关心 H_phi_yaw 的物理来源，只按传入标量执行结构化 EKF 更新。
 //
 // 结构化展开：
 //   idx = PHI_ID + 2
@@ -1715,7 +1755,8 @@ void Aided_INS::VerifyAccUpdateStructured()
 void Aided_INS::VerifyMagUpdateStructured()
 {
     constexpr int kYawIdx = PHI_ID + 2;
-    constexpr double H_phi_yaw = 1.0;
+    // 与正式 MagUpdate 使用的 H_phi_yaw = -1.0 保持一致
+    constexpr double H_phi_yaw = -1.0;
 
     MeasurementVector<1> dz_test;
     dz_test(0, 0) = 0.05;
