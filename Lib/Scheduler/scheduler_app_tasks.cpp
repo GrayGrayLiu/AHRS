@@ -367,6 +367,9 @@ void MagCalTask(SchedulerTaskId self_id, SchedulerRunReason reason, SchedulerEve
                 ui_state = MagCalUiState::Collecting;
                 key_cnt = 0u;
                 printf("[mag_cal] start: 30s, rotate board through all orientations\r\n");
+#if IST8310_ENABLE_CAL_CSV_OUTPUT
+                printf("[mag_csv] counter,timestamp_us,body_x_uT,body_y_uT,body_z_uT\r\n");
+#endif
             }
         } else {
             key_cnt = 0u;
@@ -381,6 +384,14 @@ void MagCalTask(SchedulerTaskId self_id, SchedulerRunReason reason, SchedulerEve
         if (ist8310_service::CopyLatest(&s) && s.sample_counter != last_sample_counter) {
             last_sample_counter = s.sample_counter;
             ist8310_calibration::FeedSample(s.mag_uT_body);
+#if IST8310_ENABLE_CAL_CSV_OUTPUT
+            printf("[mag_csv] %lu,%llu,%.3f,%.3f,%.3f\r\n",
+                   static_cast<unsigned long>(s.sample_counter),
+                   static_cast<unsigned long long>(s.read_timestamp_us),
+                   static_cast<double>(s.mag_uT_body[0]),
+                   static_cast<double>(s.mag_uT_body[1]),
+                   static_cast<double>(s.mag_uT_body[2]));
+#endif
         }
 
         // 进度输出（每 10s 一次）
