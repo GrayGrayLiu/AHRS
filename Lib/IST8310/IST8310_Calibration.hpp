@@ -11,6 +11,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 namespace ist8310_calibration
@@ -53,6 +54,43 @@ struct MagCalResult
 };
 
 /**
+ * @brief fixed-bias 3×3 quadratic fit 结果
+ *
+ * @note  不是完整 coupled ellipsoid fit。bias 由 min/max 预估计，
+ *        仅对 centered data 拟合 3×3 对称二次型 Q，再通过 SPD sqrt 构造 M。
+ */
+struct EllipFitResult
+{
+    float bias_body_uT[3]{};
+    float matrix_3x3[3][3]{};       // M, mag_cal = M * (x - bias)
+
+    float cal_norm_min_uT{};
+    float cal_norm_max_uT{};
+    float cal_norm_mean_uT{};
+    float cal_norm_std_uT{};
+    float cal_norm_max_err{};
+
+    float condition_number{};       // λ_max / λ_min（过大说明数据接近共面）
+    bool  Q_positive_definite{false};
+    bool  valid{false};             // 拟合是否通过质量门限
+};
+
+/**
+ * @brief 固定偏置 3×3 quadratic fit（应在 Finish() 后、同一批样本上调用）
+ *
+ * @param sample_buffer  样本数组 [count][3] body-frame 未校准 uT
+ * @param count          样本数
+ * @param min_uT[3]      每轴最小值（用于 bias 初值）
+ * @param max_uT[3]      每轴最大值（用于 bias 初值）
+ * @return 拟合结果
+ */
+EllipFitResult FitEllipsoidFixedBias(
+    const float sample_buffer[][3],
+    size_t count,
+    const float min_uT[3],
+    const float max_uT[3]);
+
+/**
  * @brief 重置所有内部状态（重新开始收集）
  */
 void Reset();
@@ -72,5 +110,12 @@ MagCalResult Finish();
  * @brief 返回已收集的 sample 数
  */
 uint32_t GetSampleCount();
+
+/**
+ * @brief 返回样本缓存指针和已收集样本数（供外部 fit 函数使用）
+ * @retval nullptr 表示无可用样本
+ */
+const float (*GetSampleBuffer())[3];
+size_t GetSampleBufferCount();
 
 } // namespace ist8310_calibration

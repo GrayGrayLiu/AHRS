@@ -479,6 +479,45 @@ void MagCalTask(SchedulerTaskId self_id, SchedulerRunReason reason, SchedulerEve
                        static_cast<unsigned long>(result.cal_sample_dropped_count));
             }
 
+#if IST8310_ENABLE_ELLIPSOID_FIT
+            // ── fixed-bias 3×3 quadratic fit 候选参数块（与 diagonal 独立，不替换当前路径） ──
+            {
+                const auto (*buf)[3] = ist8310_calibration::GetSampleBuffer();
+                const size_t n = ist8310_calibration::GetSampleBufferCount();
+                if (buf != nullptr && n >= 50u) {
+                    const auto efit = ist8310_calibration::FitEllipsoidFixedBias(
+                        buf, n, result.min_body_uT, result.max_body_uT);
+
+                    printf("[mag_cal] // ===== fixed-bias 3x3 candidate (ellipsoid fit) =====\r\n");
+                    printf("[mag_cal] // fit_valid=%u Q_posdef=%u cond=%.1f\r\n",
+                           static_cast<unsigned int>(efit.valid),
+                           static_cast<unsigned int>(efit.Q_positive_definite),
+                           static_cast<double>(efit.condition_number));
+                    printf("[mag_cal] constexpr float kMagHardIronBiasBody_uT[3] = {\r\n");
+                    printf("[mag_cal]     %.2fF, %.2fF, %.2fF,\r\n",
+                           static_cast<double>(efit.bias_body_uT[0]),
+                           static_cast<double>(efit.bias_body_uT[1]),
+                           static_cast<double>(efit.bias_body_uT[2]));
+                    printf("[mag_cal] };\r\n");
+                    printf("[mag_cal]\r\n");
+                    printf("[mag_cal] constexpr float kMagSoftIronMatrix[3][3] = {\r\n");
+                    for (int row = 0; row < 3; ++row) {
+                        printf("[mag_cal]     { % .4fF, % .4fF, % .4fF },\r\n",
+                               static_cast<double>(efit.matrix_3x3[row][0]),
+                               static_cast<double>(efit.matrix_3x3[row][1]),
+                               static_cast<double>(efit.matrix_3x3[row][2]));
+                    }
+                    printf("[mag_cal] };\r\n");
+                    printf("[mag_cal] // cal_norm min=%.2f max=%.2f mean=%.2f std=%.2f max_err=%.3f\r\n",
+                           static_cast<double>(efit.cal_norm_min_uT),
+                           static_cast<double>(efit.cal_norm_max_uT),
+                           static_cast<double>(efit.cal_norm_mean_uT),
+                           static_cast<double>(efit.cal_norm_std_uT),
+                           static_cast<double>(efit.cal_norm_max_err));
+                }
+            }
+#endif
+
             key_cnt = 0u;
         }
         break;
