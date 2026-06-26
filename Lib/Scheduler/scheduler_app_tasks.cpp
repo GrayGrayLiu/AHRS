@@ -41,6 +41,19 @@ constexpr uint32_t ATTITUDE_TELEMETRY_PERIOD_MS = 40u;  // 25 Hz
 constexpr uint8_t ATTITUDE_TELEMETRY_TASK_ENABLED =
     AIDED_INS_ENABLE_ATTITUDE_TELEMETRY ? 1u : 0u;
 
+// -- candidate summary / recommendation 常量 --
+constexpr float MAG_CAL_SELF_CHECK_MAX_STD_UT    = 5.0F;
+constexpr float MAG_CAL_SELF_CHECK_MIN_MEAN_UT   = 30.0F;
+constexpr float MAG_CAL_SELF_CHECK_MAX_MEAN_UT   = 60.0F;
+constexpr float MAG_CAL_SELF_CHECK_MIN_NORM_UT   = 30.0F;
+constexpr float MAG_CAL_SELF_CHECK_MAX_NORM_UT   = 60.0F;
+constexpr float MAG_CAL_SELF_CHECK_MAX_ERR_RATIO = 0.30F;
+
+constexpr float MAG_CAL_RECOMMEND_STD_RATIO     = 0.90F;
+constexpr float MAG_CAL_MAXERR_SOFT_TOLERANCE   = 0.02F;
+constexpr float MAG_CAL_RANGE_TIE_TOLERANCE_UT  = 0.5F;
+constexpr float MAG_CAL_MAXERR_TIE_TOLERANCE    = 0.005F;
+
 // ============================================================================
 // IMU debug print task — IMU 状态输出
 // ============================================================================
@@ -480,13 +493,21 @@ void MagCalTask(SchedulerTaskId self_id, SchedulerRunReason reason, SchedulerEve
             }
 
 #if IST8310_ENABLE_ELLIPSOID_FIT
-            // ── fixed-bias 3×3 quadratic fit 候选参数块（与 diagonal 独立，不替换当前路径） ──
+            // -- B1 / B2a candidate blocks + summary --
             {
                 const auto (*buf)[3] = ist8310_calibration::GetSampleBuffer();
                 const size_t n = ist8310_calibration::GetSampleBufferCount();
+
+                bool                  has_efit = false;
+                ist8310_calibration::EllipFitResult     efit{};
+                bool                  has_ffit = false;
+                ist8310_calibration::FullEllipFitResult ffit{};
+
+                // -- B1 fixed-bias 3x3 candidate --
                 if (buf != nullptr && n >= 50u) {
-                    const auto efit = ist8310_calibration::FitEllipsoidFixedBias(
+                    efit = ist8310_calibration::FitEllipsoidFixedBias(
                         buf, n, result.min_body_uT, result.max_body_uT);
+                    has_efit = true;
 
                     printf("[mag_cal] // ===== fixed-bias 3x3 candidate (ellipsoid fit) =====\r\n");
                     printf("[mag_cal] // fit_valid=%u Q_posdef=%u cond=%.1f\r\n",
@@ -516,10 +537,11 @@ void MagCalTask(SchedulerTaskId self_id, SchedulerRunReason reason, SchedulerEve
                            static_cast<double>(efit.cal_norm_max_err));
                 }
 
-                // ── B2a full coupled algebraic candidate ──
+                // -- B2a full-coupled algebraic candidate --
                 if (buf != nullptr && n >= 100u) {
-                    const auto ffit = ist8310_calibration::FitEllipsoidFullAlgebraic(
+                    ffit = ist8310_calibration::FitEllipsoidFullAlgebraic(
                         buf, n, result.min_body_uT, result.max_body_uT);
+                    has_ffit = true;
 
                     printf("[mag_cal] // ===== full-coupled algebraic 3x3 candidate =====\r\n");
                     printf("[mag_cal] // fit_valid=%u solver_converged=%u iters=%u Q_posdef=%u cond=%.1f k=%.6g R0=%.2f R_target=%.2f\r\n",
@@ -556,6 +578,150 @@ void MagCalTask(SchedulerTaskId self_id, SchedulerRunReason reason, SchedulerEve
                 } else if (buf != nullptr) {
                     printf("[mag_cal] // full-coupled algebraic fit skipped: n=%lu < 100\r\n",
                            static_cast<unsigned long>(n));
+                }
+
+                // -- Candidate summary / recommendation --
+                if (has_efit || has_ffit) {
+                    const bool diag_baseline_ok = result.valid && result.cal_norm_valid;
+
+                    // Diagonal selfcheck
+                    bool diag_selfcheck = false;
+                    if (diag_baseline_ok) {
+                        diag_selfcheck =
+                               result.cal_norm_std_uT         < MAG_CAL_SELF_CHECK_MAX_STD_UT
+                            && result.cal_norm_mean_uT        > MAG_CAL_SELF_CHECK_MIN_MEAN_UT
+                            && result.cal_norm_mean_uT        < MAG_CAL_SELF_CHECK_MAX_MEAN_UT
+                            && result.cal_norm_min_uT         > MAG_CAL_SELF_CHECK_MIN_NORM_UT
+                            && result.cal_norm_max_uT         < MAG_CAL_SELF_CHECK_MAX_NORM_UT
+                            && result.cal_norm_max_error_ratio < MAG_CAL_SELF_CHECK_MAX_ERR_RATIO;
+                    }
+
+                    // recommendation for a single candidate
+                    auto calc_recommend = [&result, diag_baseline_ok](
+                        bool cand_valid,
+                        float cand_std, float cand_max_err,
+                        float cand_min, float cand_max,
+                        bool &std_ok, bool &max_err_ok, bool &max_err_soft,
+                        bool &min_ok, bool &max_ok) -> bool
+                    {
+                        std_ok       = false;
+                        max_err_ok   = false;
+                        max_err_soft = false;
+                        min_ok       = false;
+                        max_ok       = false;
+
+                        if (!diag_baseline_ok) { return false; }
+
+                        std_ok       = cand_std    <= result.cal_norm_std_uT * MAG_CAL_RECOMMEND_STD_RATIO;
+                        max_err_ok   = cand_max_err <= result.cal_norm_max_error_ratio;
+                        max_err_soft = cand_max_err <= result.cal_norm_max_error_ratio + MAG_CAL_MAXERR_SOFT_TOLERANCE;
+                        min_ok       = cand_min    >= result.cal_norm_min_uT;
+                        max_ok       = cand_max    <= result.cal_norm_max_uT;
+                        return cand_valid && std_ok && max_err_ok && min_ok && max_ok;
+                    };
+
+                    // B1 recommendation
+                    bool b1_rec = false;
+                    bool b1_std_ok = false;
+                    bool b1_max_err_ok = false;
+                    bool b1_max_err_soft = false;
+                    bool b1_min_ok = false;
+                    bool b1_max_ok = false;
+                    if (has_efit) {
+                        b1_rec = calc_recommend(efit.valid,
+                            efit.cal_norm_std_uT, efit.cal_norm_max_err,
+                            efit.cal_norm_min_uT, efit.cal_norm_max_uT,
+                            b1_std_ok, b1_max_err_ok, b1_max_err_soft, b1_min_ok, b1_max_ok);
+                    }
+
+                    // B2a recommendation
+                    bool b2_rec = false;
+                    bool b2_std_ok = false;
+                    bool b2_max_err_ok = false;
+                    bool b2_max_err_soft = false;
+                    bool b2_min_ok = false;
+                    bool b2_max_ok = false;
+                    if (has_ffit) {
+                        b2_rec = calc_recommend(ffit.valid,
+                            ffit.cal_norm_std_uT, ffit.cal_norm_max_err,
+                            ffit.cal_norm_min_uT, ffit.cal_norm_max_uT,
+                            b2_std_ok, b2_max_err_ok, b2_max_err_soft, b2_min_ok, b2_max_ok);
+                    }
+
+                    // Select recommended candidate
+                    const char *rec_label = diag_baseline_ok ? "diagonal" : "none";
+                    const char *rec_reason = diag_baseline_ok ? "no_recommended_candidate" : "baseline_invalid";
+                    if (b1_rec && b2_rec) {
+                        // Both recommended: prefer lower max_err, then tighter range, then lower std
+                        const float b1_range = efit.cal_norm_max_uT - efit.cal_norm_min_uT;
+                        const float b2_range = ffit.cal_norm_max_uT - ffit.cal_norm_min_uT;
+                        const float me_diff  = efit.cal_norm_max_err - ffit.cal_norm_max_err;
+
+                        if (me_diff > MAG_CAL_MAXERR_TIE_TOLERANCE) {
+                            rec_label = "full_coupled"; rec_reason = "max_err_better";
+                        } else if (me_diff < -MAG_CAL_MAXERR_TIE_TOLERANCE) {
+                            rec_label = "fixed_bias"; rec_reason = "max_err_better";
+                        } else if (b1_range < b2_range - MAG_CAL_RANGE_TIE_TOLERANCE_UT) {
+                            rec_label = "fixed_bias"; rec_reason = "range_tighter";
+                        } else if (b2_range < b1_range - MAG_CAL_RANGE_TIE_TOLERANCE_UT) {
+                            rec_label = "full_coupled"; rec_reason = "range_tighter";
+                        } else if (efit.cal_norm_std_uT < ffit.cal_norm_std_uT) {
+                            rec_label = "fixed_bias"; rec_reason = "std_lower";
+                        } else if (ffit.cal_norm_std_uT < efit.cal_norm_std_uT) {
+                            rec_label = "full_coupled"; rec_reason = "std_lower";
+                        } else {
+                            rec_label = "ambiguous"; rec_reason = "tie";
+                        }
+                    } else if (b1_rec) {
+                        rec_label = "fixed_bias"; rec_reason = "only_recommended";
+                    } else if (b2_rec) {
+                        rec_label = "full_coupled"; rec_reason = "only_recommended";
+                    }
+
+                    // Print summary
+                    printf("[mag_cal] // ===== candidate summary =====\r\n");
+                    printf("[mag_cal] // samples=%lu norm_out_of_range=%lu\r\n",
+                           static_cast<unsigned long>(result.sample_count),
+                           static_cast<unsigned long>(result.norm_out_of_range_count));
+                    printf("[mag_cal] // diagonal: selfcheck=%s std=%.2f max_err=%.3f min=%.2f max=%.2f\r\n",
+                           !result.valid ? "FAIL" : (!result.cal_norm_valid ? "NO_CAL_NORM" : (diag_selfcheck ? "PASS" : "WARN")),
+                           static_cast<double>(result.cal_norm_std_uT),
+                           static_cast<double>(result.cal_norm_max_error_ratio),
+                           static_cast<double>(result.cal_norm_min_uT),
+                           static_cast<double>(result.cal_norm_max_uT));
+                    if (has_efit) {
+                        printf("[mag_cal] // fixed_bias: valid=%u recommended=%u std=%.2f max_err=%.3f min=%.2f max=%.2f std_ok=%u max_err_ok=%u max_err_soft=%u min_ok=%u max_ok=%u\r\n",
+                               static_cast<unsigned int>(efit.valid),
+                               static_cast<unsigned int>(b1_rec),
+                               static_cast<double>(efit.cal_norm_std_uT),
+                               static_cast<double>(efit.cal_norm_max_err),
+                               static_cast<double>(efit.cal_norm_min_uT),
+                               static_cast<double>(efit.cal_norm_max_uT),
+                               static_cast<unsigned int>(b1_std_ok),
+                               static_cast<unsigned int>(b1_max_err_ok),
+                               static_cast<unsigned int>(b1_max_err_soft),
+                               static_cast<unsigned int>(b1_min_ok),
+                               static_cast<unsigned int>(b1_max_ok));
+                    }
+                    if (has_ffit) {
+                        printf("[mag_cal] // full_coupled: valid=%u recommended=%u std=%.2f max_err=%.3f min=%.2f max=%.2f std_ok=%u max_err_ok=%u max_err_soft=%u min_ok=%u max_ok=%u\r\n",
+                               static_cast<unsigned int>(ffit.valid),
+                               static_cast<unsigned int>(b2_rec),
+                               static_cast<double>(ffit.cal_norm_std_uT),
+                               static_cast<double>(ffit.cal_norm_max_err),
+                               static_cast<double>(ffit.cal_norm_min_uT),
+                               static_cast<double>(ffit.cal_norm_max_uT),
+                               static_cast<unsigned int>(b2_std_ok),
+                               static_cast<unsigned int>(b2_max_err_ok),
+                               static_cast<unsigned int>(b2_max_err_soft),
+                               static_cast<unsigned int>(b2_min_ok),
+                               static_cast<unsigned int>(b2_max_ok));
+                    }
+                    printf("[mag_cal] // recommended=%s reason=%s\r\n", rec_label, rec_reason);
+                    if (result.norm_out_of_range_count > 0u) {
+                        printf("[mag_cal] // WARNING: raw norm outliers detected; candidate comparison may be affected\r\n");
+                    }
+                    printf("[mag_cal] // ===== end candidate summary =====\r\n");
                 }
             }
 #endif
