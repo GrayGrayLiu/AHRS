@@ -112,8 +112,7 @@ MagCalResult Finish();
 uint32_t GetSampleCount();
 
 /**
- * @brief 返回样本缓存指针和已收集样本数（供外部 fit 函数使用）
- * @retval nullptr 表示无可用样本
+ * @brief 返回内部样本缓存指针；样本有效数量由 GetSampleBufferCount() 判断
  */
 const float (*GetSampleBuffer())[3];
 size_t GetSampleBufferCount();

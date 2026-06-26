@@ -95,7 +95,8 @@ bool Solve6x6SPD(const double A[6][6], const double b[6], double x[6])
 // A_in: 输入对称 3×3（不修改）
 // V:    输出特征向量矩阵（列向量），V * diag(lambda) * V^T = A_in
 // lambda: 输出特征值
-void Jacobi3x3(const double A_in[3][3], double V[3][3], double lambda[3])
+// 返回 true 若收敛，false 若固定 sweep 数后未收敛
+bool Jacobi3x3(const double A_in[3][3], double V[3][3], double lambda[3])
 {
     double A[3][3];
     for (int i = 0; i < 3; ++i) {
@@ -110,6 +111,7 @@ void Jacobi3x3(const double A_in[3][3], double V[3][3], double lambda[3])
 
     constexpr int    MAX_SWEEPS = 15;
     constexpr double EPS        = 1.0e-14;
+    bool converged = false;
 
     for (int sweep = 0; sweep < MAX_SWEEPS; ++sweep) {
         double max_off = 0.0;
@@ -152,12 +154,28 @@ void Jacobi3x3(const double A_in[3][3], double V[3][3], double lambda[3])
                 }
             }
         }
-        if (max_off < EPS) { break; }
+        if (max_off < EPS) { converged = true; break; }
     }
 
     lambda[0] = A[0][0];
     lambda[1] = A[1][1];
     lambda[2] = A[2][2];
+
+    return converged;
+}
+
+// Swap eigenvalue lambda[a]/lambda[b] AND corresponding eigenvector columns
+void SwapEigenPair(double V[3][3], double lambda[3], const int a, const int b)
+{
+    const double t_lambda = lambda[a];
+    lambda[a] = lambda[b];
+    lambda[b] = t_lambda;
+
+    for (int r = 0; r < 3; ++r) {
+        const double t_v = V[r][a];
+        V[r][a] = V[r][b];
+        V[r][b] = t_v;
+    }
 }
 
 // 3×3 SPD 主平方根: Q_sqrt = V * sqrt(Λ) * V^T
@@ -425,13 +443,15 @@ EllipFitResult FitEllipsoidFixedBias(
     // ── Stage 5: Jacobi eigen decomposition Q = V Λ V^T ──
     double V[3][3];
     double lambda[3];
-    Jacobi3x3(Q, V, lambda);
+    if (!Jacobi3x3(Q, V, lambda)) {
+        return r;  // Jacobi 不收敛，拟合失败
+    }
 
     // ── Stage 6: positive definiteness + condition number ──
-    // 按降序排列特征值（Jacobi 不保证排序）
-    if (lambda[0] < lambda[1]) { const auto t = lambda[0]; lambda[0] = lambda[1]; lambda[1] = t; }
-    if (lambda[0] < lambda[2]) { const auto t = lambda[0]; lambda[0] = lambda[2]; lambda[2] = t; }
-    if (lambda[1] < lambda[2]) { const auto t = lambda[1]; lambda[1] = lambda[2]; lambda[2] = t; }
+    // 按降序排列 (eigenvalue, eigenvector) pair（Jacobi 不保证排序）
+    if (lambda[0] < lambda[1]) { SwapEigenPair(V, lambda, 0, 1); }
+    if (lambda[0] < lambda[2]) { SwapEigenPair(V, lambda, 0, 2); }
+    if (lambda[1] < lambda[2]) { SwapEigenPair(V, lambda, 1, 2); }
 
     const double lambda_min = lambda[2];
     const double lambda_max = lambda[0];
