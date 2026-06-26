@@ -719,7 +719,8 @@ void MagCalTask(SchedulerTaskId self_id, SchedulerRunReason reason, SchedulerEve
                     }
                     printf("[mag_cal] // recommended=%s reason=%s\r\n", rec_label, rec_reason);
                     if (result.norm_out_of_range_count > 0u) {
-                        printf("[mag_cal] // WARNING: raw norm outliers detected; candidate comparison may be affected\r\n");
+                        printf("[mag_cal] // note: raw_norm_out_of_range is auxiliary only; hard-iron bias can make raw norm leave nominal field range\r\n");
+                        printf("[mag_cal] // note: use cal_norm/selfcheck/recommended fields for calibration quality\r\n");
                     }
                     printf("[mag_cal] // ===== end candidate summary =====\r\n");
                 }
