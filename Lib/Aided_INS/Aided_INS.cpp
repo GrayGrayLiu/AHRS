@@ -882,24 +882,60 @@ bool Aided_INS::AccUpdate(const IMU& imuData, const PVA& pvaCur, const Config& c
             const MeasurementNoise<3> R_acc = (config.imuNoise.accVrw.cwiseProduct(config.imuNoise.accVrw)  / imuData.dt).asDiagonal();
 
             /*
-             * AccUpdate 的完整观测矩阵 H_acc 为 3×21，状态块顺序：
+             * 加速度计更新使用低动态假设下的重力方向约束，只修正 roll/pitch
+             * 相关姿态误差，不直接约束 yaw。
              *
+             * 理想比力模型：
+             *   f^b = C_n^b (a^n - g^n)
+             *
+             * 加速度计实际测量模型：
+             *   f_acc^b_hat = (I + S_a) f^b + b_a + w_a
+             *
+             * 其中：
+             *   S_a ：加速度计比例因子误差矩阵，这里按三轴独立比例因子处理；
+             *   b_a ：加速度计零偏误差；
+             *   w_a ：加速度计测量噪声。
+             *
+             * 由于没有直接测量载体运动加速度 a^n，且运动加速度本身又包含在
+             * 比力 f^b 中，不能把未知的 a^n 作为观测量引入更新。
+             * 因此本更新只在低动态条件下使用，近似认为：
+             *   a^n ≈ 0
+             *
+             * 此时理想比力为：
+             *   f^b = -C_n^b g^n
+             *
+             * 由当前 INS 推算姿态得到的理论低动态比力为：
+             *   f_imu^b_hat = -C_n^b_hat g^n
+             *
+             * 按当前 AccUpdate 观测方程的线性化约定，小角度下可写成：
+             *   f_imu^b_hat = [I + (phi×)] f^b
+             *               = f^b - (f^b×) phi
+             *
+             * 构造加速度计更新残差：
+             *   dz_f = f_imu^b_hat - f_acc^b_hat
+             *        = f^b - (f^b×)phi - f^b - S_a f^b - b_a - w_a
+             *        = -(f^b×)phi - b_a - diag(f^b)delta_s_a - w_a
+             *
+             * AccUpdate 的完整观测矩阵 H_acc 为 3×21，状态块顺序：
              *   x = [ P | V | PHI | GB | AB | GS | AS ]^T
-             *       0   3    6     9    12   15   18
              *
              * 加速度计重力方向更新只直接观测姿态误差 PHI、加速度计零偏 AB、
              * 加速度计比例因子 AS，因此：
              *
-             *   H_acc = [ 0_{3×3}  0_{3×3}  H_phi  0_{3×3}  H_ab  0_{3×3}  H_as ]
+             *   H_acc = [ 0  0  -(f^b×)  0  -I  0  -diag(f^b) ]
+             *            P  V     PHI    GB  AB  GS      AS
              *
-             * 其中：
-             *   H_phi = skew(-f_b_ByImu)       — 比力方向反对称矩阵
-             *   H_ab  = -I                     — 加速度计零偏线性耦合
-             *   H_as  = diag(-f_b_ByImu)       — 比例因子按比力分量缩放
+             * 当前代码中：
+             *   f_b_ByImu = f_imu^b_hat = -C_n^b_hat g^n ≈ f^b
+             *   dz        = f_b_ByImu - f_b
+             *   H_phi     = SkewSymmetric(-f_b_ByImu) ≈ -(f^b×)
+             *   H_ab      = -I
+             *   H_as      = (-f_b_ByImu).asDiagonal() ≈ -diag(f^b)
              *
              * EkfUpdateAcc3() 只显式传入这 3 个非零 3×3 块，等价于构造完整
              * H_acc 后调用通用 EkfUpdate<3>()。
              */
+
             const Matrix3d H_phi = SkewSymmetric(-f_b_ByImu);
             const Matrix3d H_ab  = -Matrix3d::Identity();
             const Matrix3d H_as  = (-f_b_ByImu).asDiagonal();
