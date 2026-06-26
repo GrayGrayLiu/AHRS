@@ -24,6 +24,15 @@ constexpr float MIN_RADIUS_AVG_UT  = 15.0F;   // 最小平均半径，uT
 constexpr float SCALE_MIN          = 0.5F;    // 允许的最小 scale
 constexpr float SCALE_MAX          = 2.0F;    // 允许的最大 scale
 
+// ── 椭球拟合质量门限（B1 / B2a 共用）──
+constexpr float ELLIP_FIT_MAX_STD_UT    = 5.0F;
+constexpr float ELLIP_FIT_MIN_MEAN_UT   = 30.0F;
+constexpr float ELLIP_FIT_MAX_MEAN_UT   = 60.0F;
+constexpr float ELLIP_FIT_MIN_NORM_UT   = 30.0F;
+constexpr float ELLIP_FIT_MAX_NORM_UT   = 60.0F;
+constexpr float ELLIP_FIT_MAX_ERR_RATIO = 0.30F;
+constexpr float ELLIP_FIT_MAX_COND      = 500.0F;
+
 // ── 内部状态 ──
 bool     active_{false};
 float    min_uT_[3]{0.0F, 0.0F, 0.0F};
@@ -658,10 +667,13 @@ EllipFitResult FitEllipsoidFixedBias(
 
     // ── Stage 11: acceptance ──
     r.valid = r.Q_positive_definite
-           && r.condition_number < 500.0F
-           && r.cal_norm_std_uT < 5.0F
-           && r.cal_norm_mean_uT > 30.0F
-           && r.cal_norm_mean_uT < 60.0F;
+           && r.condition_number < ELLIP_FIT_MAX_COND
+           && r.cal_norm_std_uT  < ELLIP_FIT_MAX_STD_UT
+           && r.cal_norm_mean_uT > ELLIP_FIT_MIN_MEAN_UT
+           && r.cal_norm_mean_uT < ELLIP_FIT_MAX_MEAN_UT
+           && r.cal_norm_min_uT  > ELLIP_FIT_MIN_NORM_UT
+           && r.cal_norm_max_uT  < ELLIP_FIT_MAX_NORM_UT
+           && r.cal_norm_max_err < ELLIP_FIT_MAX_ERR_RATIO;
 
     return r;
 }
@@ -868,10 +880,13 @@ FullEllipFitResult FitEllipsoidFullAlgebraic(
         // ── Acceptance ──
         r.valid = r.solver_converged
                && r.Q_positive_definite
-               && r.condition_number < 500.0F
-               && r.cal_norm_std_uT < 5.0F
-               && r.cal_norm_mean_uT > 30.0F
-               && r.cal_norm_mean_uT < 60.0F;
+               && r.condition_number < ELLIP_FIT_MAX_COND
+               && r.cal_norm_std_uT  < ELLIP_FIT_MAX_STD_UT
+               && r.cal_norm_mean_uT > ELLIP_FIT_MIN_MEAN_UT
+               && r.cal_norm_mean_uT < ELLIP_FIT_MAX_MEAN_UT
+               && r.cal_norm_min_uT  > ELLIP_FIT_MIN_NORM_UT
+               && r.cal_norm_max_uT  < ELLIP_FIT_MAX_NORM_UT
+               && r.cal_norm_max_err < ELLIP_FIT_MAX_ERR_RATIO;
     }
 
     return r;
