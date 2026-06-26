@@ -20,6 +20,7 @@
 #include "i2c.h"
 #include "main.h"
 #include <stdio.h>
+#include <cmath>
 
 namespace
 {
@@ -532,8 +533,13 @@ void MagDebugTask(SchedulerTaskId self_id, SchedulerRunReason reason, SchedulerE
     }
     s_last_mag_counter = sample.sample_counter;
 
+    const float cal_norm = std::sqrt(
+        sample.mag_uT_body_calibrated[0] * sample.mag_uT_body_calibrated[0] +
+        sample.mag_uT_body_calibrated[1] * sample.mag_uT_body_calibrated[1] +
+        sample.mag_uT_body_calibrated[2] * sample.mag_uT_body_calibrated[2]);
+
     printf("[mag] c=%lu body_raw=%d %d %d body_uT=%.1f %.1f %.1f "
-           "cal_uT=%.1f %.1f %.1f cal=%u "
+           "cal_uT=%.1f %.1f %.1f cal_norm=%.1f cal=%u "
            "sensor_raw=%d %d %d err=%lu ovr=%lu\r\n",
            static_cast<unsigned long>(sample.sample_counter),
            static_cast<int>(sample.raw_body[0]),
@@ -545,6 +551,7 @@ void MagDebugTask(SchedulerTaskId self_id, SchedulerRunReason reason, SchedulerE
            static_cast<double>(sample.mag_uT_body_calibrated[0]),
            static_cast<double>(sample.mag_uT_body_calibrated[1]),
            static_cast<double>(sample.mag_uT_body_calibrated[2]),
+           static_cast<double>(cal_norm),
            static_cast<unsigned int>(sample.calibration_applied),
            static_cast<int>(sample.raw_sensor[0]),
            static_cast<int>(sample.raw_sensor[1]),
