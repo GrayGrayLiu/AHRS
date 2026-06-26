@@ -195,6 +195,139 @@ void SqrtSPD3x3(const double V[3][3], const double lambda[3], double Q_sqrt[3][3
     }
 }
 
+// ============================================================================
+// Full coupled 10-parameter algebraic fit helpers
+// ============================================================================
+
+// 10×10 symmetric positive definite linear system solve (Cholesky)
+bool Solve10x10SPD(const double A[10][10], const double b[10], double x[10])
+{
+    double L[10][10] = {};
+
+    for (int i = 0; i < 10; ++i) {
+        for (int j = 0; j <= i; ++j) {
+            double sum = A[i][j];
+            for (int k = 0; k < j; ++k) { sum -= L[i][k] * L[j][k]; }
+            if (i == j) {
+                if (sum <= 0.0) { return false; }
+                L[i][j] = std::sqrt(sum);
+            } else {
+                L[i][j] = sum / L[j][j];
+            }
+        }
+    }
+
+    double y[10];
+    for (int i = 0; i < 10; ++i) {
+        double sum = b[i];
+        for (int j = 0; j < i; ++j) { sum -= L[i][j] * y[j]; }
+        y[i] = sum / L[i][i];
+    }
+
+    for (int i = 9; i >= 0; --i) {
+        double sum = y[i];
+        for (int j = i + 1; j < 10; ++j) { sum -= L[j][i] * x[j]; }
+        x[i] = sum / L[i][i];
+    }
+
+    return true;
+}
+
+// 3×3 symmetric matrix inverse (cofactor method)
+// A = [[a,b,c],[b,d,e],[c,e,f]]  →  A^{-1}
+// Returns false if singular (|det| < eps)
+bool Inverse3x3(const double A[3][3], double A_inv[3][3])
+{
+    const double a = A[0][0], b = A[0][1], c = A[0][2];
+    const double d = A[1][1], e = A[1][2], f = A[2][2];
+
+    // Cofactors of symmetric A
+    const double C00 = d * f - e * e;
+    const double C11 = a * f - c * c;
+    const double C22 = a * d - b * b;
+    const double C01 = c * e - b * f;
+    const double C02 = b * e - c * d;
+    const double C12 = b * c - a * e;
+
+    const double det = a * C00 + b * C01 + c * C02;
+    if (std::abs(det) < 1.0e-15) { return false; }
+
+    const double inv_det = 1.0 / det;
+    A_inv[0][0] = C00 * inv_det;
+    A_inv[0][1] = C01 * inv_det;
+    A_inv[0][2] = C02 * inv_det;
+    A_inv[1][0] = A_inv[0][1];
+    A_inv[1][1] = C11 * inv_det;
+    A_inv[1][2] = C12 * inv_det;
+    A_inv[2][0] = A_inv[0][2];
+    A_inv[2][1] = A_inv[1][2];
+    A_inv[2][2] = C22 * inv_det;
+
+    return true;
+}
+
+// Inverse power iteration: find eigenvector of S corresponding to smallest eigenvalue
+// S:     10×10 symmetric positive semidefinite (modified in-place with regularization)
+// theta: output parameter vector (eigenvector)
+// iters: output iteration count
+// converged: output convergence flag
+// Returns false if Cholesky fails during iteration
+bool InversePowerSmallestEigen10x10(
+    const double S_in[10][10], double theta[10],
+    uint8_t &iters, bool &converged)
+{
+    // Regularize
+    double trace = 0.0;
+    for (int i = 0; i < 10; ++i) { trace += S_in[i][i]; }
+    const double reg = 1.0e-8 * trace / 10.0;
+
+    double S_reg[10][10];
+    for (int i = 0; i < 10; ++i) {
+        for (int j = 0; j < 10; ++j) { S_reg[i][j] = S_in[i][j]; }
+        S_reg[i][i] += reg;
+    }
+
+    double v[10];
+    for (int i = 0; i < 10; ++i) { v[i] = 1.0; }
+
+    constexpr int    MAX_ITERS = 15;
+    constexpr double TOL       = 1.0e-8;
+
+    converged = false;
+    iters = 0;
+
+    for (int iter = 0; iter < MAX_ITERS; ++iter) {
+        double w[10];
+        if (!Solve10x10SPD(S_reg, v, w)) { return false; }
+
+        // Normalize (guard against zero or degenerate w)
+        double norm_w = 0.0;
+        for (int i = 0; i < 10; ++i) { norm_w += w[i] * w[i]; }
+        if (norm_w <= 0.0) { return false; }
+        norm_w = std::sqrt(norm_w);
+        for (int i = 0; i < 10; ++i) { w[i] /= norm_w; }
+
+        // Check eigenvector change (handle sign ambiguity: v and -v are same direction)
+        double diff_same = 0.0;
+        double diff_flip = 0.0;
+        for (int i = 0; i < 10; ++i) {
+            const double d_same = w[i] - v[i];
+            const double d_flip = w[i] + v[i];
+            diff_same += d_same * d_same;
+            diff_flip += d_flip * d_flip;
+        }
+        const double diff = (diff_same < diff_flip) ? std::sqrt(diff_same) : std::sqrt(diff_flip);
+
+        for (int i = 0; i < 10; ++i) { v[i] = w[i]; }
+
+        iters = static_cast<uint8_t>(iter + 1);
+        if (diff < TOL) { converged = true; break; }
+    }
+
+    for (int i = 0; i < 10; ++i) { theta[i] = v[i]; }
+    return true;
+}
+
 } // namespace
 
 void Reset()
@@ -529,6 +662,217 @@ EllipFitResult FitEllipsoidFixedBias(
            && r.cal_norm_std_uT < 5.0F
            && r.cal_norm_mean_uT > 30.0F
            && r.cal_norm_mean_uT < 60.0F;
+
+    return r;
+}
+
+FullEllipFitResult FitEllipsoidFullAlgebraic(
+    const float sample_buffer[][3],
+    const size_t count,
+    const float min_uT[3],
+    const float max_uT[3])
+{
+    FullEllipFitResult r{};
+
+    if (count < 100u) { return r; }
+
+    // ── Normalization parameters ──
+    float b0[3];
+    float R0 = 0.0F;
+    for (int i = 0; i < 3; ++i) {
+        b0[i] = (max_uT[i] + min_uT[i]) * 0.5F;
+        R0   += (max_uT[i] - min_uT[i]) * 0.5F;
+    }
+    R0 /= 3.0F;
+    r.R0_uT = R0;
+    if (R0 < 1.0F) { return r; }
+
+    // ── Accumulate 10×10 S = Σ f_i f_i^T ──
+    double S[10][10] = {};
+    for (size_t k = 0u; k < count; ++k) {
+        const double z0 = (static_cast<double>(sample_buffer[k][0]) - static_cast<double>(b0[0])) / static_cast<double>(R0);
+        const double z1 = (static_cast<double>(sample_buffer[k][1]) - static_cast<double>(b0[1])) / static_cast<double>(R0);
+        const double z2 = (static_cast<double>(sample_buffer[k][2]) - static_cast<double>(b0[2])) / static_cast<double>(R0);
+
+        const double f[10] = {
+            z0 * z0,
+            z1 * z1,
+            z2 * z2,
+            2.0 * z0 * z1,
+            2.0 * z0 * z2,
+            2.0 * z1 * z2,
+            z0,
+            z1,
+            z2,
+            1.0,
+        };
+
+        for (int i = 0; i < 10; ++i) {
+            for (int j = 0; j < 10; ++j) {
+                S[i][j] += f[i] * f[j];
+            }
+        }
+    }
+
+    // ── Inverse power iteration: smallest eigenvector of S ──
+    double theta[10];
+    bool   conv;
+    uint8_t iters;
+    if (!InversePowerSmallestEigen10x10(S, theta, iters, conv)) {
+        r.solver_iters     = iters;
+        r.solver_converged = conv;
+        return r;
+    }
+    r.solver_iters     = iters;
+    r.solver_converged = conv;
+    if (!conv) { return r; }  // 未收敛的 θ 不可用
+
+    // ── Extract A, d, c from θ ──
+    double A[3][3] = {
+        { theta[0], theta[3], theta[4] },
+        { theta[3], theta[1], theta[5] },
+        { theta[4], theta[5], theta[2] },
+    };
+    const double d[3] = { theta[6], theta[7], theta[8] };
+    const double c_z  = theta[9];
+
+    // ── Center: b_z = -0.5 * A^{-1} * d ──
+    double A_inv[3][3];
+    if (!Inverse3x3(A, A_inv)) { return r; }
+
+    double b_z[3] = {};
+    for (int i = 0; i < 3; ++i) {
+        for (int j = 0; j < 3; ++j) {
+            b_z[i] += A_inv[i][j] * d[j];
+        }
+        b_z[i] *= -0.5;
+    }
+
+    // ── Scale normalization + sign handling ──
+    double k_raw = 0.0;
+    {
+        double Ab[3] = {};
+        for (int i = 0; i < 3; ++i) {
+            for (int j = 0; j < 3; ++j) { Ab[i] += A[i][j] * b_z[j]; }
+        }
+        for (int i = 0; i < 3; ++i) { k_raw += b_z[i] * Ab[i]; }
+    }
+    k_raw -= c_z;
+
+    if (std::abs(k_raw) < 1.0e-12) { r.k_raw = static_cast<float>(k_raw); return r; }
+
+    // b_z 和 k_raw 已确定；后续只需 Q_z = A / k_raw。
+    // k_raw < 0 表示 θ 整体符号取反；仅翻转 A 与 k_raw 使 Q_z 保持等价且 k_raw 为正。
+    if (k_raw < 0.0) {
+        for (int i = 0; i < 3; ++i) {
+            for (int j = 0; j < 3; ++j) { A[i][j] = -A[i][j]; }
+        }
+        k_raw = -k_raw;
+    }
+    r.k_raw = static_cast<float>(k_raw);
+
+    // Q_z = A / k_raw
+    double Q_z[3][3];
+    for (int i = 0; i < 3; ++i) {
+        for (int j = 0; j < 3; ++j) { Q_z[i][j] = A[i][j] / k_raw; }
+    }
+
+    // ── Positive definiteness + condition number ──
+    {
+        double V[3][3], lambda[3];
+        if (!Jacobi3x3(Q_z, V, lambda)) { return r; }
+
+        if (lambda[0] < lambda[1]) { SwapEigenPair(V, lambda, 0, 1); }
+        if (lambda[0] < lambda[2]) { SwapEigenPair(V, lambda, 0, 2); }
+        if (lambda[1] < lambda[2]) { SwapEigenPair(V, lambda, 1, 2); }
+
+        r.Q_positive_definite = (lambda[2] > 0.0);
+        if (!r.Q_positive_definite) { return r; }
+
+        r.condition_number = static_cast<float>(lambda[0] / lambda[2]);
+        if (r.condition_number > 500.0F) { return r; }
+
+        // ── SPD sqrt: Q_sqrt = V sqrt(Λ) V^T ──
+        double Q_sqrt[3][3];
+        SqrtSPD3x3(V, lambda, Q_sqrt);
+
+        // ── De-normalize: b_raw, Q_raw ──
+        for (int i = 0; i < 3; ++i) {
+            r.bias_body_uT[i] = b0[i] + R0 * static_cast<float>(b_z[i]);
+        }
+
+        // Q_raw = Q_z / R0², applied via M = R_target * (Q_sqrt / R0)
+        // since Q_sqrt is sqrt(Q_z), Q_raw_sqrt = Q_sqrt / R0
+        const double inv_R0 = 1.0 / static_cast<double>(R0);
+
+        // ── R_target: mean(||x_i - b_raw||) ──
+        double R_target = 0.0;
+        for (size_t k = 0u; k < count; ++k) {
+            const double y0 = static_cast<double>(sample_buffer[k][0]) - static_cast<double>(r.bias_body_uT[0]);
+            const double y1 = static_cast<double>(sample_buffer[k][1]) - static_cast<double>(r.bias_body_uT[1]);
+            const double y2 = static_cast<double>(sample_buffer[k][2]) - static_cast<double>(r.bias_body_uT[2]);
+            R_target += std::sqrt(y0 * y0 + y1 * y1 + y2 * y2);
+        }
+        R_target /= static_cast<double>(count);
+        r.R_target_uT = static_cast<float>(R_target);
+
+        // M = R_target * (Q_sqrt / R0) = (R_target / R0) * Q_sqrt
+        const double scale = R_target * inv_R0;
+        for (int i = 0; i < 3; ++i) {
+            for (int j = 0; j < 3; ++j) {
+                r.matrix_3x3[i][j] = static_cast<float>(scale * Q_sqrt[i][j]);
+            }
+        }
+
+        // ── Self-validation ──
+        float  cal_min  = FLT_MAX;
+        float  cal_max  = -FLT_MAX;
+        double cal_sum  = 0.0;
+        double cal_sum2 = 0.0;
+
+        for (size_t k = 0u; k < count; ++k) {
+            const float y[3] = {
+                sample_buffer[k][0] - r.bias_body_uT[0],
+                sample_buffer[k][1] - r.bias_body_uT[1],
+                sample_buffer[k][2] - r.bias_body_uT[2],
+            };
+            float cal[3] = {};
+            for (int i = 0; i < 3; ++i) {
+                cal[i] = r.matrix_3x3[i][0] * y[0]
+                       + r.matrix_3x3[i][1] * y[1]
+                       + r.matrix_3x3[i][2] * y[2];
+            }
+            const float cn = std::sqrt(cal[0] * cal[0] + cal[1] * cal[1] + cal[2] * cal[2]);
+
+            if (cn < cal_min) { cal_min = cn; }
+            if (cn > cal_max) { cal_max = cn; }
+            cal_sum  += static_cast<double>(cn);
+            cal_sum2 += static_cast<double>(cn) * static_cast<double>(cn);
+        }
+
+        r.cal_norm_min_uT  = cal_min;
+        r.cal_norm_max_uT  = cal_max;
+        r.cal_norm_mean_uT = static_cast<float>(cal_sum / static_cast<double>(count));
+        {
+            const double m   = static_cast<double>(r.cal_norm_mean_uT);
+            const double var = cal_sum2 / static_cast<double>(count) - m * m;
+            r.cal_norm_std_uT = (var > 0.0) ? static_cast<float>(std::sqrt(var)) : 0.0F;
+        }
+        if (r.cal_norm_mean_uT > 0.0F) {
+            const float max_dev = (cal_max - r.cal_norm_mean_uT) > (r.cal_norm_mean_uT - cal_min)
+                                ? (cal_max - r.cal_norm_mean_uT)
+                                : (r.cal_norm_mean_uT - cal_min);
+            r.cal_norm_max_err = max_dev / r.cal_norm_mean_uT;
+        }
+
+        // ── Acceptance ──
+        r.valid = r.solver_converged
+               && r.Q_positive_definite
+               && r.condition_number < 500.0F
+               && r.cal_norm_std_uT < 5.0F
+               && r.cal_norm_mean_uT > 30.0F
+               && r.cal_norm_mean_uT < 60.0F;
+    }
 
     return r;
 }

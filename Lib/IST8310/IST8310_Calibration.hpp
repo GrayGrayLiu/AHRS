@@ -91,6 +91,53 @@ EllipFitResult FitEllipsoidFixedBias(
     const float max_uT[3]);
 
 /**
+ * @brief 10-parameter algebraic full coupled ellipsoid candidate 结果
+ *
+ * @note  不是几何距离最优，不是最终方案。齐次最小特征向量解仅保证代数最优，
+ *        输出前需校验 Q positive definite + condition number + cal_norm。
+ */
+struct FullEllipFitResult
+{
+    float bias_body_uT[3]{};
+    float matrix_3x3[3][3]{};       // M, mag_cal = M * (x - bias)
+
+    float cal_norm_min_uT{};
+    float cal_norm_max_uT{};
+    float cal_norm_mean_uT{};
+    float cal_norm_std_uT{};
+    float cal_norm_max_err{};
+
+    float condition_number{};
+    float k_raw{};                  // b^T A b - c（归一化空间 scale factor）
+    float R0_uT{};                  // 归一化半径
+    float R_target_uT{};            // 校正目标半径
+
+    uint8_t solver_iters{};
+    bool solver_converged{false};
+    bool Q_positive_definite{false};
+    bool valid{false};
+};
+
+/**
+ * @brief 10-parameter algebraic full coupled ellipsoid candidate fit
+ *
+ * @note  使用归一化 + 齐次最小特征向量法估计 b 和 Q。
+ *        不保证 Q positive definite，调用方须检查 FullEllipFitResult.valid。
+ *        只作为候选参数块，不替换当前 diagonal 基线。
+ *
+ * @param sample_buffer  样本数组 [count][3] body-frame 未校准 uT
+ * @param count          样本数
+ * @param min_uT[3]      每轴最小值
+ * @param max_uT[3]      每轴最大值
+ * @return 拟合结果
+ */
+FullEllipFitResult FitEllipsoidFullAlgebraic(
+    const float sample_buffer[][3],
+    size_t count,
+    const float min_uT[3],
+    const float max_uT[3]);
+
+/**
  * @brief 重置所有内部状态（重新开始收集）
  */
 void Reset();
