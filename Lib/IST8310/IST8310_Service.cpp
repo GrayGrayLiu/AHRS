@@ -84,6 +84,43 @@ uint32_t total_error_counter_{0u};      // 累计 I2C/通信错误数
 uint32_t total_overrun_counter_{0u};    // 累计 DOR 超限数
 
 // ============================================================================
+// 运行期配置寄存器检查（对齐 PX4 IST8310 的 runtime register check）
+// 必须与 IST8310.hpp 中 register_cfg_[] 的 PDCNTL/AVGCNTL 配置保持一致。
+// ============================================================================
+
+struct RuntimeRegCheckEntry
+{
+    IST8310_Regs::Register reg;
+    uint8_t mask;
+    uint8_t expected;
+};
+
+// 仅检查 AVGCNTL(0x41) 和 PDCNTL(0x42)；
+// 不检查 CNTL2（DREN/DRP 不影响 I2C 路径），不检查 CNTL3（AHRS 不使用 16-bit 输出）。
+static constexpr RuntimeRegCheckEntry kRuntimeRegChecks[] = {
+    {
+        IST8310_Regs::Register::PDCNTL,
+        static_cast<uint8_t>(IST8310_Regs::PDCNTL_BITS::PULSE_DURATION_MASK),
+        static_cast<uint8_t>(IST8310_Regs::PDCNTL_BITS::PULSE_DURATION_NORMAL),
+    },
+    {
+        IST8310_Regs::Register::AVGCNTL,
+        static_cast<uint8_t>(IST8310_Regs::AVGCNTL_BITS::Y_AVG_MASK
+                           | IST8310_Regs::AVGCNTL_BITS::XZ_AVG_MASK),
+        static_cast<uint8_t>(IST8310_Regs::AVGCNTL_BITS::Y_AVG_16_TIMES
+                           | IST8310_Regs::AVGCNTL_BITS::XZ_AVG_16_TIMES),
+    },
+};
+
+static constexpr uint32_t RUNTIME_CHECK_INTERVAL = 100u;  // 每 100 次 trigger 检查 1 个寄存器
+static constexpr size_t   RUNTIME_CHECK_COUNT =
+    sizeof(kRuntimeRegChecks) / sizeof(kRuntimeRegChecks[0]);
+
+uint32_t runtime_check_trigger_count_{0u};     // 采样窗口计数；每达到一次 trigger 条件（elapsed >= SAMPLING_PERIOD_US）递增
+uint8_t  runtime_check_index_{0u};             // 下一轮要检查的寄存器下标
+uint32_t total_register_mismatch_counter_{0u}; // 累计寄存器值不匹配次数（仅递增，不清零）
+
+// ============================================================================
 // 通用小工具函数
 // ============================================================================
 
@@ -152,6 +189,33 @@ void HandleIdle()
 
     if (elapsed < SAMPLING_PERIOD_US) {
         return;
+    }
+
+    // ── 运行期配置寄存器检查，每 100 次 trigger 轮转 1 个寄存器 ──
+    // 检查作为独立 I2C 阶段处理：触发时只执行一次 RegisterRead 就返回，
+    // 下一次 Run() 再写 CNTL1。保证每次 Run() 最多一个 I2C 事务。
+    // 代价是每约 2 秒有一轮 trigger 延后约 1 ms，对 50 Hz 采样无实质影响。
+    ++runtime_check_trigger_count_;
+    if (runtime_check_trigger_count_ >= RUNTIME_CHECK_INTERVAL) {
+        runtime_check_trigger_count_ = 0u;
+
+        const auto &entry = kRuntimeRegChecks[runtime_check_index_];
+        uint8_t value{};
+        const IST8310::Status rd = ist8310->RegisterRead(entry.reg, value);
+
+        if (rd != IST8310::Status::Ok) {
+            RecordError();
+            return;   // I2C 读失败，本轮不写 CNTL1
+        }
+
+        if ((value & entry.mask) != entry.expected) {
+            ++total_register_mismatch_counter_;
+            EnterFault();
+            return;   // 寄存器不匹配，进入 fault，本轮不写 CNTL1
+        }
+
+        runtime_check_index_ = (runtime_check_index_ + 1u) % RUNTIME_CHECK_COUNT;
+        return;   // 检查通过；本轮不写 CNTL1，下一次 Run() 再触发测量
     }
 
     // 写 CNTL1[3:0] = 0x01（Single Measurement），手册 Section 3.1.2。
@@ -303,6 +367,9 @@ int Init(I2C_HandleTypeDef *const hi2c, const uint8_t address_7bit,
         latest_sample_  = {};
         trigger_timestamp_us_ = 0u;
         state_          = State::IDLE;
+        runtime_check_trigger_count_ = 0u;
+        runtime_check_index_         = 0u;
+        // total_register_mismatch_counter_ 不清零；与 total_error_counter_ 一样为累计 lifetime counter
         ResetConsecutiveErrors();
         return 0;
     }
@@ -325,6 +392,9 @@ int Init(I2C_HandleTypeDef *const hi2c, const uint8_t address_7bit,
     latest_sample_        = {};
     trigger_timestamp_us_ = 0u;
     state_                = State::IDLE;
+    runtime_check_trigger_count_ = 0u;
+    runtime_check_index_         = 0u;
+    // total_register_mismatch_counter_ 不清零；与 total_error_counter_ 一样为累计 lifetime counter
     ResetConsecutiveErrors();
 
     return 0;
