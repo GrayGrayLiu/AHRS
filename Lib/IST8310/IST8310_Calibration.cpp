@@ -35,6 +35,12 @@ float    norm_min_{FLT_MAX};
 float    norm_max_{-FLT_MAX};
 uint32_t norm_out_of_range_count_{0u};
 
+// 样本缓存：用于 Finish() 中计算校准后磁场模长统计（body-frame 未校准 uT）
+static constexpr size_t MAX_CAL_SAMPLES = 2000u;
+float cal_sample_buffer_[MAX_CAL_SAMPLES][3]{};
+size_t cal_sample_count_{0u};
+size_t cal_sample_dropped_{0u};
+
 void InitMinMax()
 {
     for (int i = 0; i < 3; ++i) {
@@ -52,6 +58,8 @@ void Reset()
     norm_min_ = FLT_MAX;
     norm_max_ = -FLT_MAX;
     norm_out_of_range_count_ = 0u;
+    cal_sample_count_ = 0u;
+    cal_sample_dropped_ = 0u;
     active_ = true;
 }
 
@@ -75,6 +83,16 @@ void FeedSample(const float mag_uT_body[3])
     }
 
     ++sample_count_;
+
+    // 保存未校准 body-frame 样本，供 Finish() 计算校准后模长统计
+    if (cal_sample_count_ < MAX_CAL_SAMPLES) {
+        cal_sample_buffer_[cal_sample_count_][0] = mag_uT_body[0];
+        cal_sample_buffer_[cal_sample_count_][1] = mag_uT_body[1];
+        cal_sample_buffer_[cal_sample_count_][2] = mag_uT_body[2];
+        ++cal_sample_count_;
+    } else {
+        ++cal_sample_dropped_;
+    }
 }
 
 MagCalResult Finish()
@@ -161,6 +179,46 @@ MagCalResult Finish()
 
     if (span_max > 0.0F) {
         r.quality_score = span_min / span_max;
+    }
+
+    // ── 校准后磁场模长自验证：基于本轮 bias/scale 回放所有保存的样本 ──
+    if (cal_sample_count_ > 0u) {
+        float  cal_norm_min = FLT_MAX;
+        float  cal_norm_max = -FLT_MAX;
+        double cal_norm_sum = 0.0;
+        double cal_norm_sum_sq = 0.0;
+
+        for (size_t i = 0u; i < cal_sample_count_; ++i) {
+            const float cx = (cal_sample_buffer_[i][0] - r.bias_body_uT[0]) * r.scale_body[0];
+            const float cy = (cal_sample_buffer_[i][1] - r.bias_body_uT[1]) * r.scale_body[1];
+            const float cz = (cal_sample_buffer_[i][2] - r.bias_body_uT[2]) * r.scale_body[2];
+            const float cn = std::sqrt(cx * cx + cy * cy + cz * cz);
+
+            if (cn < cal_norm_min) { cal_norm_min = cn; }
+            if (cn > cal_norm_max) { cal_norm_max = cn; }
+            cal_norm_sum    += static_cast<double>(cn);
+            cal_norm_sum_sq += static_cast<double>(cn) * static_cast<double>(cn);
+        }
+
+        r.cal_norm_min_uT  = cal_norm_min;
+        r.cal_norm_max_uT  = cal_norm_max;
+        r.cal_norm_mean_uT = static_cast<float>(cal_norm_sum / static_cast<double>(cal_sample_count_));
+
+        const double mean_d = static_cast<double>(r.cal_norm_mean_uT);
+        const double var   = (cal_norm_sum_sq / static_cast<double>(cal_sample_count_)) - mean_d * mean_d;
+        r.cal_norm_std_uT  = (var > 0.0) ? static_cast<float>(std::sqrt(var)) : 0.0F;
+
+        if (r.cal_norm_mean_uT > 0.0F) {
+            r.cal_norm_range_ratio = (cal_norm_max - cal_norm_min) / r.cal_norm_mean_uT;
+            const float max_dev = (cal_norm_max - r.cal_norm_mean_uT) > (r.cal_norm_mean_uT - cal_norm_min)
+                                ? (cal_norm_max - r.cal_norm_mean_uT)
+                                : (r.cal_norm_mean_uT - cal_norm_min);
+            r.cal_norm_max_error_ratio = max_dev / r.cal_norm_mean_uT;
+        }
+
+        r.cal_norm_valid          = true;
+        r.cal_sample_count        = static_cast<uint32_t>(cal_sample_count_);
+        r.cal_sample_dropped_count = static_cast<uint32_t>(cal_sample_dropped_);
     }
 
     r.valid = pass;

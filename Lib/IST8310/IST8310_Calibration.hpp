@@ -36,6 +36,18 @@ struct MagCalResult
     float    norm_range_ratio{0.0F};              // 模长变化率 = (max-min) / mean
     uint32_t norm_out_of_range_count{0u};         // 模长超出 [10,100] uT 的样本数（仅统计，不拒绝）
 
+    // 校准后磁场模长自验证统计（应用本轮 bias/scale 回放样本）
+    // 与 raw norm 统计互补：raw norm 反映采样分布，cal norm 反映校准后球面一致性
+    float    cal_norm_min_uT{0.0F};
+    float    cal_norm_max_uT{0.0F};
+    float    cal_norm_mean_uT{0.0F};
+    float    cal_norm_std_uT{0.0F};
+    float    cal_norm_range_ratio{0.0F};
+    float    cal_norm_max_error_ratio{0.0F};
+    bool     cal_norm_valid{false};
+    uint32_t cal_sample_count{0u};
+    uint32_t cal_sample_dropped_count{0u};
+
     uint32_t sample_count{0u};                   // 有效 sample 数
     bool     valid{false};                       // 结果是否通过质量门限
 };

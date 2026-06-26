@@ -453,6 +453,20 @@ void MagCalTask(SchedulerTaskId self_id, SchedulerRunReason reason, SchedulerEve
                    static_cast<double>(result.norm_range_ratio),
                    static_cast<unsigned long>(result.norm_out_of_range_count));
 
+            // calibrated body-frame norm stats (self-validation: raw samples replayed with computed bias/scale)
+            if (result.cal_norm_valid) {
+                printf("[mag_cal] cal_norm min=%.2f max=%.2f mean=%.2f std=%.2f "
+                       "range_ratio=%.3f max_err=%.3f samples=%lu dropped=%lu\r\n",
+                       static_cast<double>(result.cal_norm_min_uT),
+                       static_cast<double>(result.cal_norm_max_uT),
+                       static_cast<double>(result.cal_norm_mean_uT),
+                       static_cast<double>(result.cal_norm_std_uT),
+                       static_cast<double>(result.cal_norm_range_ratio),
+                       static_cast<double>(result.cal_norm_max_error_ratio),
+                       static_cast<unsigned long>(result.cal_sample_count),
+                       static_cast<unsigned long>(result.cal_sample_dropped_count));
+            }
+
             key_cnt = 0u;
         }
         break;
