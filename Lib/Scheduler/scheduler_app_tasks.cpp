@@ -515,6 +515,48 @@ void MagCalTask(SchedulerTaskId self_id, SchedulerRunReason reason, SchedulerEve
                            static_cast<double>(efit.cal_norm_std_uT),
                            static_cast<double>(efit.cal_norm_max_err));
                 }
+
+                // ── B2a full coupled algebraic candidate ──
+                if (buf != nullptr && n >= 100u) {
+                    const auto ffit = ist8310_calibration::FitEllipsoidFullAlgebraic(
+                        buf, n, result.min_body_uT, result.max_body_uT);
+
+                    printf("[mag_cal] // ===== full-coupled algebraic 3x3 candidate =====\r\n");
+                    printf("[mag_cal] // fit_valid=%u solver_converged=%u iters=%u Q_posdef=%u cond=%.1f k=%.6g R0=%.2f R_target=%.2f\r\n",
+                           static_cast<unsigned int>(ffit.valid),
+                           static_cast<unsigned int>(ffit.solver_converged),
+                           static_cast<unsigned int>(ffit.solver_iters),
+                           static_cast<unsigned int>(ffit.Q_positive_definite),
+                           static_cast<double>(ffit.condition_number),
+                           static_cast<double>(ffit.k_raw),
+                           static_cast<double>(ffit.R0_uT),
+                           static_cast<double>(ffit.R_target_uT));
+                    printf("[mag_cal] constexpr float kMagHardIronBiasBody_uT[3] = {\r\n");
+                    printf("[mag_cal]     %.2fF, %.2fF, %.2fF,\r\n",
+                           static_cast<double>(ffit.bias_body_uT[0]),
+                           static_cast<double>(ffit.bias_body_uT[1]),
+                           static_cast<double>(ffit.bias_body_uT[2]));
+                    printf("[mag_cal] };\r\n");
+                    printf("[mag_cal]\r\n");
+                    printf("[mag_cal] constexpr float kMagSoftIronMatrix[3][3] = {\r\n");
+                    for (int row = 0; row < 3; ++row) {
+                        printf("[mag_cal]     { % .4fF, % .4fF, % .4fF },\r\n",
+                               static_cast<double>(ffit.matrix_3x3[row][0]),
+                               static_cast<double>(ffit.matrix_3x3[row][1]),
+                               static_cast<double>(ffit.matrix_3x3[row][2]));
+                    }
+                    printf("[mag_cal] };\r\n");
+                    printf("[mag_cal] // cal_norm min=%.2f max=%.2f mean=%.2f std=%.2f max_err=%.3f\r\n",
+                           static_cast<double>(ffit.cal_norm_min_uT),
+                           static_cast<double>(ffit.cal_norm_max_uT),
+                           static_cast<double>(ffit.cal_norm_mean_uT),
+                           static_cast<double>(ffit.cal_norm_std_uT),
+                           static_cast<double>(ffit.cal_norm_max_err));
+                    printf("[mag_cal] // ===== end full-coupled candidate =====\r\n");
+                } else if (buf != nullptr) {
+                    printf("[mag_cal] // full-coupled algebraic fit skipped: n=%lu < 100\r\n",
+                           static_cast<unsigned long>(n));
+                }
             }
 #endif
 
