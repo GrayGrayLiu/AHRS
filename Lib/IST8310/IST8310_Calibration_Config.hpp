@@ -16,19 +16,27 @@
 namespace ist8310_calibration_config
 {
 
-// 当前候选校准参数（2026-06-26 第三次上板校准）
-//   samples=1006, quality=0.95, radius_avg_uT=45.45
-//   span_body_uT={90.91F, 88.79F, 93.03F}
-//   raw norm stats: min=10.32, max=104.61, range_ratio=1.641, out_of_range=36
+// 当前校准参数（2026-06-26 第四次上板校准，复验结果）
+//   samples=1455, quality=0.94, radius_avg_uT=46.21
+//   span_body_uT={90.91F, 96.06F, 90.30F}
+//   raw norm: min=15.53 max=94.09 range_ratio=1.433 out_of_range=0
+//   cal_norm: min=36.93 max=56.99 mean=46.27 std=3.28 range_ratio=0.434 max_err=0.232 samples=1455 dropped=0
 //   公式: mag_cal = (mag_body - bias_body) * scale_body
 //   坐标系: body-frame, 映射: body_x=sensor_y, body_y=-sensor_x, body_z=-sensor_z
 constexpr float kMagHardIronBiasBody_uT[3] = {
-    48.48F, 14.39F, 14.70F,
+    41.82F, 14.70F, 4.85F,
 };
 
 constexpr float kMagScaleBody[3] = {
-    1.00F, 1.02F, 0.98F,
+    1.02F, 0.96F, 1.02F,
 };
+
+// 第三次 MCU 端校准结果（2026-06-26，已弃用）
+//   samples=1006, quality=0.95, radius_avg_uT=45.45
+//   span_body_uT={90.91F, 88.79F, 93.03F}
+//   raw norm: min=10.32 max=104.61 range_ratio=1.641 out_of_range=36
+// constexpr float kMagHardIronBiasBody_uT[3] = { 48.48F, 14.39F, 14.70F };
+// constexpr float kMagScaleBody[3]            = {  1.00F,  1.02F,   0.98F };
 
 // 第一版 MCU 端校准结果（2026-06-25，已弃用）
 //   samples=1004, quality=0.92, radius_avg_uT=43.69
