@@ -40,7 +40,7 @@ enum
 {
     MIN_WAIT_US          =  6000u,   // 低噪声配置下单次测量最小等待，us（手册 Section 3.1.1）
     DATA_TIMEOUT_US      = 20000u,   // DRDY 等待超时，us
-    SAMPLING_PERIOD_US   = 20000u,   // 采样周期，us（50 Hz，初期保守值；后续可按需调整）
+    SAMPLING_PERIOD_US   = 20000u,   // trigger-to-trigger 采样周期，us（目标 50 Hz；实测 sample_rate 以上板统计为准）
     MAX_CONSECUTIVE_ERRORS = 3u,     // 连续错误阈值，超此值进入 fault
 };
 
@@ -142,12 +142,13 @@ void ApplyMagCalibration(const float in_body_uT[3], float out_body_uT[3])
 // 非阻塞状态机辅助
 // ============================================================================
 
-// IDLE: 到采样窗口后写 CNTL1 触发单次测量。
+// IDLE: 以 trigger-to-trigger 周期写 CNTL1 触发单次测量。
+//       周期基准为上次 CNTL1 写入时刻 trigger_timestamp_us_（对齐 PX4 IST8310 的 MEASURE 状态语义）。
+//       写 CNTL1 失败也视为一次 trigger attempt，用于限制 I2C 故障时的重试频率。
 void HandleIdle()
 {
-    // 距离上次 sample 完成未到采样周期则直接返回，不做 I2C。
     const uint64_t now_us = TimeBase_Micros();
-    const uint64_t elapsed = now_us - latest_sample_.read_timestamp_us;
+    const uint64_t elapsed = now_us - trigger_timestamp_us_;
 
     if (elapsed < SAMPLING_PERIOD_US) {
         return;
@@ -158,6 +159,7 @@ void HandleIdle()
         IST8310_Regs::Register::CNTL1,
         static_cast<uint8_t>(IST8310_Regs::CNTL1_BITS::MODE_SINGLE_MEASUREMENT));
 
+    // I2C 写失败也记录 trigger_timestamp_us_，避免故障时高频重试。
     trigger_timestamp_us_ = now_us;
 
     if (status != IST8310::Status::Ok) {
