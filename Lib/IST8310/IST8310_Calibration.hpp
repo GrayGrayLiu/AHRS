@@ -28,6 +28,14 @@ struct MagCalResult
     float radius_avg_uT{0.0F};                   // 三轴平均半径
 
     float    quality_score{0.0F};                // 0~1，越高越好
+
+    // raw body-frame 磁场模长辅助统计（仅用于观察采样覆盖和异常情况，
+    // 不等价于椭球拟合残差，也不等价于校准后球面误差）
+    float    norm_min_uT{0.0F};                   // 收集期间磁场模长最小值
+    float    norm_max_uT{0.0F};                   // 收集期间磁场模长最大值
+    float    norm_range_ratio{0.0F};              // 模长变化率 = (max-min) / mean
+    uint32_t norm_out_of_range_count{0u};         // 模长超出 [10,100] uT 的样本数（仅统计，不拒绝）
+
     uint32_t sample_count{0u};                   // 有效 sample 数
     bool     valid{false};                       // 结果是否通过质量门限
 };

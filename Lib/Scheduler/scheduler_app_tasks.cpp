@@ -401,6 +401,31 @@ void MagCalTask(SchedulerTaskId self_id, SchedulerRunReason reason, SchedulerEve
                        static_cast<double>(result.quality_score),
                        static_cast<double>(result.radius_avg_uT));
                 ui_state = MagCalUiState::Success;
+
+                // ── 可复制 C++ constexpr 参数块（仅成功时输出） ──
+                printf("[mag_cal] // ===== copy to IST8310_Calibration_Config.hpp =====\r\n");
+                printf("[mag_cal] // frame: body-frame (X forward, Y right, Z down)\r\n");
+                printf("[mag_cal] // mapping: body_x=sensor_y, body_y=-sensor_x, body_z=-sensor_z\r\n");
+                printf("[mag_cal] // formula: mag_cal = (mag_body - bias_body) * scale_body\r\n");
+                printf("[mag_cal] // unit: uT\r\n");
+                printf("[mag_cal] // samples=%lu quality=%.2f radius_avg_uT=%.2f\r\n",
+                       static_cast<unsigned long>(result.sample_count),
+                       static_cast<double>(result.quality_score),
+                       static_cast<double>(result.radius_avg_uT));
+                printf("[mag_cal] constexpr float kMagHardIronBiasBody_uT[3] = {\r\n");
+                printf("[mag_cal]     %.2fF, %.2fF, %.2fF,\r\n",
+                       static_cast<double>(result.bias_body_uT[0]),
+                       static_cast<double>(result.bias_body_uT[1]),
+                       static_cast<double>(result.bias_body_uT[2]));
+                printf("[mag_cal] };\r\n");
+                printf("[mag_cal]\r\n");
+                printf("[mag_cal] constexpr float kMagScaleBody[3] = {\r\n");
+                printf("[mag_cal]     %.2fF, %.2fF, %.2fF,\r\n",
+                       static_cast<double>(result.scale_body[0]),
+                       static_cast<double>(result.scale_body[1]),
+                       static_cast<double>(result.scale_body[2]));
+                printf("[mag_cal] };\r\n");
+                printf("[mag_cal] // ===== end copy block =====\r\n");
             } else {
                 printf("[mag_cal] failed samples=%lu\r\n"
                        "[mag_cal] reason: insufficient coverage or invalid scale\r\n",
@@ -408,7 +433,7 @@ void MagCalTask(SchedulerTaskId self_id, SchedulerRunReason reason, SchedulerEve
                 ui_state = MagCalUiState::Failed;
             }
 
-            // 无论成功失败，都打印完整结果供诊断
+            // 诊断统计（无论成功失败都输出）
             printf("[mag_cal] span_body_uT  = { %.2fF, %.2fF, %.2fF };\r\n",
                    static_cast<double>(result.span_body_uT[0]),
                    static_cast<double>(result.span_body_uT[1]),
@@ -421,6 +446,12 @@ void MagCalTask(SchedulerTaskId self_id, SchedulerRunReason reason, SchedulerEve
                    static_cast<double>(result.scale_body[0]),
                    static_cast<double>(result.scale_body[1]),
                    static_cast<double>(result.scale_body[2]));
+            // raw body-frame norm stats (auxiliary only, not ellipsoid-fit residual)
+            printf("[mag_cal] norm_min_uT=%.2f norm_max_uT=%.2f norm_range_ratio=%.3f norm_out_of_range=%lu\r\n",
+                   static_cast<double>(result.norm_min_uT),
+                   static_cast<double>(result.norm_max_uT),
+                   static_cast<double>(result.norm_range_ratio),
+                   static_cast<unsigned long>(result.norm_out_of_range_count));
 
             key_cnt = 0u;
         }

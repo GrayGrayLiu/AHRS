@@ -6,6 +6,7 @@
 #include "IST8310_Calibration.hpp"
 
 #include <cfloat>
+#include <cmath>
 
 namespace ist8310_calibration
 {
@@ -29,6 +30,11 @@ float    min_uT_[3]{0.0F, 0.0F, 0.0F};
 float    max_uT_[3]{0.0F, 0.0F, 0.0F};
 uint32_t sample_count_{0u};
 
+// 磁场模长统计（仅追踪，不拒绝样本）
+float    norm_min_{FLT_MAX};
+float    norm_max_{-FLT_MAX};
+uint32_t norm_out_of_range_count_{0u};
+
 void InitMinMax()
 {
     for (int i = 0; i < 3; ++i) {
@@ -43,12 +49,25 @@ void Reset()
 {
     InitMinMax();
     sample_count_ = 0u;
+    norm_min_ = FLT_MAX;
+    norm_max_ = -FLT_MAX;
+    norm_out_of_range_count_ = 0u;
     active_ = true;
 }
 
 void FeedSample(const float mag_uT_body[3])
 {
     if (!active_) { return; }
+
+    // 磁场模长统计（仅追踪，不拒绝样本；后续可据此评估数据质量和异常情况）
+    const float norm = std::sqrt(mag_uT_body[0] * mag_uT_body[0] +
+                                  mag_uT_body[1] * mag_uT_body[1] +
+                                  mag_uT_body[2] * mag_uT_body[2]);
+    if (norm < norm_min_) { norm_min_ = norm; }
+    if (norm > norm_max_) { norm_max_ = norm; }
+    if (norm < 10.0F || norm > 100.0F) {
+        ++norm_out_of_range_count_;
+    }
 
     for (int i = 0; i < 3; ++i) {
         if (mag_uT_body[i] < min_uT_[i]) { min_uT_[i] = mag_uT_body[i]; }
@@ -119,6 +138,17 @@ MagCalResult Finish()
     for (int i = 0; i < 3; ++i) {
         if (r.scale_body[i] < SCALE_MIN || r.scale_body[i] > SCALE_MAX) { pass = false; }
     }
+
+    // 磁场模长辅助统计（raw body-frame norm 仅作观察，不等价于椭球拟合残差或校准后球面误差）
+    r.norm_min_uT = norm_min_;
+    r.norm_max_uT = norm_max_;
+    if (norm_max_ > 0.0F && norm_min_ < FLT_MAX) {
+        const float norm_mean = (norm_max_ + norm_min_) * 0.5F;
+        if (norm_mean > 0.0F) {
+            r.norm_range_ratio = (norm_max_ - norm_min_) / norm_mean;
+        }
+    }
+    r.norm_out_of_range_count = norm_out_of_range_count_;
 
     // quality score: min(span) / max(span)
     float span_min = r.span_body_uT[0];
