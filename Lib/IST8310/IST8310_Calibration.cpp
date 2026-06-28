@@ -47,6 +47,9 @@ uint32_t norm_out_of_range_count_{0u};
 // 样本缓存：用于 Finish() 中计算校准后磁场模长统计（body-frame 未校准 uT）
 static constexpr size_t MAX_CAL_SAMPLES = 2000u;
 float cal_sample_buffer_[MAX_CAL_SAMPLES][3]{};
+
+// 诊断 buffer：A2 self-validation 中用于存储 err_ratio 和排序
+float cal_err_ratio_buffer_[MAX_CAL_SAMPLES]{};
 size_t cal_sample_count_{0u};
 size_t cal_sample_dropped_{0u};
 
@@ -1327,10 +1330,12 @@ EllipsoidLmFitResult FitEllipsoidLm(
     const bool diag_positive = (diag[0] > 0.0F) && (diag[1] > 0.0F) && (diag[2] > 0.0F);
     const float offset_norm = std::sqrt(offset[0] * offset[0] + offset[1] * offset[1] + offset[2] * offset[2]);
 
-    // ── Self-validation: cal_norm stats ──
+    // ── Self-validation: cal_norm stats + diagnostic percentiles ──
     if (converged && diag_positive) {
         float cal_min = FLT_MAX, cal_max = -FLT_MAX;
         double cal_sum = 0.0, cal_sum2 = 0.0;
+
+        const size_t n_cal = (count <= MAX_CAL_SAMPLES) ? count : MAX_CAL_SAMPLES;
 
         for (size_t k = 0u; k < count; ++k) {
             const float x = sample_buffer[k][0] - offset[0];
@@ -1342,6 +1347,7 @@ EllipsoidLmFitResult FitEllipsoidLm(
             const float cz = offdiag[1] * x + offdiag[2] * y + diag[2] * z;
 
             const float cn = std::sqrt(cx * cx + cy * cy + cz * cz);
+            if (k < MAX_CAL_SAMPLES) { cal_err_ratio_buffer_[k] = cn; }
             if (cn < cal_min) { cal_min = cn; }
             if (cn > cal_max) { cal_max = cn; }
             cal_sum  += static_cast<double>(cn);
@@ -1358,6 +1364,51 @@ EllipsoidLmFitResult FitEllipsoidLm(
             const float max_dev = (cal_max - r.cal_norm_mean_uT) > (r.cal_norm_mean_uT - cal_min)
                                 ? (cal_max - r.cal_norm_mean_uT) : (r.cal_norm_mean_uT - cal_min);
             r.cal_norm_max_err = max_dev / r.cal_norm_mean_uT;
+        }
+
+        // ── Percentiles and max error sample ──
+        if (r.cal_norm_mean_uT > 0.0F && n_cal > 0u) {
+            float max_err_ratio = -1.0F;
+            size_t max_idx = 0u;
+            for (size_t k = 0u; k < n_cal; ++k) {
+                const float ratio = std::abs(cal_err_ratio_buffer_[k] - r.cal_norm_mean_uT) / r.cal_norm_mean_uT;
+                cal_err_ratio_buffer_[k] = ratio;  // 原地替换为 err_ratio，用于排序
+                if (ratio > max_err_ratio) {
+                    max_err_ratio = ratio;
+                    max_idx = k;
+                }
+            }
+
+            // 记录最大误差样本
+            r.max_err_sample_index = static_cast<uint32_t>(max_idx);
+            r.max_err_raw_body_uT[0] = sample_buffer[max_idx][0];
+            r.max_err_raw_body_uT[1] = sample_buffer[max_idx][1];
+            r.max_err_raw_body_uT[2] = sample_buffer[max_idx][2];
+            {
+                const float mx = sample_buffer[max_idx][0] - offset[0];
+                const float my = sample_buffer[max_idx][1] - offset[1];
+                const float mz = sample_buffer[max_idx][2] - offset[2];
+                r.max_err_cal_body_uT[0] = diag[0] * mx + offdiag[0] * my + offdiag[1] * mz;
+                r.max_err_cal_body_uT[1] = offdiag[0] * mx + diag[1] * my + offdiag[2] * mz;
+                r.max_err_cal_body_uT[2] = offdiag[1] * mx + offdiag[2] * my + diag[2] * mz;
+            }
+            r.max_err_cal_norm_uT = std::sqrt(
+                r.max_err_cal_body_uT[0] * r.max_err_cal_body_uT[0] +
+                r.max_err_cal_body_uT[1] * r.max_err_cal_body_uT[1] +
+                r.max_err_cal_body_uT[2] * r.max_err_cal_body_uT[2]);
+            r.max_err_abs_uT = std::abs(r.max_err_cal_norm_uT - r.cal_norm_mean_uT);
+
+            // 升序 insertion sort err_ratio（仅在校准结束时执行一次）
+            for (size_t i = 1u; i < n_cal; ++i) {
+                const float val = cal_err_ratio_buffer_[i];
+                size_t j = i;
+                while (j > 0u && cal_err_ratio_buffer_[j - 1u] > val) { cal_err_ratio_buffer_[j] = cal_err_ratio_buffer_[j - 1u]; --j; }
+                cal_err_ratio_buffer_[j] = val;
+            }
+            const size_t idx95 = (n_cal > 1u) ? (((n_cal - 1u) * 95u) / 100u) : 0u;
+            const size_t idx99 = (n_cal > 1u) ? (((n_cal - 1u) * 99u) / 100u) : 0u;
+            r.cal_norm_p95_err = cal_err_ratio_buffer_[idx95];
+            r.cal_norm_p99_err = cal_err_ratio_buffer_[idx99];
         }
     }
 

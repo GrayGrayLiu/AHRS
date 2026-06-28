@@ -193,6 +193,15 @@ struct EllipsoidLmFitResult
     float cal_norm_mean_uT{};
     float cal_norm_std_uT{};
     float cal_norm_max_err{};
+
+    // ── 诊断字段（A2 self-validation 辅助） ──
+    float cal_norm_p95_err{};       // 相对误差 95th 百分位: abs(norm - mean) / mean
+    float cal_norm_p99_err{};       // 相对误差 99th 百分位
+    uint32_t max_err_sample_index{};
+    float max_err_raw_body_uT[3]{};
+    float max_err_cal_body_uT[3]{};
+    float max_err_cal_norm_uT{};
+    float max_err_abs_uT{};         // abs(cal_norm - cal_norm_mean)
 };
 
 /**

@@ -564,6 +564,20 @@ void MagCalTask(SchedulerTaskId self_id, SchedulerRunReason reason, SchedulerEve
                            static_cast<double>(e2fit.cal_norm_mean_uT),
                            static_cast<double>(e2fit.cal_norm_std_uT),
                            static_cast<double>(e2fit.cal_norm_max_err));
+                    printf("[mag_cal] // err_percentile p95=%.3f p99=%.3f\r\n",
+                           static_cast<double>(e2fit.cal_norm_p95_err),
+                           static_cast<double>(e2fit.cal_norm_p99_err));
+                    printf("[mag_cal] // max_err_sample index=%lu raw={%.2f,%.2f,%.2f} cal={%.2f,%.2f,%.2f} norm=%.2f abs=%.2f ratio=%.3f\r\n",
+                           static_cast<unsigned long>(e2fit.max_err_sample_index),
+                           static_cast<double>(e2fit.max_err_raw_body_uT[0]),
+                           static_cast<double>(e2fit.max_err_raw_body_uT[1]),
+                           static_cast<double>(e2fit.max_err_raw_body_uT[2]),
+                           static_cast<double>(e2fit.max_err_cal_body_uT[0]),
+                           static_cast<double>(e2fit.max_err_cal_body_uT[1]),
+                           static_cast<double>(e2fit.max_err_cal_body_uT[2]),
+                           static_cast<double>(e2fit.max_err_cal_norm_uT),
+                           static_cast<double>(e2fit.max_err_abs_uT),
+                           static_cast<double>(e2fit.cal_norm_max_err));
                     printf("[mag_cal] // ===== end PX4-style ellipsoid LM candidate =====\r\n");
                 }
 
