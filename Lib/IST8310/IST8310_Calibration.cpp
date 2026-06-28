@@ -892,4 +892,211 @@ FullEllipFitResult FitEllipsoidFullAlgebraic(
     return r;
 }
 
+// ============================================================================
+// PX4-style sphere LM fit（A1: 只优化 radius + offset）
+// ============================================================================
+
+// 4×4 symmetric positive definite linear system solve (Cholesky)
+static bool Solve4x4SPD(const float A[4][4], const float b[4], float x[4])
+{
+    float L[4][4] = {};
+
+    for (int i = 0; i < 4; ++i) {
+        for (int j = 0; j <= i; ++j) {
+            float sum = A[i][j];
+            for (int k = 0; k < j; ++k) { sum -= L[i][k] * L[j][k]; }
+            if (i == j) {
+                if (sum <= 0.0F) { return false; }
+                L[i][j] = std::sqrt(sum);
+            } else {
+                L[i][j] = sum / L[j][j];
+            }
+        }
+    }
+
+    float y[4];
+    for (int i = 0; i < 4; ++i) {
+        float sum = b[i];
+        for (int j = 0; j < i; ++j) { sum -= L[i][j] * y[j]; }
+        y[i] = sum / L[i][i];
+    }
+
+    for (int i = 3; i >= 0; --i) {
+        float sum = y[i];
+        for (int j = i + 1; j < 4; ++j) { sum -= L[j][i] * x[j]; }
+        x[i] = sum / L[i][i];
+    }
+
+    return true;
+}
+
+// Compute RMS cost for sphere LM: sqrt(mean((radius - ||sample - offset||)²))
+static float ComputeSphereLmCost(
+    const float sample_buffer[][3],
+    const size_t count,
+    const float inv_n,
+    const float radius,
+    const float offset[3])
+{
+    float sum_sq = 0.0F;
+    for (size_t k = 0u; k < count; ++k) {
+        const float dx = sample_buffer[k][0] - offset[0];
+        const float dy = sample_buffer[k][1] - offset[1];
+        const float dz = sample_buffer[k][2] - offset[2];
+        const float len = std::sqrt(dx * dx + dy * dy + dz * dz);
+        const float res = radius - len;
+        sum_sq += res * res;
+    }
+    return std::sqrt(sum_sq * inv_n);
+}
+
+SphereLmFitResult FitSphereLm(
+    const float sample_buffer[][3],
+    const size_t count)
+{
+    SphereLmFitResult r{};
+
+    if (count < 50u) { return r; }
+
+    // ── Initial offset: sample mean ──
+    float offset[3] = {};
+    for (size_t k = 0u; k < count; ++k) {
+        offset[0] += sample_buffer[k][0];
+        offset[1] += sample_buffer[k][1];
+        offset[2] += sample_buffer[k][2];
+    }
+    const float inv_n = 1.0F / static_cast<float>(count);
+    offset[0] *= inv_n;
+    offset[1] *= inv_n;
+    offset[2] *= inv_n;
+
+    // ── Initial radius: mean(||sample - offset||) ──
+    float radius = 0.0F;
+    for (size_t k = 0u; k < count; ++k) {
+        const float dx = sample_buffer[k][0] - offset[0];
+        const float dy = sample_buffer[k][1] - offset[1];
+        const float dz = sample_buffer[k][2] - offset[2];
+        radius += std::sqrt(dx * dx + dy * dy + dz * dz);
+    }
+    radius *= inv_n;
+
+    // ── LM hyperparameters ──
+    // AHRS uses uT; PX4 uses Gauss (1 G = 100 uT).
+    // PX4 radius range 0.2~0.7 G ≈ 20~70 uT. Cost threshold scaled accordingly.
+    constexpr int    MAX_ITERATIONS    = 100;
+    constexpr int    MIN_ITERATIONS    = 10;
+    constexpr float  COST_THRESHOLD_UT = 1.0F;       // PX4 0.01 G ≈ 1.0 uT
+    constexpr float  STEP_THRESHOLD    = 0.001F;
+    constexpr float  MIN_RADIUS_UT     = 20.0F;
+    constexpr float  MAX_RADIUS_UT     = 70.0F;
+    constexpr float  LM_DAMPING_ADJ    = 10.0F;
+    constexpr float  INITIAL_DAMPING   = 1.0F;
+
+    float cost    = ComputeSphereLmCost(sample_buffer, count, inv_n, radius, offset);
+    float damping = INITIAL_DAMPING;
+    bool  converged  = false;
+
+    for (int iter = 0; iter < MAX_ITERATIONS; ++iter) {
+        // ── Build JTJ (4×4) and JTFI (4×1) ──
+        float JTJ[4][4] = {};
+        float JTFI[4]   = {};
+
+        for (size_t k = 0u; k < count; ++k) {
+            const float dx = sample_buffer[k][0] - offset[0];
+            const float dy = sample_buffer[k][1] - offset[1];
+            const float dz = sample_buffer[k][2] - offset[2];
+            const float length = std::sqrt(dx * dx + dy * dy + dz * dz);
+
+            if (length < 1.0e-6F) { continue; }  // degenerate sample, skip
+
+            const float jacob[4] = {
+                1.0F,              // ∂residual/∂radius
+                dx / length,       // ∂residual/∂offset_x
+                dy / length,       // ∂residual/∂offset_y
+                dz / length,       // ∂residual/∂offset_z
+            };
+            const float residual = radius - length;
+
+            for (int i = 0; i < 4; ++i) {
+                JTFI[i] += jacob[i] * residual;
+                for (int j = 0; j < 4; ++j) {
+                    JTJ[i][j] += jacob[i] * jacob[j];
+                }
+            }
+        }
+
+        // ── Two damping candidates ──
+        float JTJ_damp1[4][4];
+        float JTJ_damp2[4][4];
+        for (int i = 0; i < 4; ++i) {
+            for (int j = 0; j < 4; ++j) {
+                JTJ_damp1[i][j] = JTJ[i][j];
+                JTJ_damp2[i][j] = JTJ[i][j];
+            }
+            JTJ_damp1[i][i] += damping;
+            JTJ_damp2[i][i] += damping / LM_DAMPING_ADJ;
+        }
+
+        float delta1[4] = {};
+        float delta2[4] = {};
+        const bool ok1 = Solve4x4SPD(JTJ_damp1, JTFI, delta1);
+        const bool ok2 = Solve4x4SPD(JTJ_damp2, JTFI, delta2);
+
+        if (!ok1 && !ok2) { break; }  // Cholesky failed for both
+
+        // Evaluate candidates only when solve succeeded (avoid uninitialized delta reads)
+        float cost1 = 1e30F, cost2 = 1e30F;
+        float p1_r = 0, p1_x = 0, p1_y = 0, p1_z = 0;
+        float p2_r = 0, p2_x = 0, p2_y = 0, p2_z = 0;
+
+        if (ok1) {
+            p1_r = radius - delta1[0]; p1_x = offset[0] - delta1[1]; p1_y = offset[1] - delta1[2]; p1_z = offset[2] - delta1[3];
+            const float off1[3] = { p1_x, p1_y, p1_z };
+            cost1 = ComputeSphereLmCost(sample_buffer, count, inv_n, p1_r, off1);
+        }
+        if (ok2) {
+            p2_r = radius - delta2[0]; p2_x = offset[0] - delta2[1]; p2_y = offset[1] - delta2[2]; p2_z = offset[2] - delta2[3];
+            const float off2[3] = { p2_x, p2_y, p2_z };
+            cost2 = ComputeSphereLmCost(sample_buffer, count, inv_n, p2_r, off2);
+        }
+
+        // Accept best candidate (only if cost decreased)
+        if (cost1 > cost && cost2 > cost) {
+            damping *= LM_DAMPING_ADJ;  // both worse → increase damping
+        } else if (cost2 < cost && (cost2 <= cost1 || !ok1)) {
+            damping /= LM_DAMPING_ADJ;
+            radius = p2_r; offset[0] = p2_x; offset[1] = p2_y; offset[2] = p2_z;
+            cost = cost2;
+        } else if (ok1 && cost1 < cost) {
+            radius = p1_r; offset[0] = p1_x; offset[1] = p1_y; offset[2] = p1_z;
+            cost = cost1;
+        }
+
+        // Convergence check
+        if ((ok1 || ok2)
+            && radius > MIN_RADIUS_UT && radius < MAX_RADIUS_UT
+            && iter >= MIN_ITERATIONS
+            && (cost < COST_THRESHOLD_UT || damping < STEP_THRESHOLD)) {
+            converged = true;
+            r.iterations = static_cast<uint8_t>(iter + 1);
+            break;
+        }
+    }
+
+    r.radius_uT       = radius;
+    r.offset_body_uT[0] = offset[0];
+    r.offset_body_uT[1] = offset[1];
+    r.offset_body_uT[2] = offset[2];
+    r.cost_uT         = cost;
+    r.solver_converged = converged;
+    if (!converged) { r.iterations = MAX_ITERATIONS; }
+
+    r.valid = converged
+           && radius > MIN_RADIUS_UT && radius < MAX_RADIUS_UT
+           && std::isfinite(radius)
+           && std::isfinite(offset[0]) && std::isfinite(offset[1]) && std::isfinite(offset[2]);
+
+    return r;
+}
+
 } // namespace ist8310_calibration

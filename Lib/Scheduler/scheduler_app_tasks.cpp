@@ -503,6 +503,25 @@ void MagCalTask(SchedulerTaskId self_id, SchedulerRunReason reason, SchedulerEve
                 bool                  has_ffit = false;
                 ist8310_calibration::FullEllipFitResult ffit{};
 
+                // -- A1 PX4-style sphere LM init candidate --
+                if (buf != nullptr && n >= 50u) {
+                    const auto sfit = ist8310_calibration::FitSphereLm(buf, n);
+
+                    printf("[mag_cal] // ===== PX4-style sphere LM init candidate =====\r\n");
+                    printf("[mag_cal] // note: radius+offset only; diag/offdiag fixed to identity/zero; not for runtime config\r\n");
+                    printf("[mag_cal] // fit_valid=%u solver_converged=%u iters=%u radius=%.2f cost=%.3f\r\n",
+                           static_cast<unsigned int>(sfit.valid),
+                           static_cast<unsigned int>(sfit.solver_converged),
+                           static_cast<unsigned int>(sfit.iterations),
+                           static_cast<double>(sfit.radius_uT),
+                           static_cast<double>(sfit.cost_uT));
+                    printf("[mag_cal] // sphere_lm_offset_body_uT = { %.2fF, %.2fF, %.2fF };\r\n",
+                           static_cast<double>(sfit.offset_body_uT[0]),
+                           static_cast<double>(sfit.offset_body_uT[1]),
+                           static_cast<double>(sfit.offset_body_uT[2]));
+                    printf("[mag_cal] // ===== end sphere LM init candidate =====\r\n");
+                }
+
                 // -- B1 fixed-bias 3x3 candidate --
                 if (buf != nullptr && n >= 50u) {
                     efit = ist8310_calibration::FitEllipsoidFixedBias(

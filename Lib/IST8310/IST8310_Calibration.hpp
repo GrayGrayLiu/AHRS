@@ -138,6 +138,35 @@ FullEllipFitResult FitEllipsoidFullAlgebraic(
     const float max_uT[3]);
 
 /**
+ * @brief PX4-style sphere LM fit 结果（初始化阶段，只优化 radius + offset）
+ *
+ * @note  对应 PX4 lm_mag_fit(..., full_ellipsoid=false)。
+ *        本阶段 diag={1,1,1}, offdiag={0,0,0}, 只优化 radius + offset[3]。
+ *        不输出 scale/offdiag, full ellipsoid LM 不在本轮范围。
+ *        AHRS 使用 uT，PX4 使用 Gauss（1 G = 100 uT）。
+ */
+struct SphereLmFitResult
+{
+    float offset_body_uT[3]{};
+    float radius_uT{};
+    float cost_uT{};
+    uint8_t iterations{};
+    bool solver_converged{false};
+    bool valid{false};
+};
+
+/**
+ * @brief PX4-style sphere LM fit（只优化 radius + offset）
+ *
+ * @param sample_buffer  样本数组 [count][3] body-frame 未校准 uT
+ * @param count          样本数
+ * @return 拟合结果
+ */
+SphereLmFitResult FitSphereLm(
+    const float sample_buffer[][3],
+    size_t count);
+
+/**
  * @brief 重置所有内部状态（重新开始收集）
  */
 void Reset();
