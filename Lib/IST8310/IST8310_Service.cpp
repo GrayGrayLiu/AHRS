@@ -8,7 +8,7 @@
  *   - 提供 Init() 作为完整硬件初始化入口（placement new + driver.Init()）；
  *   - 提供 Run() 作为非阻塞 scheduler 执行入口（每次最多一次 I2C 事务）；
  *   - sensor-frame → board/body-frame 坐标映射；
- *   - 应用已配置的 hard-iron bias + per-axis scale 校准参数；
+ *   - 应用已配置的 hard-iron bias + symmetric 3×3 scale matrix 校准参数；
  *   - 提供 CopyLatest() 非破坏性缓存读取接口（返回 sensor-frame、
  *     未校准 body-frame、校准后 body-frame 三个坐标系的 sample）。
  *
@@ -159,15 +159,38 @@ void TranslateSensorToBody(const int16_t sensor[3], int16_t body[3])
 // 校准应用
 // ============================================================================
 
-// 将未校准 body-frame uT 应用 hard-iron bias + scale 得到校准后 body-frame uT。
+// 将未校准 body-frame uT 应用 hard-iron bias + symmetric 3×3 scale matrix 得到校准后 body-frame uT。
+//
+// 校准模型（对齐 PX4 calibration::Magnetometer::Correct 的 body-frame 版本）：
+//   centered = mag_body_raw - bias_body
+//   mag_body_cal = M_body * centered
+//
+// 其中 M_body 为 3×3 对称矩阵：
+//   [ scale_x     offdiag_xy  offdiag_xz ]
+//   [ offdiag_xy  scale_y     offdiag_yz ]
+//   [ offdiag_xz  offdiag_yz  scale_z     ]
+//
+// 当前默认 offdiag = 0，数学上等价于原 per-axis diagonal scale。
+// 无 PX4 的 rotation（AHRS 已在 sensor→body 映射中完成），无 power compensation。
 void ApplyMagCalibration(const float in_body_uT[3], float out_body_uT[3])
 {
 #if IST8310_ENABLE_MAG_CALIBRATION
-    for (int i = 0; i < 3; ++i) {
-        out_body_uT[i] =
-            (in_body_uT[i] - ist8310_calibration_config::kMagHardIronBiasBody_uT[i])
-            * ist8310_calibration_config::kMagScaleBody[i];
-    }
+    const float centered[3] = {
+        in_body_uT[0] - ist8310_calibration_config::kMagHardIronBiasBody_uT[0],
+        in_body_uT[1] - ist8310_calibration_config::kMagHardIronBiasBody_uT[1],
+        in_body_uT[2] - ist8310_calibration_config::kMagHardIronBiasBody_uT[2],
+    };
+
+    const float sx = ist8310_calibration_config::kMagScaleBody[0];
+    const float sy = ist8310_calibration_config::kMagScaleBody[1];
+    const float sz = ist8310_calibration_config::kMagScaleBody[2];
+    const float oxy = ist8310_calibration_config::kMagOffDiagScaleBody[0];
+    const float oxz = ist8310_calibration_config::kMagOffDiagScaleBody[1];
+    const float oyz = ist8310_calibration_config::kMagOffDiagScaleBody[2];
+
+    out_body_uT[0] = sx  * centered[0] + oxy * centered[1] + oxz * centered[2];
+    out_body_uT[1] = oxy * centered[0] + sy  * centered[1] + oyz * centered[2];
+    out_body_uT[2] = oxz * centered[0] + oyz * centered[1] + sz  * centered[2];
 #else
     for (int i = 0; i < 3; ++i) {
         out_body_uT[i] = in_body_uT[i];

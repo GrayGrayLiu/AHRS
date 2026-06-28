@@ -21,7 +21,10 @@ namespace ist8310_calibration_config
 //   span_body_uT={90.91F, 96.06F, 90.30F}
 //   raw norm: min=15.53 max=94.09 range_ratio=1.433 out_of_range=0
 //   cal_norm: min=36.93 max=56.99 mean=46.27 std=3.28 range_ratio=0.434 max_err=0.232 samples=1455 dropped=0
-//   公式: mag_cal = (mag_body - bias_body) * scale_body
+//   formula:
+//     centered = mag_body - bias_body
+//     mag_cal = M_body * centered    (M_body: symmetric 3x3, diag=scale_body, offdiag=kMagOffDiagScaleBody)
+//   current offdiag={0,0,0}, equivalent to per-axis scale_body
 //   坐标系: body-frame, 映射: body_x=sensor_y, body_y=-sensor_x, body_z=-sensor_z
 constexpr float kMagHardIronBiasBody_uT[3] = {
     41.82F, 14.70F, 4.85F,
@@ -29,6 +32,13 @@ constexpr float kMagHardIronBiasBody_uT[3] = {
 
 constexpr float kMagScaleBody[3] = {
     1.02F, 0.96F, 1.02F,
+};
+
+// offdiagonal soft-iron correction (PX4-style symmetric 3x3: offdiag_xy, offdiag_xz, offdiag_yz)
+// 当前默认 {0, 0, 0}，校准模型退化为 per-axis diagonal scale
+// 若未来需要 full 3x3 correction，在此填入非零值即可
+constexpr float kMagOffDiagScaleBody[3] = {
+    0.0F, 0.0F, 0.0F,
 };
 
 // 第三次 MCU 端校准结果（2026-06-26，已弃用）
