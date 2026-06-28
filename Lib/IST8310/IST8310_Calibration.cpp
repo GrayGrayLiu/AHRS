@@ -45,7 +45,8 @@ float    norm_max_{-FLT_MAX};
 uint32_t norm_out_of_range_count_{0u};
 
 // 样本缓存：用于 Finish() 中计算校准后磁场模长统计（body-frame 未校准 uT）
-static constexpr size_t MAX_CAL_SAMPLES = 2000u;
+// 容量覆盖 60s calibration window @ ~49 Hz → ~2940 samples, 3200 留有余量
+static constexpr size_t MAX_CAL_SAMPLES = 3200u;
 float cal_sample_buffer_[MAX_CAL_SAMPLES][3]{};
 
 // 诊断 buffer：A2 self-validation 中用于存储 err_ratio 和排序

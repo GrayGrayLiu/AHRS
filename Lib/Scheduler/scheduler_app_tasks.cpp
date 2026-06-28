@@ -29,6 +29,8 @@ constexpr uint32_t IMU_DEBUG_PERIOD_MS = 1000u;
 constexpr uint32_t INS_DEBUG_PERIOD_MS = 5000u;
 constexpr uint32_t INS_CONSUMER_PERIOD_MS = 1u;
 constexpr uint32_t MAG_TASK_PERIOD_MS = 1u;
+constexpr uint32_t MAG_CAL_DURATION_MS       = 60000u;
+constexpr uint32_t MAG_CAL_PROGRESS_PERIOD_MS = 10000u;
 constexpr uint32_t MAG_DEBUG_PERIOD_MS = 1000u;
 constexpr uint8_t MAG_DEBUG_TASK_ENABLED =
     IST8310_ENABLE_MAG_DEBUG_PRINT ? 1u : 0u;
@@ -323,7 +325,7 @@ void MagTask(SchedulerTaskId self_id, SchedulerRunReason reason, SchedulerEventM
 }
 
 // ============================================================================
-// IST8310 磁力计校准 task — 按键触发 + 30s 收集 + printf 输出参数
+// IST8310 磁力计校准 task — 按键触发 + 60s 收集 + printf 输出参数
 // ============================================================================
 
 enum class MagCalUiState : uint8_t
@@ -338,7 +340,7 @@ enum class MagCalUiState : uint8_t
 /**
  * @brief  IST8310 磁力计 MCU 端校准 task（10 ms，priority=100）。
  * @note   按键触发（PE15, PULLDOWN, 按下=SET）。
- *         收集 30s body-frame uT sample，计算 hard-iron bias + 三轴 scale。
+ *         收集 60s body-frame uT sample，计算 hard-iron bias + 三轴 scale。
  *         不控制 LED，不访问 driver/I2C，不接 Aided_INS。
  *         校准结果通过 printf 输出，用户手动复制到代码常量后重新编译烧录。
  */
@@ -379,7 +381,8 @@ void MagCalTask(SchedulerTaskId self_id, SchedulerRunReason reason, SchedulerEve
                 last_progress_ms = now_ms;
                 ui_state = MagCalUiState::Collecting;
                 key_cnt = 0u;
-                printf("[mag_cal] start: 30s, rotate board through all orientations\r\n");
+                printf("[mag_cal] start: %lus, rotate board through all orientations\r\n",
+                       static_cast<unsigned long>(MAG_CAL_DURATION_MS / 1000u));
 #if IST8310_ENABLE_CAL_CSV_OUTPUT
                 printf("[mag_csv] counter,timestamp_us,body_x_uT,body_y_uT,body_z_uT\r\n");
 #endif
@@ -408,15 +411,16 @@ void MagCalTask(SchedulerTaskId self_id, SchedulerRunReason reason, SchedulerEve
         }
 
         // 进度输出（每 10s 一次）
-        if (now_ms - last_progress_ms >= 10000u) {
+        if (now_ms - last_progress_ms >= MAG_CAL_PROGRESS_PERIOD_MS) {
             last_progress_ms = now_ms;
-            printf("[mag_cal] progress: %lu/30s samples=%lu\r\n",
+            printf("[mag_cal] progress: %lu/%lus samples=%lu\r\n",
                    static_cast<unsigned long>((now_ms - cal_start_ms) / 1000u),
+                   static_cast<unsigned long>(MAG_CAL_DURATION_MS / 1000u),
                    static_cast<unsigned long>(ist8310_calibration::GetSampleCount()));
         }
 
-        // 30s 到期
-        if (now_ms - cal_start_ms >= 30000u) {
+        // 校准时长到期
+        if (now_ms - cal_start_ms >= MAG_CAL_DURATION_MS) {
             printf("[mag_cal] done: calculating\r\n");
             const auto result = ist8310_calibration::Finish();
 
