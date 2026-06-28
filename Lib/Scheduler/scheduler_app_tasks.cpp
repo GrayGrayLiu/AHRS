@@ -357,6 +357,42 @@ void MagCalTask(SchedulerTaskId self_id, SchedulerRunReason reason, SchedulerEve
 
     const bool key_down = (HAL_GPIO_ReadPin(KEY_GPIO_Port, KEY_Pin) == GPIO_PIN_SET);
 
+#if IST8310_ENABLE_ACCEL_SIDE_PROBE
+    // -- 临时加速度符号 probe：打印 body-frame 比力方向，用于确认 side 判定符号 --
+    // 启用后 mag_cal 任务只做 probe 打印，不进入正常/6-side calibration。
+    {
+        static uint32_t s_probe_last_ms = 0u;
+        if (now_ms - s_probe_last_ms >= 1000u) {  // 1 Hz
+            s_probe_last_ms = now_ms;
+
+            icm42688_service::DeltaSample imu{};
+            if (icm42688_service::GetDeltaLatest(&imu) == ICM42688P::Status::Ok
+                && imu.delta_time_s > 0.0F) {
+                const float acc[3] = {
+                    imu.delta_velocity_m_s[0] / imu.delta_time_s,
+                    imu.delta_velocity_m_s[1] / imu.delta_time_s,
+                    imu.delta_velocity_m_s[2] / imu.delta_time_s,
+                };
+                const float norm = std::sqrt(acc[0] * acc[0] + acc[1] * acc[1] + acc[2] * acc[2]);
+
+                const float abs_x = std::abs(acc[0]), abs_y = std::abs(acc[1]), abs_z = std::abs(acc[2]);
+                const char *dominant = "?";
+                if (abs_x > abs_y && abs_x > abs_z) { dominant = (acc[0] > 0.0f) ? "+X" : "-X"; }
+                else if (abs_y > abs_x && abs_y > abs_z) { dominant = (acc[1] > 0.0f) ? "+Y" : "-Y"; }
+                else { dominant = (acc[2] > 0.0f) ? "+Z" : "-Z"; }
+
+                printf("[acc_probe] dt=%.6f acc_body={%+.2f,%+.2f,%+.2f} norm=%.2f dominant=%s\r\n",
+                       static_cast<double>(imu.delta_time_s),
+                       static_cast<double>(acc[0]), static_cast<double>(acc[1]), static_cast<double>(acc[2]),
+                       static_cast<double>(norm), dominant);
+            } else {
+                printf("[acc_probe] no data\r\n");
+            }
+        }
+    }
+    return;
+#endif
+
     switch (ui_state) {
     case MagCalUiState::Idle:
         if (key_down) {
@@ -381,8 +417,13 @@ void MagCalTask(SchedulerTaskId self_id, SchedulerRunReason reason, SchedulerEve
                 last_progress_ms = now_ms;
                 ui_state = MagCalUiState::Collecting;
                 key_cnt = 0u;
+#if IST8310_ENABLE_SIDE_CALIBRATION
+                ist8310_calibration::ResetSideCalibration();
+                printf("[mag_cal] 6-side calibration, 40 samples/side\r\n");
+#else
                 printf("[mag_cal] start: %lus, rotate board through all orientations\r\n",
                        static_cast<unsigned long>(MAG_CAL_DURATION_MS / 1000u));
+#endif
 #if IST8310_ENABLE_CAL_CSV_OUTPUT
                 printf("[mag_csv] counter,timestamp_us,body_x_uT,body_y_uT,body_z_uT\r\n");
 #endif
@@ -395,6 +436,105 @@ void MagCalTask(SchedulerTaskId self_id, SchedulerRunReason reason, SchedulerEve
     case MagCalUiState::Collecting: {
         // 按键在收集期间被忽略
 
+#if IST8310_ENABLE_SIDE_CALIBRATION
+        // -- 6-side orientation-based calibration --
+        {
+            // Build input: accel
+            ist8310_calibration::SideCalInput in{};
+            in.now_ms = now_ms;
+            icm42688_service::DeltaSample imu{};
+            if (icm42688_service::GetDeltaLatest(&imu) == ICM42688P::Status::Ok
+                && imu.delta_time_s > 0.0F) {
+                in.acc_valid = true;
+                in.acc_body_m_s2[0] = imu.delta_velocity_m_s[0] / imu.delta_time_s;
+                in.acc_body_m_s2[1] = imu.delta_velocity_m_s[1] / imu.delta_time_s;
+                in.acc_body_m_s2[2] = imu.delta_velocity_m_s[2] / imu.delta_time_s;
+                in.gyro_valid = true;
+                in.gyro_sample_counter = imu.sample_counter;
+                in.delta_angle_rad[0] = imu.delta_angle_rad[0];
+                in.delta_angle_rad[1] = imu.delta_angle_rad[1];
+                in.delta_angle_rad[2] = imu.delta_angle_rad[2];
+            }
+
+            // Build input: mag
+            ist8310_service::MagSample s{};
+            if (ist8310_service::CopyLatest(&s) && s.sample_counter != last_sample_counter) {
+                last_sample_counter = s.sample_counter;
+                in.mag_valid = true;
+                in.mag_sample_counter = s.sample_counter;
+                in.mag_body_uT[0] = s.mag_uT_body[0];
+                in.mag_body_uT[1] = s.mag_uT_body[1];
+                in.mag_body_uT[2] = s.mag_uT_body[2];
+            }
+
+            const auto out = ist8310_calibration::UpdateSideCalibration(in);
+
+            switch (out.event) {
+            case ist8310_calibration::SideCalEvent::Prompt:
+                printf("[mag_cal] 请将任意未校准的面朝上，保持静止\r\n");
+                if (out.remaining_prompt && out.remaining_prompt[0]) {
+                    printf("[mag_cal] 未完成：%s\r\n", out.remaining_prompt);
+                }
+                break;
+            case ist8310_calibration::SideCalEvent::Detected:
+                printf("[mag_cal] 检测到：%s\r\n", out.side_label ? out.side_label : "?");
+                printf("[mag_cal] %s，请缓慢旋转板子\r\n", out.prompt);
+                break;
+            case ist8310_calibration::SideCalEvent::Progress:
+                printf("[mag_cal] progress: %s samples=%u/%u t=%lums/%lums total=%lu\r\n",
+                       out.side_label ? out.side_label : "?", out.side_accepted, out.side_target,
+                       static_cast<unsigned long>(out.side_elapsed_ms),
+                       static_cast<unsigned long>(out.side_min_collect_ms),
+                       static_cast<unsigned long>(out.total_accepted));
+                break;
+            case ist8310_calibration::SideCalEvent::SideDone:
+                printf("[mag_cal] progress: %s samples=%u/%u t=%lums/%lums total=%lu\r\n",
+                       out.side_label ? out.side_label : "?", out.side_accepted, out.side_target,
+                       static_cast<unsigned long>(out.side_elapsed_ms),
+                       static_cast<unsigned long>(out.side_min_collect_ms),
+                       static_cast<unsigned long>(out.total_accepted));
+                printf("[mag_cal] 完成：%s\r\n", out.side_label ? out.side_label : "?");
+                break;
+            case ist8310_calibration::SideCalEvent::SideDoneByTimeout:
+                printf("[mag_cal] progress: %s samples=%u/%u total=%lu\r\n",
+                       out.side_label ? out.side_label : "?", out.side_accepted, out.side_target,
+                       static_cast<unsigned long>(out.total_accepted));
+                printf("[mag_cal] 采样窗口结束：%s\r\n", out.side_label ? out.side_label : "?");
+                break;
+            case ist8310_calibration::SideCalEvent::RotationTimeout:
+                printf("[mag_cal] 失败：等待旋转超时，该校准要求旋转\r\n");
+                ui_state = MagCalUiState::Failed;
+                break;
+            case ist8310_calibration::SideCalEvent::SampleTimeout:
+                printf("[mag_cal] 失败：%s 有效样本不足 samples=%u/%u，请重新校准\r\n",
+                       out.side_label ? out.side_label : "?",
+                       out.side_accepted,
+                       out.side_target);
+                ui_state = MagCalUiState::Failed;
+                break;
+            case ist8310_calibration::SideCalEvent::AlreadyDone:
+                printf("[mag_cal] 当前检测到：%s；该面已完成，请换一个未校准的面\r\n",
+                       out.side_label ? out.side_label : "?");
+                if (out.remaining_prompt && out.remaining_prompt[0]) {
+                    printf("[mag_cal] 未完成：%s\r\n", out.remaining_prompt);
+                }
+                break;
+            case ist8310_calibration::SideCalEvent::Complete:
+                printf("[mag_cal] 全部 6 面完成：total=%lu，开始计算\r\n",
+                       static_cast<unsigned long>(out.total_accepted));
+                // fall through to fitting below
+                break;
+            default:
+                break;
+            }
+
+            const bool side_complete = (out.event == ist8310_calibration::SideCalEvent::Complete);
+            if (!side_complete) { break; }
+        }
+
+        const bool should_finish = true;
+#else
+        // -- 60s free rotation calibration (original) --
         // 消费新 sample
         ist8310_service::MagSample s{};
         if (ist8310_service::CopyLatest(&s) && s.sample_counter != last_sample_counter) {
@@ -420,7 +560,10 @@ void MagCalTask(SchedulerTaskId self_id, SchedulerRunReason reason, SchedulerEve
         }
 
         // 校准时长到期
-        if (now_ms - cal_start_ms >= MAG_CAL_DURATION_MS) {
+        const bool should_finish = (now_ms - cal_start_ms >= MAG_CAL_DURATION_MS);
+#endif // IST8310_ENABLE_SIDE_CALIBRATION
+
+        if (!should_finish) { break; }
             printf("[mag_cal] done: calculating\r\n");
             const auto result = ist8310_calibration::Finish();
 
@@ -838,7 +981,6 @@ void MagCalTask(SchedulerTaskId self_id, SchedulerRunReason reason, SchedulerEve
 #endif
 
             key_cnt = 0u;
-        }
         break;
     }
 

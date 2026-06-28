@@ -259,4 +259,56 @@ uint32_t GetSampleCount();
 const float (*GetSampleBuffer())[3];
 size_t GetSampleBufferCount();
 
+// ============================================================================
+// 6-side calibration API（IST8310_ENABLE_SIDE_CALIBRATION）
+// ============================================================================
+
+/** @brief 6-side calibration 事件类型 */
+enum class SideCalEvent : uint8_t
+{
+    None,
+    Prompt,           // 需要提示用户摆姿势
+    Detected,         // 检测到 side，等待旋转开始
+    Progress,         // 采样进度更新
+    SideDone,         // 当前 side 正常完成
+    SideDoneByTimeout,// Sampling 窗口到期
+    RotationTimeout,  // WaitRotation 超时: PX4 "This calibration requires rotation"
+    SampleTimeout,    // Sampling hard timeout: accepted samples insufficient
+    AlreadyDone,      // 检测到已完成 side
+    Complete,         // 全部 6 side 完成
+};
+
+/** @brief scheduler → calibration 的输入 */
+struct SideCalInput
+{
+    uint32_t now_ms;
+    bool acc_valid;
+    float acc_body_m_s2[3];
+    bool mag_valid;
+    uint32_t mag_sample_counter;
+    float mag_body_uT[3];
+    bool gyro_valid;
+    uint32_t gyro_sample_counter;
+    float delta_angle_rad[3];      // body-frame gyro delta angle, rad
+};
+
+/** @brief calibration → scheduler 的输出 */
+struct SideCalOutput
+{
+    SideCalEvent event;
+    const char *prompt;          // 中文提示语
+    const char *side_label;       // 姿态标签（不含"请将"），如 "机尾朝上"
+    const char *remaining_prompt; // 剩余未完成面列表
+    uint8_t side_index;          // current side (0..5)
+    uint8_t side_done_count;     // 已完成 side 数
+    uint16_t side_accepted;      // 当前 side accepted 数
+    uint16_t side_target;        // per-side 目标
+    uint32_t total_accepted;     // 全局 accepted 数
+    uint32_t side_elapsed_ms;     // 当前 side 已流逝时间 (ms)
+    uint32_t side_min_collect_ms; // 当前 side 最小采样时间 (ms)
+};
+
+void ResetSideCalibration();
+SideCalOutput UpdateSideCalibration(const SideCalInput &input);
+
 } // namespace ist8310_calibration

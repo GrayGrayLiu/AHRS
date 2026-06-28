@@ -1485,4 +1485,444 @@ EllipsoidLmFitResult FitEllipsoidLm(
     return r;
 }
 
+// ============================================================================
+// 6-side calibration 内部实现
+// ============================================================================
+
+namespace {
+
+enum class Side : uint8_t
+{
+    NZ = 0,  // -Z up → 正面朝上
+    PZ = 1,  // +Z up → 背面朝上
+    NX = 2,  // -X up → 机尾朝上（上板确认：NX dominant 时机尾朝上）
+    PX = 3,  // +X up → 机头朝上（上板确认：PX dominant 时机头朝上）
+    NY = 4,  // -Y up → 左侧朝上（上板确认：NY dominant 时左侧朝上）
+    PY = 5,  // +Y up → 右侧朝上（上板确认：PY dominant 时右侧朝上）
+    COUNT = 6,
+    NONE = 0xFF,
+};
+
+const char *SidePrompt(const Side s)
+{
+    switch (s) {
+    case Side::NZ: return "请将正面朝上";
+    case Side::PZ: return "请将背面朝上";
+    case Side::NX: return "请将机尾朝上";
+    case Side::PX: return "请将机头朝上";
+    case Side::NY: return "请将左侧朝上";
+    case Side::PY: return "请将右侧朝上";
+    default: return "?";
+    }
+}
+
+enum class SideSubState : uint8_t
+{
+    WaitStill,
+    WaitRotation,
+    Sampling,
+    Advance,
+};
+
+constexpr uint16_t SIDE_TARGET               = 40u;
+constexpr uint32_t SIDE_MIN_COLLECT_MS       = 7000u;                // 每面最小采样时间
+constexpr uint32_t SIDE_ACCEPT_INTERVAL_MS   = SIDE_MIN_COLLECT_MS / SIDE_TARGET;  // 175ms
+constexpr uint32_t SIDE_HARD_TIMEOUT_MS      = 15000u;               // hard timeout: insufficient samples
+constexpr float    SIDE_GYRO_START_THRESH_RAD = 0.5F;                // PX4 gyro_int_thresh_rad
+constexpr uint32_t SIDE_ROTATION_TIMEOUT_MS  = 35000u;              // ~5 × side interval
+constexpr float    REJECT_RADIUS = 45.0F;
+constexpr unsigned REJECT_TOTAL  = 6u * SIDE_TARGET;
+
+// PX4-style still detection parameters
+constexpr float    STILL_EMA_TAU_S   = 0.5F;
+constexpr float    STILL_THR_M_S2    = 0.75F;
+constexpr uint32_t STILL_TIME_MS     = 500u;
+constexpr float    STILL_DISP_CAP_SCALE = 8.0F;
+constexpr float    STILL_MOTION_SCALE   = 4.0F;
+constexpr float    ACC_ERR_THR_M_S2     = 5.0F;
+constexpr float    G_NOM                = 9.80665f;
+
+const float STILL_THR2 = STILL_THR_M_S2 * STILL_THR_M_S2;
+
+// ── 6-side session 状态 ──
+SideSubState s_ss_state = SideSubState::WaitStill;
+Side         s_side     = Side::NONE;
+bool         s_sides_done[6] = {};
+uint16_t     s_side_accepted[6] = {};
+uint8_t      s_side_done_cnt = 0u;
+uint32_t     s_side_start_ms = 0u;
+uint32_t     s_last_mag = 0u;
+uint32_t     s_last_prog = 0u;
+uint32_t     s_last_acc_ms = 0u;
+
+// PX4-style EMA still detection state
+float        s_acc_ema[3] = {};
+float        s_acc_disp[3] = {};   // per-axis squared dispersion (PX4 detect_orientation)
+bool         s_ema_init  = false;
+uint32_t     s_still_start_ms = 0u;
+bool         s_is_still  = false;
+bool         s_prompt_pending = false;
+Side         s_last_reported_done_side = Side::NONE;
+
+// PX4-style gyro integral for rotation-start gate
+float        s_gyro_integral[3] = {};
+uint32_t     s_last_gyro_sc = 0u;
+uint32_t     s_rotation_start_ms = 0u;
+bool         s_rotation_timeout_reported = false;
+uint32_t     s_last_accept_ms = 0u;
+
+// 剩余面字符串 buffer
+char         s_remaining_buf[128] = {};
+
+// 姿态标签（不含"请将"，用于 side_label 输出），如 "机尾朝上"
+const char *SideLabel(const Side s)
+{
+    switch (s) {
+    case Side::NZ: return "正面朝上";
+    case Side::PZ: return "背面朝上";
+    case Side::NX: return "机尾朝上";
+    case Side::PX: return "机头朝上";
+    case Side::NY: return "左侧朝上";
+    case Side::PY: return "右侧朝上";
+    default: return "?";
+    }
+}
+
+// 短标签用于剩余面列表
+const char *SideShortLabel(const Side s)
+{
+    switch (s) {
+    case Side::NZ: return "正面";
+    case Side::PZ: return "背面";
+    case Side::NX: return "机尾";
+    case Side::PX: return "机头";
+    case Side::NY: return "左侧";
+    case Side::PY: return "右侧";
+    default: return "?";
+    }
+}
+
+void BuildRemainingPrompt()
+{
+    s_remaining_buf[0] = '\0';
+    size_t pos = 0u;
+    for (uint8_t si = 0u; si < static_cast<uint8_t>(Side::COUNT); ++si) {
+        if (!s_sides_done[si]) {
+            if (pos > 0u) {
+                // UTF-8 "、" = E3 80 81
+                s_remaining_buf[pos++] = '\xE3'; s_remaining_buf[pos++] = '\x80'; s_remaining_buf[pos++] = '\x81';
+            }
+            const char *label = SideShortLabel(static_cast<Side>(si));
+            while (*label && pos < sizeof(s_remaining_buf) - 1u) { s_remaining_buf[pos++] = *label++; }
+        }
+    }
+    s_remaining_buf[pos] = '\0';
+}
+
+bool SideRejectMag(const float sx, const float sy, const float sz,
+                   const float (*buf)[3], const unsigned cnt)
+{
+    const float min_dist = std::abs(5.4f * REJECT_RADIUS
+        / std::sqrt(static_cast<float>(REJECT_TOTAL))) / 3.0f;
+    for (unsigned i = 0u; i < cnt; ++i) {
+        const float dx = sx - buf[i][0];
+        const float dy = sy - buf[i][1];
+        const float dz = sz - buf[i][2];
+        if (std::sqrt(dx * dx + dy * dy + dz * dz) < min_dist) { return true; }
+    }
+    return false;
+}
+
+} // namespace
+
+void ResetSideCalibration()
+{
+    s_ss_state = SideSubState::WaitStill;
+    s_side     = Side::NONE;
+    for (auto &d : s_sides_done) { d = false; }
+    for (auto &c : s_side_accepted) { c = 0u; }
+    s_side_done_cnt = 0u;
+    s_side_start_ms = 0u;
+    s_last_mag   = 0u;
+    s_last_prog  = 0u;
+    s_last_acc_ms = 0u;
+    s_ema_init       = false;
+    s_acc_disp[0] = 0.0F; s_acc_disp[1] = 0.0F; s_acc_disp[2] = 0.0F;
+    s_is_still       = false;
+    s_still_start_ms = 0u;
+    s_prompt_pending = true;
+    s_last_reported_done_side = Side::NONE;
+    s_last_gyro_sc = 0u;
+    s_gyro_integral[0] = 0.0F; s_gyro_integral[1] = 0.0F; s_gyro_integral[2] = 0.0F;
+    s_rotation_start_ms = 0u;
+    s_rotation_timeout_reported = false;
+    s_last_accept_ms = 0u;
+    BuildRemainingPrompt();
+}
+
+SideCalOutput UpdateSideCalibration(const SideCalInput &in)
+{
+    SideCalOutput out{};
+    out.side_target = SIDE_TARGET;
+    BuildRemainingPrompt();
+    out.remaining_prompt = s_remaining_buf;
+
+    switch (s_ss_state) {
+
+    case SideSubState::WaitStill: {
+        // One-shot prompt: only emit once per transition into WaitStill
+        if (s_prompt_pending) {
+            s_prompt_pending = false;
+            out.event          = SideCalEvent::Prompt;
+            out.side_label     = nullptr;
+            out.side_done_count = s_side_done_cnt;
+            out.total_accepted  = static_cast<uint32_t>(cal_sample_count_);
+            return out;
+        }
+
+        if (!in.acc_valid) { return out; }
+
+        // Compute actual dt from detector update interval (not IMU delta sample time)
+        float dt = 0.0F;
+        if (s_last_acc_ms != 0u && in.now_ms > s_last_acc_ms) {
+            dt = static_cast<float>(in.now_ms - s_last_acc_ms) * 0.001F;
+        }
+        s_last_acc_ms = in.now_ms;
+        if (dt <= 0.0F) { return out; }
+        if (dt < 0.001F) { dt = 0.001F; }  // clamp: min 1ms
+        if (dt > 0.1F)   { dt = 0.1F; }    // clamp: max 100ms
+
+        // PX4-style EMA weight: w = dt / tau, clamped to [0, 1]
+        float w = dt / STILL_EMA_TAU_S;
+        if (w > 1.0F) { w = 1.0F; }
+        if (w < 0.0F) { w = 0.0F; }
+
+        // Update EMA and per-axis dispersion (PX4 detect_orientation style)
+        if (!s_ema_init) {
+            s_acc_ema[0] = in.acc_body_m_s2[0];
+            s_acc_ema[1] = in.acc_body_m_s2[1];
+            s_acc_ema[2] = in.acc_body_m_s2[2];
+            s_ema_init = true;
+        }
+        for (int i = 0; i < 3; ++i) {
+            const float d = in.acc_body_m_s2[i] - s_acc_ema[i];
+            s_acc_ema[i] += d * w;
+
+            float d2 = d * d;
+            if (d2 > STILL_THR2 * STILL_DISP_CAP_SCALE) { d2 = STILL_THR2 * STILL_DISP_CAP_SCALE; }
+            s_acc_disp[i] *= (1.0F - w);
+            if (d2 > s_acc_disp[i]) { s_acc_disp[i] = d2; }
+        }
+
+        // PX4-style per-axis still detection with motion hysteresis
+        const bool all_still = (s_acc_disp[0] < STILL_THR2)
+                            && (s_acc_disp[1] < STILL_THR2)
+                            && (s_acc_disp[2] < STILL_THR2);
+        const bool any_motion = (s_acc_disp[0] > STILL_THR2 * STILL_MOTION_SCALE)
+                             || (s_acc_disp[1] > STILL_THR2 * STILL_MOTION_SCALE)
+                             || (s_acc_disp[2] > STILL_THR2 * STILL_MOTION_SCALE);
+
+        if (any_motion) {
+            s_is_still = false;
+            s_still_start_ms = 0u;
+        } else if (!s_is_still) {
+            if (all_still) {
+                if (s_still_start_ms == 0u) { s_still_start_ms = in.now_ms; }
+                else if (in.now_ms - s_still_start_ms >= STILL_TIME_MS) {
+                    s_is_still = true;
+                }
+            } else {
+                s_still_start_ms = 0u;
+            }
+        }
+
+        if (!s_is_still) { return out; }
+
+        // Validate still acceleration norm
+        const float norm = std::sqrt(s_acc_ema[0] * s_acc_ema[0] + s_acc_ema[1] * s_acc_ema[1] + s_acc_ema[2] * s_acc_ema[2]);
+        if (std::abs(norm - G_NOM) > ACC_ERR_THR_M_S2) { return out; }
+
+        // Classify side from smoothed acceleration
+        const float ax = s_acc_ema[0], ay = s_acc_ema[1], az = s_acc_ema[2];
+        const float abs_x = std::abs(ax), abs_y = std::abs(ay), abs_z = std::abs(az);
+        Side detected;
+        if (abs_x > abs_y && abs_x > abs_z) {
+            detected = (ax > 0.0f) ? Side::PX : Side::NX;
+        } else if (abs_y > abs_x && abs_y > abs_z) {
+            detected = (ay > 0.0f) ? Side::PY : Side::NY;
+        } else {
+            detected = (az > 0.0f) ? Side::PZ : Side::NZ;
+        }
+
+        if (s_sides_done[static_cast<uint8_t>(detected)]) {
+            // One-shot: only report if it's a different already-done side since last report
+            if (detected != s_last_reported_done_side) {
+                s_last_reported_done_side = detected;
+                out.event          = SideCalEvent::AlreadyDone;
+                out.prompt         = SidePrompt(detected);
+                out.side_label     = SideLabel(detected);
+                out.side_index     = static_cast<uint8_t>(detected);
+                out.side_done_count = s_side_done_cnt;
+                out.side_accepted   = s_side_accepted[static_cast<uint8_t>(detected)];
+                out.total_accepted  = static_cast<uint32_t>(cal_sample_count_);
+            }
+            return out;
+        }
+
+        // Reset still state for clean Sampling start
+        s_ema_init       = false;
+        s_acc_disp[0] = 0.0F; s_acc_disp[1] = 0.0F; s_acc_disp[2] = 0.0F;
+        s_is_still       = false;
+        s_last_acc_ms    = 0u;
+        s_last_reported_done_side = Side::NONE;
+
+        // Enter WaitRotation: gate mag collection behind rotation-start
+        s_gyro_integral[0] = 0.0F; s_gyro_integral[1] = 0.0F; s_gyro_integral[2] = 0.0F;
+        s_last_gyro_sc      = 0u;
+        s_rotation_start_ms = in.now_ms;
+        s_rotation_timeout_reported = false;
+        s_side_start_ms     = 0u;   // set when Sampling actually begins
+        s_side              = detected;
+        s_last_mag          = 0u;
+        s_last_prog        = in.now_ms;
+        s_ss_state         = SideSubState::WaitRotation;
+
+        out.event       = SideCalEvent::Detected;
+        out.prompt      = SidePrompt(detected);
+        out.side_label  = SideLabel(detected);
+        out.side_index  = static_cast<uint8_t>(detected);
+        out.side_done_count = s_side_done_cnt;
+        out.side_accepted   = s_side_accepted[static_cast<uint8_t>(detected)];
+        out.total_accepted  = static_cast<uint32_t>(cal_sample_count_);
+        return out;
+    }
+
+    case SideSubState::WaitRotation: {
+        const uint8_t si = static_cast<uint8_t>(s_side);
+
+        // Rotation timeout: PX4 returns error, requires rotation
+        if (s_rotation_start_ms != 0u
+            && in.now_ms - s_rotation_start_ms >= SIDE_ROTATION_TIMEOUT_MS) {
+            if (!s_rotation_timeout_reported) {
+                s_rotation_timeout_reported = true;
+                out.event          = SideCalEvent::RotationTimeout;
+                out.prompt         = SidePrompt(s_side);
+                out.side_label     = SideLabel(s_side);
+                out.side_index     = si;
+                out.side_done_count = s_side_done_cnt;
+                out.side_accepted   = s_side_accepted[si];
+                out.total_accepted  = static_cast<uint32_t>(cal_sample_count_);
+            }
+            return out;
+        }
+
+        // PX4-style rotation-start gate: integrate gyro, check any axis >= 0.5 rad
+        if (in.gyro_valid && in.gyro_sample_counter != s_last_gyro_sc) {
+            s_last_gyro_sc = in.gyro_sample_counter;
+            s_gyro_integral[0] += in.delta_angle_rad[0];
+            s_gyro_integral[1] += in.delta_angle_rad[1];
+            s_gyro_integral[2] += in.delta_angle_rad[2];
+        }
+
+        const bool rotation_started =
+            std::abs(s_gyro_integral[0]) >= SIDE_GYRO_START_THRESH_RAD ||
+            std::abs(s_gyro_integral[1]) >= SIDE_GYRO_START_THRESH_RAD ||
+            std::abs(s_gyro_integral[2]) >= SIDE_GYRO_START_THRESH_RAD;
+
+        if (!rotation_started) { return out; }
+
+        // Rotation started → begin Sampling
+        s_side_start_ms = in.now_ms;
+        s_last_mag = 0u;
+        s_last_accept_ms = 0u;
+        s_last_prog = in.now_ms;
+        s_ss_state = SideSubState::Sampling;
+        return out;
+    }
+
+    case SideSubState::Sampling: {
+        const uint8_t si = static_cast<uint8_t>(s_side);
+        const uint32_t elapsed_ms = in.now_ms - s_side_start_ms;
+
+        // Hard timeout: insufficient samples → fail (don't mark side done)
+        if (elapsed_ms >= SIDE_HARD_TIMEOUT_MS && s_side_accepted[si] < SIDE_TARGET) {
+            out.event          = SideCalEvent::SampleTimeout;
+            out.prompt         = SidePrompt(s_side);
+            out.side_label     = SideLabel(s_side);
+            out.side_index     = si;
+            out.side_done_count = s_side_done_cnt;
+            out.side_accepted   = s_side_accepted[si];
+            out.total_accepted  = static_cast<uint32_t>(cal_sample_count_);
+            out.side_elapsed_ms    = elapsed_ms;
+            out.side_min_collect_ms = SIDE_MIN_COLLECT_MS;
+            return out;
+        }
+
+        // Process mag sample with time throttle (~175ms interval); cap at SIDE_TARGET
+        const bool need_samples = (s_side_accepted[si] < SIDE_TARGET);
+        const bool accept_time =
+            (s_last_accept_ms == 0u) || (in.now_ms - s_last_accept_ms >= SIDE_ACCEPT_INTERVAL_MS);
+
+        if (need_samples && accept_time && in.mag_valid && in.mag_sample_counter != s_last_mag) {
+            s_last_mag = in.mag_sample_counter;
+            if (!SideRejectMag(in.mag_body_uT[0], in.mag_body_uT[1], in.mag_body_uT[2],
+                               cal_sample_buffer_, static_cast<unsigned>(cal_sample_count_))) {
+                FeedSample(in.mag_body_uT);
+                ++s_side_accepted[si];
+                s_last_accept_ms = in.now_ms;
+            }
+        }
+
+        // Progress (throttled to 2s)
+        if (in.now_ms - s_last_prog >= 2000u) {
+            s_last_prog = in.now_ms;
+            out.event       = SideCalEvent::Progress;
+        }
+        out.prompt      = SidePrompt(s_side);
+        out.side_label  = SideLabel(s_side);
+        out.side_index  = si;
+        out.side_done_count = s_side_done_cnt;
+        out.side_accepted   = s_side_accepted[si];
+        out.total_accepted  = static_cast<uint32_t>(cal_sample_count_);
+        out.side_elapsed_ms    = elapsed_ms;
+        out.side_min_collect_ms = SIDE_MIN_COLLECT_MS;
+
+        // Side complete: enough samples AND enough time
+        const bool enough_samples = (s_side_accepted[si] >= SIDE_TARGET);
+        const bool enough_time    = (elapsed_ms >= SIDE_MIN_COLLECT_MS);
+
+        if (enough_samples && enough_time) {
+            s_sides_done[si] = true;
+            ++s_side_done_cnt;
+            out.event = SideCalEvent::SideDone;
+            out.side_done_count = s_side_done_cnt;
+            s_prompt_pending = true;
+            s_ss_state = SideSubState::Advance;
+        }
+        return out;
+    }
+
+    case SideSubState::Advance: {
+        // Check if all done
+        if (s_side_done_cnt >= static_cast<uint8_t>(Side::COUNT)) {
+            out.event          = SideCalEvent::Complete;
+            out.side_done_count = s_side_done_cnt;
+            out.total_accepted  = static_cast<uint32_t>(cal_sample_count_);
+            return out;
+        }
+
+        s_ema_init       = false;
+        s_acc_disp[0] = 0.0F; s_acc_disp[1] = 0.0F; s_acc_disp[2] = 0.0F;
+        s_is_still       = false;
+        s_still_start_ms = 0u;
+        s_last_acc_ms    = 0u;
+        s_last_reported_done_side = Side::NONE;
+        s_ss_state       = SideSubState::WaitStill;
+        return out;
+    }
+    }
+
+    return out;
+}
+
 } // namespace ist8310_calibration
