@@ -149,7 +149,8 @@ struct SphereLmFitResult
 {
     float offset_body_uT[3]{};
     float radius_uT{};
-    float cost_uT{};
+    float cost_px4_uT{};    // sqrt(sum_sq) / N (PX4-style normalized cost, used for convergence), in uT
+    float rms_uT{};         // sqrt(sum_sq / N) (true RMS residual, diagnostic only), in uT
     uint8_t iterations{};
     bool solver_converged{false};
     bool valid{false};

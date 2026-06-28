@@ -930,8 +930,12 @@ static bool Solve4x4SPD(const float A[4][4], const float b[4], float x[4])
     return true;
 }
 
-// Compute RMS cost for sphere LM: sqrt(mean((radius - ||sample - offset||)²))
-static float ComputeSphereLmCost(
+// Compute PX4-style sphere LM cost and true RMS residual.
+// PX4 lm_fit.cpp uses sqrt(sum_sq) / N as "cost", not true RMS.
+// This function returns the PX4-style cost; RMS is computed separately on demand.
+//   px4_cost = sqrt(sum_sq) / N      (PX4-style, used for LM convergence)
+//   rms      = sqrt(sum_sq / N)      (true RMS, diagnostic only)
+static float ComputeSphereLmCostPx4(
     const float sample_buffer[][3],
     const size_t count,
     const float inv_n,
@@ -947,7 +951,8 @@ static float ComputeSphereLmCost(
         const float res = radius - len;
         sum_sq += res * res;
     }
-    return std::sqrt(sum_sq * inv_n);
+    // PX4: fit = sqrtf(sum_sq) / samples_collected
+    return std::sqrt(sum_sq) * inv_n;
 }
 
 SphereLmFitResult FitSphereLm(
@@ -992,7 +997,7 @@ SphereLmFitResult FitSphereLm(
     constexpr float  LM_DAMPING_ADJ    = 10.0F;
     constexpr float  INITIAL_DAMPING   = 1.0F;
 
-    float cost    = ComputeSphereLmCost(sample_buffer, count, inv_n, radius, offset);
+    float cost    = ComputeSphereLmCostPx4(sample_buffer, count, inv_n, radius, offset);
     float damping = INITIAL_DAMPING;
     bool  converged  = false;
 
@@ -1052,12 +1057,12 @@ SphereLmFitResult FitSphereLm(
         if (ok1) {
             p1_r = radius - delta1[0]; p1_x = offset[0] - delta1[1]; p1_y = offset[1] - delta1[2]; p1_z = offset[2] - delta1[3];
             const float off1[3] = { p1_x, p1_y, p1_z };
-            cost1 = ComputeSphereLmCost(sample_buffer, count, inv_n, p1_r, off1);
+            cost1 = ComputeSphereLmCostPx4(sample_buffer, count, inv_n, p1_r, off1);
         }
         if (ok2) {
             p2_r = radius - delta2[0]; p2_x = offset[0] - delta2[1]; p2_y = offset[1] - delta2[2]; p2_z = offset[2] - delta2[3];
             const float off2[3] = { p2_x, p2_y, p2_z };
-            cost2 = ComputeSphereLmCost(sample_buffer, count, inv_n, p2_r, off2);
+            cost2 = ComputeSphereLmCostPx4(sample_buffer, count, inv_n, p2_r, off2);
         }
 
         // Accept best candidate (only if cost decreased)
@@ -1087,7 +1092,9 @@ SphereLmFitResult FitSphereLm(
     r.offset_body_uT[0] = offset[0];
     r.offset_body_uT[1] = offset[1];
     r.offset_body_uT[2] = offset[2];
-    r.cost_uT         = cost;
+    r.cost_px4_uT     = cost;
+    // RMS derived from PX4 cost: RMS = PX4_cost * sqrt(N) since PX4_cost = sqrt(sum_sq)/N
+    r.rms_uT          = cost * std::sqrt(static_cast<float>(count));
     r.solver_converged = converged;
     if (!converged) { r.iterations = MAX_ITERATIONS; }
 
