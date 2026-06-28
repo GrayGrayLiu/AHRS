@@ -504,8 +504,11 @@ void MagCalTask(SchedulerTaskId self_id, SchedulerRunReason reason, SchedulerEve
                 ist8310_calibration::FullEllipFitResult ffit{};
 
                 // -- A1 PX4-style sphere LM init candidate --
+                bool has_sfit = false;
+                ist8310_calibration::SphereLmFitResult sfit{};
                 if (buf != nullptr && n >= 50u) {
-                    const auto sfit = ist8310_calibration::FitSphereLm(buf, n);
+                    sfit = ist8310_calibration::FitSphereLm(buf, n);
+                    has_sfit = true;
 
                     printf("[mag_cal] // ===== PX4-style sphere LM init candidate =====\r\n");
                     printf("[mag_cal] // note: radius+offset only; diag/offdiag fixed to identity/zero; not for runtime config\r\n");
@@ -521,6 +524,47 @@ void MagCalTask(SchedulerTaskId self_id, SchedulerRunReason reason, SchedulerEve
                            static_cast<double>(sfit.offset_body_uT[1]),
                            static_cast<double>(sfit.offset_body_uT[2]));
                     printf("[mag_cal] // ===== end sphere LM init candidate =====\r\n");
+                }
+
+                // -- A2 PX4-style ellipsoid LM candidate --
+                if (has_sfit && sfit.valid && buf != nullptr && n >= 100u) {
+                    const auto e2fit = ist8310_calibration::FitEllipsoidLm(buf, n, sfit);
+
+                    printf("[mag_cal] // ===== PX4-style ellipsoid LM candidate (candidate, review before copying) =====\r\n");
+                    printf("[mag_cal] // fit_valid=%u solver_converged=%u iters=%u radius=%.2f cost_px4=%.4f rms=%.3f\r\n",
+                           static_cast<unsigned int>(e2fit.valid),
+                           static_cast<unsigned int>(e2fit.solver_converged),
+                           static_cast<unsigned int>(e2fit.iterations),
+                           static_cast<double>(e2fit.radius_uT),
+                           static_cast<double>(e2fit.cost_px4_uT),
+                           static_cast<double>(e2fit.rms_uT));
+                    printf("[mag_cal] constexpr float kMagHardIronBiasBody_uT[3] = {\r\n");
+                    printf("[mag_cal]     %.2fF, %.2fF, %.2fF,\r\n",
+                           static_cast<double>(e2fit.offset_body_uT[0]),
+                           static_cast<double>(e2fit.offset_body_uT[1]),
+                           static_cast<double>(e2fit.offset_body_uT[2]));
+                    printf("[mag_cal] };\r\n");
+                    printf("[mag_cal]\r\n");
+                    printf("[mag_cal] constexpr float kMagScaleBody[3] = {\r\n");
+                    printf("[mag_cal]     %.2fF, %.2fF, %.2fF,\r\n",
+                           static_cast<double>(e2fit.diag[0]),
+                           static_cast<double>(e2fit.diag[1]),
+                           static_cast<double>(e2fit.diag[2]));
+                    printf("[mag_cal] };\r\n");
+                    printf("[mag_cal]\r\n");
+                    printf("[mag_cal] constexpr float kMagOffDiagScaleBody[3] = {\r\n");
+                    printf("[mag_cal]     %.4fF, %.4fF, %.4fF,\r\n",
+                           static_cast<double>(e2fit.offdiag[0]),
+                           static_cast<double>(e2fit.offdiag[1]),
+                           static_cast<double>(e2fit.offdiag[2]));
+                    printf("[mag_cal] };\r\n");
+                    printf("[mag_cal] // cal_norm min=%.2f max=%.2f mean=%.2f std=%.2f max_err=%.3f\r\n",
+                           static_cast<double>(e2fit.cal_norm_min_uT),
+                           static_cast<double>(e2fit.cal_norm_max_uT),
+                           static_cast<double>(e2fit.cal_norm_mean_uT),
+                           static_cast<double>(e2fit.cal_norm_std_uT),
+                           static_cast<double>(e2fit.cal_norm_max_err));
+                    printf("[mag_cal] // ===== end PX4-style ellipsoid LM candidate =====\r\n");
                 }
 
                 // -- B1 fixed-bias 3x3 candidate --

@@ -1106,4 +1106,276 @@ SphereLmFitResult FitSphereLm(
     return r;
 }
 
+// ============================================================================
+// PX4-style full ellipsoid LM refinement（A2: 固定 radius，优化 offset + diag + offdiag）
+// ============================================================================
+
+// 9×9 symmetric positive definite linear system solve (Cholesky)
+static bool Solve9x9SPD(const float A[9][9], const float b[9], float x[9])
+{
+    float L[9][9] = {};
+
+    for (int i = 0; i < 9; ++i) {
+        for (int j = 0; j <= i; ++j) {
+            float sum = A[i][j];
+            for (int k = 0; k < j; ++k) { sum -= L[i][k] * L[j][k]; }
+            if (i == j) {
+                if (sum <= 0.0F) { return false; }
+                L[i][j] = std::sqrt(sum);
+            } else {
+                L[i][j] = sum / L[j][j];
+            }
+        }
+    }
+
+    float y[9];
+    for (int i = 0; i < 9; ++i) {
+        float sum = b[i];
+        for (int j = 0; j < i; ++j) { sum -= L[i][j] * y[j]; }
+        y[i] = sum / L[i][i];
+    }
+
+    for (int i = 8; i >= 0; --i) {
+        float sum = y[i];
+        for (int j = i + 1; j < 9; ++j) { sum -= L[j][i] * x[j]; }
+        x[i] = sum / L[i][i];
+    }
+
+    return true;
+}
+
+// Compute PX4-style ellipsoid LM cost.
+//   px4_cost = sqrt(sum_sq) / N      (PX4-style, used for LM convergence)
+//   rms      = sqrt(sum_sq / N)      (true RMS, diagnostic only)
+// Parameters: offset[3], diag[3], offdiag[3], radius (fixed during A2).
+static float ComputeEllipsoidLmCostPx4(
+    const float sample_buffer[][3],
+    const size_t count,
+    const float inv_n,
+    const float radius,
+    const float offset[3],
+    const float diag[3],
+    const float offdiag[3])
+{
+    float sum_sq = 0.0F;
+    for (size_t k = 0u; k < count; ++k) {
+        const float x = sample_buffer[k][0] - offset[0];
+        const float y = sample_buffer[k][1] - offset[1];
+        const float z = sample_buffer[k][2] - offset[2];
+
+        const float A = diag[0] * x + offdiag[0] * y + offdiag[1] * z;
+        const float B = offdiag[0] * x + diag[1] * y + offdiag[2] * z;
+        const float C = offdiag[1] * x + offdiag[2] * y + diag[2] * z;
+
+        const float len = std::sqrt(A * A + B * B + C * C);
+        const float res = radius - len;
+        sum_sq += res * res;
+    }
+    return std::sqrt(sum_sq) * inv_n;
+}
+
+EllipsoidLmFitResult FitEllipsoidLm(
+    const float sample_buffer[][3],
+    const size_t count,
+    const SphereLmFitResult &sphere)
+{
+    EllipsoidLmFitResult r{};
+
+    if (count < 100u || !sphere.valid) { return r; }
+
+    const float inv_n = 1.0F / static_cast<float>(count);
+
+    // ── Initialize from A1 sphere result ──
+    r.radius_uT = sphere.radius_uT;
+    const float radius = sphere.radius_uT;
+    float offset[3] = { sphere.offset_body_uT[0], sphere.offset_body_uT[1], sphere.offset_body_uT[2] };
+    float diag[3]    = { 1.0F, 1.0F, 1.0F };
+    float offdiag[3] = { 0.0F, 0.0F, 0.0F };
+
+    // ── LM hyperparameters ──
+    constexpr int    MAX_ITERATIONS    = 100;
+    constexpr int    MIN_ITERATIONS    = 10;
+    constexpr float  COST_THRESHOLD_UT = 1.0F;
+    constexpr float  STEP_THRESHOLD    = 0.001F;
+    constexpr float  LM_DAMPING_ADJ    = 10.0F;
+    constexpr float  INITIAL_DAMPING   = 1.0F;
+    constexpr float  MIN_RADIUS_UT     = 20.0F;
+    constexpr float  MAX_RADIUS_UT     = 70.0F;
+
+    float cost    = ComputeEllipsoidLmCostPx4(sample_buffer, count, inv_n, radius, offset, diag, offdiag);
+    float damping = INITIAL_DAMPING;
+    bool  converged = false;
+
+    for (int iter = 0; iter < MAX_ITERATIONS; ++iter) {
+        // ── Build JTJ (9×9) and JTFI (9×1) ──
+        float JTJ[9][9] = {};
+        float JTFI[9]   = {};
+
+        for (size_t k = 0u; k < count; ++k) {
+            const float x = sample_buffer[k][0] - offset[0];
+            const float y = sample_buffer[k][1] - offset[1];
+            const float z = sample_buffer[k][2] - offset[2];
+
+            const float A = diag[0] * x + offdiag[0] * y + offdiag[1] * z;
+            const float B = offdiag[0] * x + diag[1] * y + offdiag[2] * z;
+            const float C = offdiag[1] * x + offdiag[2] * y + diag[2] * z;
+
+            const float length = std::sqrt(A * A + B * B + C * C);
+            if (length < 1.0e-6F) { continue; }
+
+            // 9-param Jacobian (matches PX4 lm_ellipsoid_fit_iteration)
+            // order: ox, oy, oz, dx, dy, dz, oxy, oxz, oyz
+            const float inv_len = 1.0F / length;
+            const float jacob[9] = {
+                (diag[0] * A + offdiag[0] * B + offdiag[1] * C) * inv_len,   // ∂/∂ox
+                (offdiag[0] * A + diag[1] * B + offdiag[2] * C) * inv_len,   // ∂/∂oy
+                (offdiag[1] * A + offdiag[2] * B + diag[2] * C) * inv_len,   // ∂/∂oz
+                -x * A * inv_len,                                             // ∂/∂dx
+                -y * B * inv_len,                                             // ∂/∂dy
+                -z * C * inv_len,                                             // ∂/∂dz
+                -(y * A + x * B) * inv_len,                                   // ∂/∂oxy
+                -(z * A + x * C) * inv_len,                                   // ∂/∂oxz
+                -(z * B + y * C) * inv_len,                                   // ∂/∂oyz
+            };
+            const float residual = radius - length;
+
+            for (int i = 0; i < 9; ++i) {
+                JTFI[i] += jacob[i] * residual;
+                for (int j = 0; j < 9; ++j) {
+                    JTJ[i][j] += jacob[i] * jacob[j];
+                }
+            }
+        }
+
+        // ── Two damping candidates ──
+        float JTJ_damp1[9][9];
+        float JTJ_damp2[9][9];
+        for (int i = 0; i < 9; ++i) {
+            for (int j = 0; j < 9; ++j) {
+                JTJ_damp1[i][j] = JTJ[i][j];
+                JTJ_damp2[i][j] = JTJ[i][j];
+            }
+            JTJ_damp1[i][i] += damping;
+            JTJ_damp2[i][i] += damping / LM_DAMPING_ADJ;
+        }
+
+        float delta1[9] = {};
+        float delta2[9] = {};
+        const bool ok1 = Solve9x9SPD(JTJ_damp1, JTFI, delta1);
+        const bool ok2 = Solve9x9SPD(JTJ_damp2, JTFI, delta2);
+
+        if (!ok1 && !ok2) { break; }
+
+        // Evaluate candidates (guard against uninitialized delta)
+        float cost1 = 1e30F, cost2 = 1e30F;
+        float p1[9] = {}, p2[9] = {};
+
+        if (ok1) {
+            p1[0] = offset[0] - delta1[0]; p1[1] = offset[1] - delta1[1]; p1[2] = offset[2] - delta1[2];
+            p1[3] = diag[0]    - delta1[3]; p1[4] = diag[1]    - delta1[4]; p1[5] = diag[2]    - delta1[5];
+            p1[6] = offdiag[0] - delta1[6]; p1[7] = offdiag[1] - delta1[7]; p1[8] = offdiag[2] - delta1[8];
+            cost1 = ComputeEllipsoidLmCostPx4(sample_buffer, count, inv_n, radius, p1, p1 + 3, p1 + 6);
+        }
+        if (ok2) {
+            p2[0] = offset[0] - delta2[0]; p2[1] = offset[1] - delta2[1]; p2[2] = offset[2] - delta2[2];
+            p2[3] = diag[0]    - delta2[3]; p2[4] = diag[1]    - delta2[4]; p2[5] = diag[2]    - delta2[5];
+            p2[6] = offdiag[0] - delta2[6]; p2[7] = offdiag[1] - delta2[7]; p2[8] = offdiag[2] - delta2[8];
+            cost2 = ComputeEllipsoidLmCostPx4(sample_buffer, count, inv_n, radius, p2, p2 + 3, p2 + 6);
+        }
+
+        // Accept best candidate (only if cost strictly decreased)
+        const bool improved1 = ok1 && (cost1 < cost);
+        const bool improved2 = ok2 && (cost2 < cost);
+
+        if (!improved1 && !improved2) {
+            damping *= LM_DAMPING_ADJ;
+        } else if (improved2 && (!improved1 || cost2 <= cost1)) {
+            damping /= LM_DAMPING_ADJ;
+            offset[0] = p2[0]; offset[1] = p2[1]; offset[2] = p2[2];
+            diag[0] = p2[3]; diag[1] = p2[4]; diag[2] = p2[5];
+            offdiag[0] = p2[6]; offdiag[1] = p2[7]; offdiag[2] = p2[8];
+            cost = cost2;
+        } else {
+            // improved1 && (!improved2 || cost1 < cost2)
+            offset[0] = p1[0]; offset[1] = p1[1]; offset[2] = p1[2];
+            diag[0] = p1[3]; diag[1] = p1[4]; diag[2] = p1[5];
+            offdiag[0] = p1[6]; offdiag[1] = p1[7]; offdiag[2] = p1[8];
+            cost = cost1;
+        }
+
+        // Convergence check
+        if ((ok1 || ok2)
+            && radius > MIN_RADIUS_UT && radius < MAX_RADIUS_UT
+            && iter >= MIN_ITERATIONS
+            && (cost < COST_THRESHOLD_UT || damping < STEP_THRESHOLD)) {
+            converged = true;
+            r.iterations = static_cast<uint8_t>(iter + 1);
+            break;
+        }
+    }
+
+    // ── Store result ──
+    r.offset_body_uT[0] = offset[0]; r.offset_body_uT[1] = offset[1]; r.offset_body_uT[2] = offset[2];
+    r.diag[0] = diag[0]; r.diag[1] = diag[1]; r.diag[2] = diag[2];
+    r.offdiag[0] = offdiag[0]; r.offdiag[1] = offdiag[1]; r.offdiag[2] = offdiag[2];
+    r.cost_px4_uT     = cost;
+    r.rms_uT          = cost * std::sqrt(static_cast<float>(count));
+    r.solver_converged = converged;
+    if (!converged) { r.iterations = MAX_ITERATIONS; }
+
+    // ── Positive definiteness ──
+    const bool diag_positive = (diag[0] > 0.0F) && (diag[1] > 0.0F) && (diag[2] > 0.0F);
+    const float offset_norm = std::sqrt(offset[0] * offset[0] + offset[1] * offset[1] + offset[2] * offset[2]);
+
+    // ── Self-validation: cal_norm stats ──
+    if (converged && diag_positive) {
+        float cal_min = FLT_MAX, cal_max = -FLT_MAX;
+        double cal_sum = 0.0, cal_sum2 = 0.0;
+
+        for (size_t k = 0u; k < count; ++k) {
+            const float x = sample_buffer[k][0] - offset[0];
+            const float y = sample_buffer[k][1] - offset[1];
+            const float z = sample_buffer[k][2] - offset[2];
+
+            const float cx = diag[0] * x + offdiag[0] * y + offdiag[1] * z;
+            const float cy = offdiag[0] * x + diag[1] * y + offdiag[2] * z;
+            const float cz = offdiag[1] * x + offdiag[2] * y + diag[2] * z;
+
+            const float cn = std::sqrt(cx * cx + cy * cy + cz * cz);
+            if (cn < cal_min) { cal_min = cn; }
+            if (cn > cal_max) { cal_max = cn; }
+            cal_sum  += static_cast<double>(cn);
+            cal_sum2 += static_cast<double>(cn) * static_cast<double>(cn);
+        }
+
+        r.cal_norm_min_uT  = cal_min;
+        r.cal_norm_max_uT  = cal_max;
+        r.cal_norm_mean_uT = static_cast<float>(cal_sum / static_cast<double>(count));
+        const double m  = static_cast<double>(r.cal_norm_mean_uT);
+        const double var = cal_sum2 / static_cast<double>(count) - m * m;
+        r.cal_norm_std_uT = (var > 0.0) ? static_cast<float>(std::sqrt(var)) : 0.0F;
+        if (r.cal_norm_mean_uT > 0.0F) {
+            const float max_dev = (cal_max - r.cal_norm_mean_uT) > (r.cal_norm_mean_uT - cal_min)
+                                ? (cal_max - r.cal_norm_mean_uT) : (r.cal_norm_mean_uT - cal_min);
+            r.cal_norm_max_err = max_dev / r.cal_norm_mean_uT;
+        }
+    }
+
+    r.valid = converged
+           && diag_positive
+           && std::isfinite(radius) && std::isfinite(offset[0]) && std::isfinite(offset[1]) && std::isfinite(offset[2])
+           && std::isfinite(diag[0]) && std::isfinite(diag[1]) && std::isfinite(diag[2])
+           && std::isfinite(offdiag[0]) && std::isfinite(offdiag[1]) && std::isfinite(offdiag[2])
+           && std::isfinite(r.cal_norm_mean_uT) && std::isfinite(r.cal_norm_std_uT) && std::isfinite(r.cal_norm_max_err)
+           && radius > MIN_RADIUS_UT && radius < MAX_RADIUS_UT
+           && offset_norm < 130.0F
+           && r.cal_norm_mean_uT > 30.0F && r.cal_norm_mean_uT < 60.0F
+           && r.cal_norm_min_uT > 20.0F
+           && r.cal_norm_max_uT < 70.0F
+           && r.cal_norm_std_uT < 5.0F
+           && r.cal_norm_max_err < 0.30F;
+
+    return r;
+}
+
 } // namespace ist8310_calibration

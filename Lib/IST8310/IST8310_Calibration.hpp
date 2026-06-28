@@ -168,6 +168,47 @@ SphereLmFitResult FitSphereLm(
     size_t count);
 
 /**
+ * @brief PX4-style full ellipsoid LM refinement 结果
+ *
+ * @note  对应 PX4 lm_mag_fit(..., full_ellipsoid=true)。
+ *        A1 sphere LM 提供 radius + offset 初值。
+ *        本阶段固定 radius，优化 offset[3] + diag[3] + offdiag[3]。
+ *        diag/offdiag 直接组成 runtime correction matrix M，不是 ellipsoid Q 的中间量。
+ *        AHRS 使用 uT，PX4 使用 Gauss。
+ */
+struct EllipsoidLmFitResult
+{
+    float offset_body_uT[3]{};
+    float diag[3]{1.0F, 1.0F, 1.0F};
+    float offdiag[3]{};
+    float radius_uT{};
+    float cost_px4_uT{};
+    float rms_uT{};
+    uint8_t iterations{};
+    bool solver_converged{false};
+    bool valid{false};
+
+    float cal_norm_min_uT{};
+    float cal_norm_max_uT{};
+    float cal_norm_mean_uT{};
+    float cal_norm_std_uT{};
+    float cal_norm_max_err{};
+};
+
+/**
+ * @brief PX4-style full ellipsoid LM refinement（固定 radius，优化 offset + diag + offdiag）
+ *
+ * @param sample_buffer  样本数组 [count][3] body-frame 未校准 uT
+ * @param count          样本数
+ * @param sphere         A1 FitSphereLm 结果（作为初值）
+ * @return 拟合结果
+ */
+EllipsoidLmFitResult FitEllipsoidLm(
+    const float sample_buffer[][3],
+    size_t count,
+    const SphereLmFitResult &sphere);
+
+/**
  * @brief 重置所有内部状态（重新开始收集）
  */
 void Reset();
