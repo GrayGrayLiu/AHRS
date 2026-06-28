@@ -202,6 +202,21 @@ struct EllipsoidLmFitResult
     float max_err_cal_body_uT[3]{};
     float max_err_cal_norm_uT{};
     float max_err_abs_uT{};         // abs(cal_norm - cal_norm_mean)
+
+    // ── 覆盖诊断（基于 A2 校准后向量的八象限半球统计） ──
+    // 八象限编码: bit0=x>=0, bit1=y>=0, bit2=z>=0
+    // 0:x-y-z- 1:x+y-z- 2:x-y+z- 3:x+y+z- 4:x-y-z+ 5:x+y-z+ 6:x-y+z+ 7:x+y+z+
+    uint32_t coverage_octant_count[8]{};
+    uint32_t coverage_min_octant_count{};
+    uint32_t coverage_max_octant_count{};
+    uint32_t coverage_empty_octant_count{};
+    float    coverage_octant_ratio{};
+
+    uint32_t coverage_hemi_count[6]{};  // x+, x-, y+, y-, z+, z-
+    float    coverage_axis_min[3]{};
+    float    coverage_axis_max[3]{};
+
+    uint8_t  max_err_sample_octant{};
 };
 
 /**

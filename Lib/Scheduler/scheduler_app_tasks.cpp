@@ -578,6 +578,34 @@ void MagCalTask(SchedulerTaskId self_id, SchedulerRunReason reason, SchedulerEve
                            static_cast<double>(e2fit.max_err_cal_norm_uT),
                            static_cast<double>(e2fit.max_err_abs_uT),
                            static_cast<double>(e2fit.cal_norm_max_err));
+                    printf("[mag_cal] // coverage octants={%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu} min=%lu max=%lu empty=%lu ratio=%.2f\r\n",
+                           static_cast<unsigned long>(e2fit.coverage_octant_count[0]),
+                           static_cast<unsigned long>(e2fit.coverage_octant_count[1]),
+                           static_cast<unsigned long>(e2fit.coverage_octant_count[2]),
+                           static_cast<unsigned long>(e2fit.coverage_octant_count[3]),
+                           static_cast<unsigned long>(e2fit.coverage_octant_count[4]),
+                           static_cast<unsigned long>(e2fit.coverage_octant_count[5]),
+                           static_cast<unsigned long>(e2fit.coverage_octant_count[6]),
+                           static_cast<unsigned long>(e2fit.coverage_octant_count[7]),
+                           static_cast<unsigned long>(e2fit.coverage_min_octant_count),
+                           static_cast<unsigned long>(e2fit.coverage_max_octant_count),
+                           static_cast<unsigned long>(e2fit.coverage_empty_octant_count),
+                           static_cast<double>(e2fit.coverage_octant_ratio));
+                    printf("[mag_cal] // coverage hemi x+=%lu x-=%lu y+=%lu y-=%lu z+=%lu z-=%lu\r\n",
+                           static_cast<unsigned long>(e2fit.coverage_hemi_count[0]),
+                           static_cast<unsigned long>(e2fit.coverage_hemi_count[1]),
+                           static_cast<unsigned long>(e2fit.coverage_hemi_count[2]),
+                           static_cast<unsigned long>(e2fit.coverage_hemi_count[3]),
+                           static_cast<unsigned long>(e2fit.coverage_hemi_count[4]),
+                           static_cast<unsigned long>(e2fit.coverage_hemi_count[5]));
+                    printf("[mag_cal] // coverage unit_axis_min={%.2f,%.2f,%.2f} unit_axis_max={%.2f,%.2f,%.2f} max_err_octant=%u\r\n",
+                           static_cast<double>(e2fit.coverage_axis_min[0]),
+                           static_cast<double>(e2fit.coverage_axis_min[1]),
+                           static_cast<double>(e2fit.coverage_axis_min[2]),
+                           static_cast<double>(e2fit.coverage_axis_max[0]),
+                           static_cast<double>(e2fit.coverage_axis_max[1]),
+                           static_cast<double>(e2fit.coverage_axis_max[2]),
+                           static_cast<unsigned int>(e2fit.max_err_sample_octant));
                     printf("[mag_cal] // ===== end PX4-style ellipsoid LM candidate =====\r\n");
                 }
 

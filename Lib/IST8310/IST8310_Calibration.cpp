@@ -1335,6 +1335,11 @@ EllipsoidLmFitResult FitEllipsoidLm(
         float cal_min = FLT_MAX, cal_max = -FLT_MAX;
         double cal_sum = 0.0, cal_sum2 = 0.0;
 
+        // 初始化 coverage axis min/max
+        r.coverage_axis_min[0] =  FLT_MAX; r.coverage_axis_max[0] = -FLT_MAX;
+        r.coverage_axis_min[1] =  FLT_MAX; r.coverage_axis_max[1] = -FLT_MAX;
+        r.coverage_axis_min[2] =  FLT_MAX; r.coverage_axis_max[2] = -FLT_MAX;
+
         const size_t n_cal = (count <= MAX_CAL_SAMPLES) ? count : MAX_CAL_SAMPLES;
 
         for (size_t k = 0u; k < count; ++k) {
@@ -1352,6 +1357,30 @@ EllipsoidLmFitResult FitEllipsoidLm(
             if (cn > cal_max) { cal_max = cn; }
             cal_sum  += static_cast<double>(cn);
             cal_sum2 += static_cast<double>(cn) * static_cast<double>(cn);
+
+            // ── Coverage statistics (A2 calibrated vector, not centered raw) ──
+            if (cn > 1.0e-6F && k < MAX_CAL_SAMPLES) {
+                const uint8_t oct = (cx >= 0.0F ? 1u : 0u) | (cy >= 0.0F ? 2u : 0u) | (cz >= 0.0F ? 4u : 0u);
+                if (oct < 8u) { r.coverage_octant_count[oct]++; }
+
+                r.coverage_hemi_count[0] += (cx >= 0.0F ? 1u : 0u);   // x+
+                r.coverage_hemi_count[1] += (cx <  0.0F ? 1u : 0u);   // x-
+                r.coverage_hemi_count[2] += (cy >= 0.0F ? 1u : 0u);   // y+
+                r.coverage_hemi_count[3] += (cy <  0.0F ? 1u : 0u);   // y-
+                r.coverage_hemi_count[4] += (cz >= 0.0F ? 1u : 0u);   // z+
+                r.coverage_hemi_count[5] += (cz <  0.0F ? 1u : 0u);   // z-
+
+                const float inv_cn = 1.0F / cn;
+                const float ux = cx * inv_cn;
+                const float uy = cy * inv_cn;
+                const float uz = cz * inv_cn;
+                if (ux < r.coverage_axis_min[0]) { r.coverage_axis_min[0] = ux; }
+                if (ux > r.coverage_axis_max[0]) { r.coverage_axis_max[0] = ux; }
+                if (uy < r.coverage_axis_min[1]) { r.coverage_axis_min[1] = uy; }
+                if (uy > r.coverage_axis_max[1]) { r.coverage_axis_max[1] = uy; }
+                if (uz < r.coverage_axis_min[2]) { r.coverage_axis_min[2] = uz; }
+                if (uz > r.coverage_axis_max[2]) { r.coverage_axis_max[2] = uz; }
+            }
         }
 
         r.cal_norm_min_uT  = cal_min;
@@ -1366,6 +1395,22 @@ EllipsoidLmFitResult FitEllipsoidLm(
             r.cal_norm_max_err = max_dev / r.cal_norm_mean_uT;
         }
 
+        // ── Coverage ratio ──
+        {
+            uint32_t cov_min = UINT32_MAX, cov_max = 0u, cov_empty = 0u;
+            for (int o = 0; o < 8; ++o) {
+                const uint32_t c = r.coverage_octant_count[o];
+                if (c == 0u) { ++cov_empty; }
+                if (c < cov_min) { cov_min = c; }
+                if (c > cov_max) { cov_max = c; }
+            }
+            r.coverage_empty_octant_count = cov_empty;
+            r.coverage_min_octant_count   = (cov_min == UINT32_MAX) ? 0u : cov_min;
+            r.coverage_max_octant_count   = cov_max;
+            r.coverage_octant_ratio       = (cov_min > 0u)
+                ? static_cast<float>(cov_max) / static_cast<float>(cov_min) : 999.0F;
+        }
+
         // ── Percentiles and max error sample ──
         if (r.cal_norm_mean_uT > 0.0F && n_cal > 0u) {
             float max_err_ratio = -1.0F;
@@ -1377,6 +1422,16 @@ EllipsoidLmFitResult FitEllipsoidLm(
                     max_err_ratio = ratio;
                     max_idx = k;
                 }
+            }
+            // 记录最大误差样本的八象限
+            {
+                const float mx = sample_buffer[max_idx][0] - offset[0];
+                const float my = sample_buffer[max_idx][1] - offset[1];
+                const float mz = sample_buffer[max_idx][2] - offset[2];
+                const float cx = diag[0] * mx + offdiag[0] * my + offdiag[1] * mz;
+                const float cy = offdiag[0] * mx + diag[1] * my + offdiag[2] * mz;
+                const float cz = offdiag[1] * mx + offdiag[2] * my + diag[2] * mz;
+                r.max_err_sample_octant = (cx >= 0.0F ? 1u : 0u) | (cy >= 0.0F ? 2u : 0u) | (cz >= 0.0F ? 4u : 0u);
             }
 
             // 记录最大误差样本
