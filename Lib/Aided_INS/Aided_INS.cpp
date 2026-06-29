@@ -909,14 +909,28 @@ bool Aided_INS::AccUpdate(const IMU& imuData, const PVA& pvaCur, const Config& c
              * 由当前 INS 推算姿态得到的理论低动态比力为：
              *   f_imu^b_hat = -C_n^b_hat g^n
              *
-             * 按当前 AccUpdate 观测方程的线性化约定，小角度下可写成：
-             *   f_imu^b_hat = [I + (phi×)] f^b
-             *               = f^b - (f^b×) phi
+             * PHI 的定义必须与 StateFeedback() 保持一致。当前 StateFeedback()
+             * 将 PHI 作为 phi_n_p 类型的姿态失准角，并以左乘方式反馈到 C_b^n：
+             *   C_b^n_hat = [I - (phi×)] C_b^n
+             *
+             * 因此转置到 C_n^b 后，误差矩阵位于右侧：
+             *   C_n^b_hat = C_n^b [I + (phi×)]
+             *
+             * 代入理论低动态比力并线性化：
+             *   f_imu^b_hat = -C_n^b_hat g^n
+             *               = -C_n^b [I + (phi×)] g^n
+             *               = -C_n^b g^n - C_n^b (phi×) g^n
+             *
+             * 利用：
+             *   (phi×) g^n = -(g^n×) phi
+             *
+             * 可得：
+             *   f_imu^b_hat = f^b + C_n^b (g^n×) phi
              *
              * 构造加速度计更新残差：
              *   dz_f = f_imu^b_hat - f_acc^b_hat
-             *        = f^b - (f^b×)phi - f^b - S_a f^b - b_a - w_a
-             *        = -(f^b×)phi - b_a - diag(f^b)delta_s_a - w_a
+             *        = f^b + C_n^b (g^n×)phi - f^b - S_a f^b - b_a - w_a
+             *        = C_n^b (g^n×)phi - b_a - diag(f^b)delta_s_a - w_a
              *
              * AccUpdate 的完整观测矩阵 H_acc 为 3×21，状态块顺序：
              *   x = [ P | V | PHI | GB | AB | GS | AS ]^T
@@ -924,13 +938,14 @@ bool Aided_INS::AccUpdate(const IMU& imuData, const PVA& pvaCur, const Config& c
              * 加速度计重力方向更新只直接观测姿态误差 PHI、加速度计零偏 AB、
              * 加速度计比例因子 AS，因此：
              *
-             *   H_acc = [ 0  0  -(f^b×)  0  -I  0  -diag(f^b) ]
-             *            P  V     PHI    GB  AB  GS      AS
+             *   H_acc = [ 0  0  C_n^b(g^n×)  0  -I  0  -diag(f^b) ]
+             *            P  V      PHI       GB  AB  GS      AS
              *
              * 当前代码中：
-             *   f_b_ByImu = f_imu^b_hat = -C_n^b_hat g^n ≈ f^b
+             *   Cnb       = pvaCur.att.Cbn.transpose()
+             *   f_b_ByImu = f_imu^b_hat = -Cnb * g_l_n ≈ f^b
              *   dz        = f_b_ByImu - f_b
-             *   H_phi     = SkewSymmetric(-f_b_ByImu) ≈ -(f^b×)
+             *   H_phi     = Cnb * SkewSymmetric(g_l_n)
              *   H_ab      = -I
              *   H_as      = (-f_b_ByImu).asDiagonal() ≈ -diag(f^b)
              *
@@ -938,7 +953,8 @@ bool Aided_INS::AccUpdate(const IMU& imuData, const PVA& pvaCur, const Config& c
              * H_acc 后调用通用 EkfUpdate<3>()。
              */
 
-            const Matrix3d H_phi = SkewSymmetric(-f_b_ByImu);
+            const Matrix3d Cnb   = pvaCur.att.Cbn.transpose();
+            const Matrix3d H_phi = Cnb * SkewSymmetric(g_l_n);
             const Matrix3d H_ab  = -Matrix3d::Identity();
             const Matrix3d H_as  = (-f_b_ByImu).asDiagonal();
 
