@@ -397,6 +397,8 @@ Config Aided_INS::LoadConfig()
 void Aided_INS::Initialize()
 {
     timestamp_ = 0;
+    magUpdatePrevTime_     = 0.0;
+    magUpdateHasPrevTime_  = false;
 
     //设置协方差矩阵Cov，系统噪声阵q和系统误差状态矩阵dx（固定尺寸，不需要 resize）
     P_.setZero();
@@ -1025,14 +1027,122 @@ void Aided_INS::MagUpdate(const Mag &magData, const PVA &pvaCur, const Config &c
      * 其中 H_phi_yaw = -1.0，由当前 dz = psi_IMU - psi_mag 与
      * 偏航姿态失准角 PHI_D 之间的线性关系决定。
      */
-    constexpr double H_phi_yaw = -1.0;
+    constexpr double H_phi_yaw       = -1.0;
+    constexpr int    kYawIndex       = static_cast<int>(PHI_ID) + 2;
+    constexpr double INNOV_GATE_SIGMA = 3.0;
+    constexpr double MAX_YAW_RATE_RAD_S = 1.0 * (M_PI / 180.0);  // 1 deg/s
 
     //磁力计观测噪声矩阵
     MeasurementNoise<1> R_mag;
     R_mag(0, 0) = config.magMeasureYawStd * config.magMeasureYawStd;
 
-    // EKF更新协方差和误差状态（结构化 Mag yaw 专用路径）
-    EkfUpdateMagYaw1(dz, H_phi_yaw, R_mag);
+    const double H_val   = H_phi_yaw;
+    const double R_val   = R_mag(0, 0);
+    const double P_yy    = P_(kYawIndex, kYawIndex);
+    const double S_val   = H_val * P_yy * H_val + R_val;
+    const double innov   = dz(0, 0) - H_val * dx_(kYawIndex);
+
+    // Innovation gate
+    bool accept = false;
+    const char *reason = "ok";
+    if (!std::isfinite(S_val) || S_val <= 0.0) {
+        reason = "S";
+    } else if (innov * innov > INNOV_GATE_SIGMA * INNOV_GATE_SIGMA * S_val) {
+        reason = "innov";
+    } else {
+        accept = true;
+    }
+
+    // Compute dt_mag
+    double dt_mag = 1.0 / 40.0;  // default
+    if (magUpdateHasPrevTime_) {
+        dt_mag = magData.time - magUpdatePrevTime_;
+    }
+    if (dt_mag < 0.005) { dt_mag = 0.005; }
+    if (dt_mag > 0.2)   { dt_mag = 0.2; }
+    magUpdatePrevTime_    = magData.time;
+    magUpdateHasPrevTime_ = true;
+
+    // Save pre-update raw K for diagnostics (before P is modified)
+    const double inv_S_pre    = (S_val > 1.0e-12) ? (1.0 / S_val) : 0.0;
+    const double K_raw_roll_pre  = P_(PHI_ID + 0, kYawIndex) * H_val * inv_S_pre;
+    const double K_raw_pitch_pre = P_(PHI_ID + 1, kYawIndex) * H_val * inv_S_pre;
+    const double K_raw_yaw_pre   = P_yy * H_val * inv_S_pre;
+
+    // Build constrained K_eff (rate-limited)
+    const double max_delta_yaw = MAX_YAW_RATE_RAD_S * dt_mag;
+    const double delta_yaw_raw = K_raw_yaw_pre * innov;
+
+    double K_eff_yaw_used = 0.0;
+    if (accept) {
+        K_eff_yaw_used = K_raw_yaw_pre;
+        if (std::abs(delta_yaw_raw) > max_delta_yaw) {
+            K_eff_yaw_used *= max_delta_yaw / std::abs(delta_yaw_raw);
+            reason = "rate";
+        }
+    }
+
+    // Heading-only constrained update
+    if (accept) {
+        // PHt_raw = P(:,yaw) * H (21x1)
+        Eigen::Matrix<double, kStateRank, 1> PHt_raw;
+        PHt_raw.noalias() = P_.template block<kStateRank, 1>(0, kYawIndex) * H_val;
+
+        // HP_raw = H * P(yaw,:) (1x21)
+        Eigen::Matrix<double, 1, kStateRank> HP_raw;
+        HP_raw.noalias() = H_val * P_.template block<1, kStateRank>(kYawIndex, 0);
+
+        // dx update: only yaw via K_eff_used
+        dx_(kYawIndex) += K_eff_yaw_used * innov;
+
+        // Joseph form P update with K_eff_used (heading-only)
+        Eigen::Matrix<double, kStateRank, 1> K_eff_full = Eigen::Matrix<double, kStateRank, 1>::Zero();
+        K_eff_full(kYawIndex) = K_eff_yaw_used;
+
+        StateMatrix &tmp = I_scratch_;
+        // P = P - K_eff * HP_raw
+        tmp.noalias() = K_eff_full * HP_raw;
+        P_ -= tmp;
+        // P = P - PHt_raw * K_eff^T
+        tmp.noalias() = PHt_raw * K_eff_full.transpose();
+        P_ -= tmp;
+        // P = P + K_eff * S * K_eff^T
+        tmp.noalias() = K_eff_full * S_val * K_eff_full.transpose();
+        P_ += tmp;
+    }
+
+    // Diagnostic output (~5 Hz, controlled by AIDED_INS_ENABLE_MAG_EKF_PRINT)
+#if AIDED_INS_ENABLE_MAG_EKF_PRINT
+    {
+        static uint32_t s_mag_diag_cnt = 0u;
+        ++s_mag_diag_cnt;
+        if ((s_mag_diag_cnt % 10u) == 0u) {
+            const double h_horiz   = std::sqrt(h_n(0) * h_n(0) + h_n(1) * h_n(1));
+            const double mag_norm  = magData.mag.norm();
+            double dz_w = dz(0, 0);
+            while (dz_w >  M_PI) { dz_w -= 2.0 * M_PI; }
+            while (dz_w < -M_PI) { dz_w += 2.0 * M_PI; }
+
+            const double delta_yaw_eff = K_eff_yaw_used * innov;
+
+            printf("[MAG_UPD] n=%lu t=%.3f norm=%.1f hh=%.1f dz_raw=%.1f dz_wrap=%.1f yaw=%.1f\r\n",
+                   static_cast<unsigned long>(s_mag_diag_cnt), magData.time, mag_norm,
+                   h_horiz, Angle::Rad2Deg(dz(0,0)), Angle::Rad2Deg(dz_w),
+                   Angle::Rad2Deg(pvaCur.att.euler(2)));
+            printf("[MAG_EKF] n=%lu accept=%d reason=%s innov=%.2f S=%.6f "
+                   "Kraw_phi=(%.4f,%.4f,%.4f) Keff_phi=(0.000,0.000,%.4f) "
+                   "dyaw_raw=%.4f dyaw_eff=%.4f rate_lim=%.4f dt=%.3f gate=%.1f R=%.6f\r\n",
+                   static_cast<unsigned long>(s_mag_diag_cnt),
+                   static_cast<unsigned int>(accept), reason,
+                   Angle::Rad2Deg(innov), S_val,
+                   K_raw_roll_pre, K_raw_pitch_pre, K_raw_yaw_pre,
+                   K_eff_yaw_used,
+                   Angle::Rad2Deg(delta_yaw_raw), Angle::Rad2Deg(delta_yaw_eff),
+                   Angle::Rad2Deg(max_delta_yaw), dt_mag,
+                   INNOV_GATE_SIGMA, R_val);
+        }
+    }
+#endif
 
     //磁力计更新之后设置为不可用
     magData_.isUpdate = false;
