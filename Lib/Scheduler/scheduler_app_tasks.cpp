@@ -305,6 +305,26 @@ void AttitudeTelemetryTask(SchedulerTaskId self_id, SchedulerRunReason reason, S
            static_cast<double>(att.pitch_deg),
            static_cast<double>(att.yaw_deg));
 #endif
+
+    // Scheduler stats (~1 Hz, controlled by AIDED_INS_ENABLE_SCHED_STATS_PRINT)
+#if AIDED_INS_ENABLE_SCHED_STATS_PRINT
+    {
+        static uint32_t s_sc = 0u; ++s_sc;
+        if ((s_sc % 25u) == 0u) {
+            const uint8_t n = Scheduler_GetTaskCount();
+            for (uint8_t i = 0u; i < n; ++i) {
+                SchedulerTaskStats st{};
+                if (Scheduler_GetTaskStats(i, &st)) {
+                    printf("[SCH_RT] id=%u run=%lu last_us=%lu max_us=%lu min_us=%lu miss=%lu block=%lu\r\n",
+                           i, static_cast<unsigned long>(st.run_count),
+                           static_cast<unsigned long>(st.last_runtime_us), static_cast<unsigned long>(st.max_runtime_us),
+                           static_cast<unsigned long>(st.min_runtime_us), static_cast<unsigned long>(st.deadline_miss_count),
+                           static_cast<unsigned long>(st.reentry_block_count));
+                }
+            }
+        }
+    }
+#endif
 }
 
 // ============================================================================
