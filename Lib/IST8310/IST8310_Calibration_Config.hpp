@@ -16,25 +16,24 @@
 namespace ist8310_calibration_config
 {
 
-// 当前校准参数（2026-06-29 PX4-style ellipsoid LM candidate，6-side calibration）
-//   fit_valid=1  solver_converged=1  iters=11  radius=45.83  cost_px4=0.1935  rms=2.997
-//   cal_norm: min=33.36 max=53.31 mean=45.64 std=2.99 max_err=0.269  coverage ratio=1.22
+// 当前校准参数（6-side calibration, recommended=diagonal）
 //   formula:
 //     centered = mag_body - bias_body
-//     mag_cal = M_body * centered    (M_body: symmetric 3x3, diag=scale_body, offdiag=kMagOffDiagScaleBody)
+//     mag_cal = M_body * centered
+//     M_body: symmetric 3x3, diag=scale_body, offdiag=kMagOffDiagScaleBody
+//   当前采用 recommended=diagonal，因此 offdiag={0,0,0}，实际退化为 diag(scale_body) * centered
 //   坐标系: body-frame, 映射: body_x=sensor_y, body_y=-sensor_x, body_z=-sensor_z
 constexpr float kMagHardIronBiasBody_uT[3] = {
-    40.44F, 16.54F, 7.01F,
+    19.55F, 9.85F, -6.21F,
 };
 
 constexpr float kMagScaleBody[3] = {
-    1.03F, 1.00F, 0.96F,
+    1.04F, 1.00F, 0.97F,
 };
 
-// offdiagonal soft-iron correction (PX4-style symmetric 3x3: offdiag_xy, offdiag_xz, offdiag_yz)
-// 来源：PX4-style ellipsoid LM candidate（A2），非 zero
+// recommended=diagonal，offdiag 清零
 constexpr float kMagOffDiagScaleBody[3] = {
-    0.0120F, -0.0240F, 0.0062F,
+    0.0000F, 0.0000F, 0.0000F,
 };
 
 // 第三次 MCU 端校准结果（2026-06-26，已弃用）
