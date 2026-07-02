@@ -25,7 +25,9 @@
 #include "EarthUtilities.hpp"
 #include "RotationUtilities.hpp"
 #include "INS_Mechanization.hpp"
+#include "IST8310_Service.hpp"
 #include "SystemPort.h"  // [PROFILE]
+#include "scheduler.h"
 #include "stm32h7xx.h"
 
 #include <cassert>
@@ -192,6 +194,14 @@ int Aided_INS::InitialAlignment()
         const double my_h = my * std::cos(roll) - mz * std::sin(roll);
 
         yaw = std::atan2(-my_h, mx_h);
+
+#if AIDED_INS_ENABLE_INIT_MAG_YAW_PRINT
+        printf("IYAW cnt=%lu r=%.2f p=%.2f yaw=%.2f mag=(%.2f %.2f %.2f) norm=%.2f mh=(%.2f %.2f)\r\n",
+               static_cast<unsigned long>(alignMagCount_),
+               Angle::Rad2Deg(roll), Angle::Rad2Deg(pitch), Angle::Rad2Deg(yaw),
+               magMean(0), magMean(1), magMean(2), magMean.norm(),
+               mx_h, my_h);
+#endif
     }
 
     // 初始化姿态
@@ -240,9 +250,44 @@ bool Aided_INS::GetImuData()
 
 bool Aided_INS::GetMagData()
 {
-    // TODO: 接入真实磁力计 service 后，在此更新 magData_、设置 isUpdate=true 并返回 true。
-    // 当前磁力计链路未接入，运行期不触发 MagUpdate。
+#if AIDED_INS_ENABLE_MAG_UPDATE
+    if (ist8310_service::IsFault()) {
+        return false;
+    }
+
+    ist8310_service::MagSample sample{};
+    if (!ist8310_service::CopyLatest(&sample)) {
+        return false;
+    }
+
+    if (!sample.valid || !sample.calibration_applied) {
+        return false;
+    }
+
+    if (sample.sample_counter == lastMagSampleCounter_) {
+        return false;
+    }
+
+    const double mx = static_cast<double>(sample.mag_uT_body_calibrated[0]);
+    const double my = static_cast<double>(sample.mag_uT_body_calibrated[1]);
+    const double mz = static_cast<double>(sample.mag_uT_body_calibrated[2]);
+    const double norm = std::sqrt(mx * mx + my * my + mz * mz);
+
+    if (norm < 5.0 || norm > 85.0) {
+        return false;
+    }
+
+    lastMagSampleCounter_ = sample.sample_counter;
+
+    // 第一版使用 read_timestamp_us：量测已可用时刻，更不容易落到已过期 IMU 时间窗。
+    magData_.time = static_cast<double>(sample.read_timestamp_us) * 1.0e-6;
+    magData_.mag = Eigen::Vector3d(mx, my, mz);
+    magData_.isUpdate = true;
+
+    return true;
+#else
     return false;
+#endif
 }
 
 Config Aided_INS::LoadConfig()
@@ -361,6 +406,13 @@ Config Aided_INS::LoadConfig()
 void Aided_INS::Initialize()
 {
     timestamp_ = 0;
+    magUpdatePrevTime_     = 0.0;
+    magUpdateHasPrevTime_  = false;
+    magRecoveryCnt_ = 0;
+    magRecoveryCovResetDone_ = false;
+    magNormalFuseCnt_ = 0;
+    accLpf_.setZero();
+    accLpfInitialized_ = false;
 
     //设置协方差矩阵Cov，系统噪声阵q和系统误差状态矩阵dx（固定尺寸，不需要 resize）
     P_.setZero();
@@ -621,8 +673,14 @@ void Aided_INS::InsPropagation(const IMU &imuPre, IMU &imuCur)
     // [PROFILE] InsPropagation 总耗时起点
     const uint64_t t_prop_start = SystemPort_GetMicros();
 
+    // 保存补偿前 raw IMU 用于诊断
+    const auto imuRawBeforeComp = imuCur;
+
     //对当前IMU数据(imuCur)补偿误差, 上一IMU数据(imupre)已经补偿过了
     ImuCompensate(imuCur);
+
+    // 保存传播前 Euler 用于诊断
+    const Eigen::Vector3d eulerBeforeMech = pvaCur_.att.euler;
 
     // [PROFILE] INS_Mech 起点
     const uint64_t t_before_mech = SystemPort_GetMicros();
@@ -748,6 +806,41 @@ void Aided_INS::InsPropagation(const IMU &imuPre, IMU &imuCur)
     profile_.fmx_fill_us = static_cast<uint32_t>(t_after_fill - t_after_alc);
     profile_.fmx_q1_us   = static_cast<uint32_t>(t_after_q1   - t_after_fill);
     profile_.fmx_q2_us   = static_cast<uint32_t>(t_before_ekf - t_after_q1);
+
+    // ── GYRO/PROP 诊断（受 AIDED_INS_ENABLE_PROP_GYRO_PRINT 控制） ──
+#if AIDED_INS_ENABLE_PROP_GYRO_PRINT
+    {
+        static uint32_t s_pc = 0u; ++s_pc;
+        if ((s_pc % 200u) == 0u) {
+            const double dt_r = imuRawBeforeComp.dt;
+            const double raw_dps[3] = {
+                Angle::Rad2Deg(imuRawBeforeComp.deltaTheta[0] / dt_r),
+                Angle::Rad2Deg(imuRawBeforeComp.deltaTheta[1] / dt_r),
+                Angle::Rad2Deg(imuRawBeforeComp.deltaTheta[2] / dt_r),
+            };
+            const double comp_dps[3] = {
+                Angle::Rad2Deg(imuCur.deltaTheta[0] / dt_r),
+                Angle::Rad2Deg(imuCur.deltaTheta[1] / dt_r),
+                Angle::Rad2Deg(imuCur.deltaTheta[2] / dt_r),
+            };
+            const double gb_dps[3] = {
+                Angle::Rad2Deg(imuError_.gyrBias[0]), Angle::Rad2Deg(imuError_.gyrBias[1]), Angle::Rad2Deg(imuError_.gyrBias[2]),
+            };
+            double de[3];
+            for (int i = 0; i < 3; ++i) {
+                de[i] = Angle::Rad2Deg(pvaCur_.att.euler[i] - eulerBeforeMech[i]);
+                while (de[i] >  180.0) { de[i] -= 360.0; }
+                while (de[i] < -180.0) { de[i] += 360.0; }
+            }
+            printf("[GYRO_DBG] n=%lu dt=%.4f raw_dps=(%.1f,%.1f,%.1f) comp_dps=(%.1f,%.1f,%.1f) gb_dps=(%.4f,%.4f,%.4f)\r\n",
+                   static_cast<unsigned long>(s_pc), dt_r, raw_dps[0],raw_dps[1],raw_dps[2], comp_dps[0],comp_dps[1],comp_dps[2], gb_dps[0],gb_dps[1],gb_dps[2]);
+            printf("[PROP_DBG] n=%lu dprop_deg=(%.4f,%.4f,%.4f) e0=(%.1f,%.1f,%.1f) e1=(%.1f,%.1f,%.1f)\r\n",
+                   static_cast<unsigned long>(s_pc), de[0],de[1],de[2],
+                   Angle::Rad2Deg(eulerBeforeMech[0]),Angle::Rad2Deg(eulerBeforeMech[1]),Angle::Rad2Deg(eulerBeforeMech[2]),
+                   Angle::Rad2Deg(pvaCur_.att.euler[0]),Angle::Rad2Deg(pvaCur_.att.euler[1]),Angle::Rad2Deg(pvaCur_.att.euler[2]));
+        }
+    }
+#endif
 }
 
 void Aided_INS::EKFPredict(const StateMatrix &Phi, const StateMatrix &Q)
@@ -826,103 +919,378 @@ bool Aided_INS::AccUpdate(const IMU& imuData, const PVA& pvaCur, const Config& c
     profile_.cbn_f_plus_g[1] = static_cast<float>(cbn_f_plus_g(1));
     profile_.cbn_f_plus_g[2] = static_cast<float>(cbn_f_plus_g(2));
     profile_.cbn_f_plus_g_norm = static_cast<float>(cbn_f_plus_g.norm());
-    profile_.cos_f_gb = static_cast<float>(f_b.dot(g_b_ByImu) / std::max(f_b.norm() * g_b_ByImu.norm(), 1e-12));
 
-    if (f_b.norm() > 1e-6f && g_b_ByImu.norm() > 1e-6f)
+    // ── 低通加速度模长 gate（参考 PX4 gravity fusion _accel_lpf AlphaFilter alpha=0.1）──
+    // PX4/ECL _accel_lpf 使用 AlphaFilter<Vector3f>{0.1f}。
+    // 本项目将该 alpha 按 alpha = 1/(1+fs/(2πfc)) 等效换算为截止频率形式实现：
+    //   fc = alpha/(1-alpha) * fs/(2π)
+    // 因此最终离散 alpha 与 PX4 的 0.1 等价。
+    // 这里用于加速度模长 gate，低通器保持 DC 增益为 1，不做有源增益补偿。
+    constexpr double PX4_ACCEL_LPF_ALPHA = 0.1;
+    if (!accLpfInitialized_) {
+        accLpf_ = f_b;
+        accLpfInitialized_ = true;
+    } else {
+        constexpr double TWO_PI        = 2.0 * M_PI;
+        const double     dt_lpf        = std::max(imuData.dt, 1.0e-4);
+        const double     sample_hz     = 1.0 / dt_lpf;
+        const double     cutoff_hz     = (PX4_ACCEL_LPF_ALPHA / (1.0 - PX4_ACCEL_LPF_ALPHA)) * sample_hz / TWO_PI;
+        const double     alpha         = 1.0 / (1.0 + sample_hz / (TWO_PI * cutoff_hz));
+        accLpf_ += alpha * (f_b - accLpf_);
+    }
+    const bool acc_lpf_norm_good = (accLpf_.norm() > 0.9 * gravity) && (accLpf_.norm() < 1.1 * gravity);
+
+    // ── Clipping gate（参考 PX4 gravity fusion delta_vel_clipping）──
+    // 当前 IMU 数据结构未提供 PX4-style delta_vel_clipping，暂置 false；
+    // 后续如驱动提供 clipping 标志再接入。
+    const bool accel_clipping = false;
+
+    // ── 瞬时 norm 保护（非 PX4 精确逻辑，本项目保留作为极端冲击保护）──
+    const bool instant_norm_ok = (std::fabs(f_b.norm() - gravity) < 2.0);
+
+    if (f_b.norm() > 1e-6f && g_b_ByImu.norm() > 1e-6f
+        && acc_lpf_norm_good && !accel_clipping && instant_norm_ok)
     {
-        const double cos_gn_gb = f_b.dot(g_b_ByImu) / ( f_b.norm() * g_b_ByImu.norm() ); //重力测量值与理论值的夹角，如果不是1，说明测量值与理论值方向不重合
-        // 注意：这里比较加速度计比力 f_b 与理论重力方向 g_b_ByImu；静止时二者应反向，因此期望 cos≈-1
-        profile_.last_cos_gn_gb = static_cast<float>(cos_gn_gb);
+        /*
+         * 加速度计更新使用低动态假设下的重力方向约束，只修正 roll/pitch
+         * 相关姿态误差，不直接约束 yaw。
+         *
+         * 理想比力模型：
+         *   f^b = C_n^b(a^n - g^n)
+         *
+         * 进入 AccUpdate 的 imuData 已经过名义 IMU 误差补偿。
+         * 因此补偿后的加速度计比力量测写作：
+         *   f_acc^b = f^b + w_a
+         *
+         * 低动态假设：
+         *   a^n ≈ 0
+         *   f^b = -C_n^b g^n
+         *
+         * 由当前 INS 推算姿态得到的理论低动态比力：
+         *   f_imu_hat^b = -C_n^b_hat g^n
+         *
+         * PHI 定义必须与 StateFeedback() 保持一致：
+         *   C_b^n_hat = [I - (phi×)] C_b^n
+         *   C_n^b_hat = C_n^b [I + (phi×)]
+         *
+         * 线性化：
+         *   f_imu_hat^b = -C_n^b [I + (phi×)] g^n
+         *               = -C_n^b g^n - C_n^b (phi×) g^n
+         *
+         * 利用：
+         *   (phi×)g^n = -(g^n×)phi
+         *
+         * 得到：
+         *   f_imu_hat^b = f^b + C_n^b(g^n×)phi
+         *
+         * 构造 raw residual：
+         *   dz = f_imu_hat^b - f_acc^b
+         *          = C_n^b(g^n×)phi - w_a
+         *
+         * raw H：
+         *   H_acc_raw = [0 0 C_n^b(g^n×) 0 0 0 0]
+         *
+         * 状态顺序：
+         *   x = [P | V | PHI | GB | AB | GS | AS]^T
+         *
+         * 本更新只直接观测姿态误差 PHI；
+         * 不直接观测 accBias / accScale；
+         * accBias / accScale 若需在线估计，应后续另设更保守的独立更新机制。
+         *
+         * 当前保留本项目 raw 比力 residual 和 R_acc = accVrw²/dt。
+         * 不引入 PX4 0.25 innovation gate 做硬拒绝；
+         * AccUpdate 只使用 outer gate 判定低动态可用性。
+         */
+        const Vector3d f_b_ByImu = -g_b_ByImu; //IMU测量到的重力加速度（假设没有运动加速度）产生的比力
+        const MeasurementVector<3> dz = f_b_ByImu - f_b;
 
-        if ( std::fabs(f_b.norm() - gravity) < 0.8 && cos_gn_gb < -0.95) // 比力方向与重力方向相反；运动加速度过大则不用加速度计更新姿态
-        {
-            ++profile_.acc_accept;
+        const Matrix3d Cnb   = pvaCur.att.Cbn.transpose();
+        const Matrix3d H_phi = Cnb * SkewSymmetric(g_l_n);
 
-            //构造输入加速度计观测方程的测量误差
-            const Vector3d f_b_ByImu = -g_b_ByImu; //IMU测量到的重力加速度（假设没有运动加速度）产生的比力
-            const MeasurementVector<3> dz = f_b_ByImu - f_b;
+        //加速度计观测噪声矩阵（本项目原有来源）
+        const MeasurementNoise<3> R_acc =
+            (config.imuNoise.accVrw.cwiseProduct(config.imuNoise.accVrw) / imuData.dt).asDiagonal();
 
-            //加速度计观测噪声矩阵
-            const MeasurementNoise<3> R_acc = (config.imuNoise.accVrw.cwiseProduct(config.imuNoise.accVrw)  / imuData.dt).asDiagonal();
+        ++profile_.acc_accept;
 
-            /*
-             * AccUpdate 的完整观测矩阵 H_acc 为 3×21，状态块顺序：
-             *
-             *   x = [ P | V | PHI | GB | AB | GS | AS ]^T
-             *       0   3    6     9    12   15   18
-             *
-             * 加速度计重力方向更新只直接观测姿态误差 PHI、加速度计零偏 AB、
-             * 加速度计比例因子 AS，因此：
-             *
-             *   H_acc = [ 0_{3×3}  0_{3×3}  H_phi  0_{3×3}  H_ab  0_{3×3}  H_as ]
-             *
-             * 其中：
-             *   H_phi = skew(-f_b_ByImu)       — 比力方向反对称矩阵
-             *   H_ab  = -I                     — 加速度计零偏线性耦合
-             *   H_as  = diag(-f_b_ByImu)       — 比例因子按比力分量缩放
-             *
-             * EkfUpdateAcc3() 只显式传入这 3 个非零 3×3 块，等价于构造完整
-             * H_acc 后调用通用 EkfUpdate<3>()。
-             */
-            const Matrix3d H_phi = SkewSymmetric(-f_b_ByImu);
-            const Matrix3d H_ab  = -Matrix3d::Identity();
-            const Matrix3d H_as  = (-f_b_ByImu).asDiagonal();
+        const uint64_t t_before_acc_ekf = SystemPort_GetMicros();
+        profile_.acc_prep_us = static_cast<uint32_t>(t_before_acc_ekf - t_acc_start);
 
-            const uint64_t t_before_acc_ekf = SystemPort_GetMicros();
-            profile_.acc_prep_us = static_cast<uint32_t>(t_before_acc_ekf - t_acc_start);
+        EkfUpdateAcc3(dz, H_phi, R_acc);
 
-            EkfUpdateAcc3(dz, H_phi, H_ab, H_as, R_acc);
+        const uint64_t t_after_acc_ekf = SystemPort_GetMicros();
+        profile_.acc_ekf_us = static_cast<uint32_t>(t_after_acc_ekf - t_before_acc_ekf);
 
-            const uint64_t t_after_acc_ekf = SystemPort_GetMicros();
-            profile_.acc_ekf_us = static_cast<uint32_t>(t_after_acc_ekf - t_before_acc_ekf);
-
-            return true;
-        }
-        else
-        {
-            // [ACC_DBG] 内层条件失败：norm_diff 或 cos 不满足
-            if (std::fabs(f_b.norm() - gravity) >= 0.8)  { ++profile_.acc_fail_norm; }
-            else                                          { ++profile_.acc_fail_cos; }
-        }
+        return true;
     }
     else
     {
-        ++profile_.acc_fail_small;  // f_b 或 g_b_ByImu norm 太小
+        // 记录 outer gate 失败原因用于诊断
+        if (f_b.norm() <= 1e-6f || g_b_ByImu.norm() <= 1e-6f)
+            ++profile_.acc_fail_small;
+        else if (!acc_lpf_norm_good)
+            ++profile_.acc_fail_lpf;
+        else if (accel_clipping)
+            ++profile_.acc_fail_clip;
+        // 其余情况（instant norm fail）计入 acc_fail_norm
+        else
+            ++profile_.acc_fail_norm;
     }
+
+    // ── AccUpdate 诊断（~1 Hz，受 AIDED_INS_ENABLE_ACC_GATE_PRINT 控制）──
+#if AIDED_INS_ENABLE_ACC_GATE_PRINT
+    {
+        static uint32_t s_ac = 0u;
+        ++s_ac;
+        if ((s_ac % 200u) == 0u) {
+            const bool norm_small = (f_b.norm() <= 1e-6f || g_b_ByImu.norm() <= 1e-6f);
+            double nd = std::fabs(f_b.norm() - gravity);
+            char   rc = 'u';
+            if (norm_small) {
+                rc = 's';
+            } else if (!acc_lpf_norm_good) {
+                rc = 'l';
+            } else if (accel_clipping) {
+                rc = 'c';
+            } else if (!instant_norm_ok) {
+                rc = 'n';
+            } else {
+                rc = 'u';  // unreachable (outer gate passed → accept)
+            }
+            printf("A%lu a%u %c nd%.2f r%.1f p%.1f y%.1f\r\n",
+                   static_cast<unsigned long>(s_ac),
+                   static_cast<unsigned int>(0u),
+                   rc,
+                   nd,
+                   static_cast<double>(profile_.euler_r_deg),
+                   static_cast<double>(profile_.euler_p_deg),
+                   static_cast<double>(profile_.euler_y_deg));
+        }
+    }
+#endif
 
     return false;
 }
 
 void Aided_INS::MagUpdate(const Mag &magData, const PVA &pvaCur, const Config &config)
 {
-    /**
-     *认为roll、pitch是准确的，认为pvaCur的估计结果只存在yaw误差，所以先将磁力计测量值转到n系，
-     *此时，hx_n、hy_n理论上就是地磁的水平分量。如果无磁偏角、yaw误差，hy_n应该为0，所以
-     *hy_n、hx_n形成的夹角就是磁偏角与yaw误差的总和。
+    /*
+     * 磁力计观测矩阵只直接观测 yaw 方向姿态误差；
+     * 实际 EKF 更新使用完整 Kalman gain，因此可能通过协方差间接修正
+     * 其它误差状态（如 gyro Z bias）。
+     *
+     * h_n = Cbn_hat * mag_b 将 body-frame 磁场转到当前 INS 推算姿态补偿后的
+     * 估计导航系中。代码变量名仍沿用 h_n。经过当前 INS 推算姿态补偿后，
+     * 在这个估计导航系中，可以把 INS 推算航向作为零参考：
+     *
+     *   psi_hat_IMU = 0
+     *
+     * 记：
+     *   psi        ：真实偏航角；
+     *   delta_psi  ：偏航姿态失准角，对应误差状态 PHI_D；
+     *                这里不是普通的"推算值减真值"的 yaw 误差，而是姿态失准角意义下的
+     *                偏航误差。若推算系 p 相对真实系 n 偏航 delta_psi，则绝对航向上有：
+     *
+     *   psi_INS = psi - delta_psi
+     *
+     * 磁力计绝对磁航向可写为：
+     *
+     *   psi_mag_abs = psi + eta + w_m
+     *
+     * 其中：
+     *   eta ：磁偏角；
+     *   w_m ：磁力计航向测量噪声/扰动。
+     *
+     * 因此，经过当前 INS 推算姿态补偿后，磁力计在估计导航系中的相对磁航向为：
+     *
+     *   psi_hat_mag = psi_mag_abs - psi_INS
+     *               = (psi + eta + w_m) - (psi - delta_psi)
+     *               = delta_psi + eta + w_m
+     *
+     * 代码中由水平磁场分量计算该相对磁航向：
+     *
+     *   psi_hat_mag = atan2(-h_y, h_x)
+     *
+     * 当前残差沿用"INS 推算航向 - 磁力计航向"：
+     *
+     *   dz = psi_hat_IMU - psi_hat_mag
+     *      = -psi_hat_mag
+     *      = -(delta_psi + eta + w_m)
+     *
+     * 当前暂不补偿磁偏角，eta 表现为常值航向偏置；
+     * 因此对偏航姿态失准角 PHI_D 的线性观测系数为 -1。
      */
     Vector3d h_n = pvaCur.att.Cbn * magData.mag;
-
-    //构造输入磁力计观测方程的测量误差（先不修正磁偏角）
     MeasurementVector<1> dz;
-    dz(0, 0) = -atan2(-h_n(1), h_n(0)); //磁力计测得的航向误差 = 偏航角误差 + 磁偏角
+    dz(0, 0) = -atan2(-h_n(1), h_n(0));
 
     /*
      * MagUpdate 的完整 H_mag 为 1×21，状态块顺序：
      *   x = [ P | V | PHI | GB | AB | GS | AS ]^T
      *
      * 当前磁力计更新只把水平磁航向误差作为 yaw 误差观测：
-     *   H_mag = [ 0  0  (0 0 1)  0  0  0  0 ]
+     *   H_mag = [ 0  0  (0 0 H_phi_yaw)  0  0  0  0 ]
      *
-     * 因此 EkfUpdateMagYaw1 只需传入 PHI_z 对应的标量 H_phi_yaw = 1。
+     * 其中 H_phi_yaw = -1.0，由当前 dz = psi_IMU - psi_mag 与
+     * 偏航姿态失准角 PHI_D 之间的线性关系决定。
      */
-    constexpr double H_phi_yaw = 1.0;
+    constexpr double H_phi_yaw       = -1.0;
+    constexpr int    kYawIndex       = static_cast<int>(PHI_ID) + 2;
+    constexpr double HDG_GATE_SIGMA  = 2.6;  // PX4 EKF2_HDG_GATE
+    constexpr double MIN_MAG_NORM_UT = 5.0;   // µT, 磁场强度下限（PX4 无WMM fallback: 45±40 µT）
+    constexpr double MAX_MAG_NORM_UT = 85.0;  // µT, 磁场强度上限
+    constexpr double MIN_H_HORIZ_UT  = 10.0;  // µT, 本项 heading-only 防退化检查，非PX4参数
 
     //磁力计观测噪声矩阵
     MeasurementNoise<1> R_mag;
     R_mag(0, 0) = config.magMeasureYawStd * config.magMeasureYawStd;
 
-    // EKF更新协方差和误差状态（结构化 Mag yaw 专用路径）
-    EkfUpdateMagYaw1(dz, H_phi_yaw, R_mag);
+    const double H_val   = H_phi_yaw;
+    const double R_val   = R_mag(0, 0);
+    const double P_yy    = P_(kYawIndex, kYawIndex);
+    const double S_val   = H_val * P_yy * H_val + R_val;
+    const double innov   = dz(0, 0) - H_val * dx_(kYawIndex);
+
+    // 磁场质量（gate 和诊断共用）
+    const double mag_norm = magData.mag.norm();
+    const double h_horiz  = std::sqrt(h_n(0) * h_n(0) + h_n(1) * h_n(1));
+
+    // Gate：S 合法性 → 磁场质量 → innov gate（不再一票否决）
+    bool accept       = false;
+    bool gate_passed  = false;
+    const char *reason = "ok";
+    if (!std::isfinite(S_val) || S_val <= 0.0) {
+        reason = "S";
+    } else if (mag_norm < MIN_MAG_NORM_UT || mag_norm > MAX_MAG_NORM_UT
+            || h_horiz < MIN_H_HORIZ_UT) {
+        reason = "m";
+    } else {
+        accept = true;
+        const double gate_sigma = (HDG_GATE_SIGMA > 1.0) ? HDG_GATE_SIGMA : 1.0;
+        const double gate_limit = gate_sigma * std::sqrt(S_val);
+        gate_passed = (innov * innov <= gate_limit * gate_limit);
+        if (!gate_passed) {
+            reason = "g";  // gate 超标，但磁场正常 → 约束 innovation 后仍融合
+        }
+    }
+
+    magUpdatePrevTime_    = magData.time;
+    magUpdateHasPrevTime_ = true;
+
+    // ── PX4-style constrain innovation（替代固定 rate limit）──
+    const double gate_sigma   = (HDG_GATE_SIGMA > 1.0) ? HDG_GATE_SIGMA : 1.0;
+    const double gate_limit   = (S_val > 0.0) ? (gate_sigma * std::sqrt(S_val)) : 0.0;
+
+    // ── Recovery 计数器（gate 外约束融合的安全条件）──
+    // 当前 tilt_ok 使用 near-level guard (|roll/pitch|<15°)，
+    // 是平放恢复场景的保守保护条件。后续若支持任意姿态下 yaw recovery，
+    // 应改为基于 AccUpdate/重力 residual 的 tilt healthy 判定。
+
+    // ── GBz cov reset latch ──
+    bool rz_triggered = false;
+
+    double innov_used = innov;
+    if (accept) {
+        if (gate_passed) {
+            reason = "o";
+            magRecoveryCnt_ = 0;
+            ++magNormalFuseCnt_;
+            if (magNormalFuseCnt_ >= 20) {
+                magRecoveryCovResetDone_ = false;
+                magNormalFuseCnt_ = 0;
+            }
+        } else {
+            magNormalFuseCnt_ = 0;
+            // gate 外：检查 recovery 条件
+            const bool tilt_ok = (std::fabs(pvaCur.att.euler(0)) < 15.0 * (M_PI / 180.0)
+                               && std::fabs(pvaCur.att.euler(1)) < 15.0 * (M_PI / 180.0));
+            const bool accel_ok = (profile_.last_norm_diff < 0.8f);
+            const Vector3d gyro_rate = imuCur_.deltaTheta / imuCur_.dt;
+            const bool gyro_ok = (gyro_rate.norm() < 15.0 * (M_PI / 180.0));  // 15 deg/s
+
+            if (tilt_ok && accel_ok && gyro_ok) {
+                ++magRecoveryCnt_;
+            } else {
+                magRecoveryCnt_ = 0;
+            }
+
+            if (magRecoveryCnt_ >= 10) {
+                // recovery allowed：约束 innov 后融合
+                if (innov >  gate_limit) innov_used =  gate_limit;
+                if (innov < -gate_limit) innov_used = -gate_limit;
+                if (!magRecoveryCovResetDone_) {
+                    ResetGyroBiasZCovForMagRecovery();
+                    magRecoveryCovResetDone_ = true;
+                    rz_triggered = true;
+                }
+                // reason 保持 "g"
+            } else {
+                // recovery not yet allowed：拒绝本次更新
+                accept = false;
+                reason = "r";
+            }
+        }
+    } else {
+        magRecoveryCnt_ = 0;
+    }
+
+    // ── 诊断变量（使用更新前 full K，在 P 修改前保存）──
+    double s_kr = 0.0, s_kp = 0.0, s_kyf = 0.0, s_kgz = 0.0;
+    double s_drr = 0.0, s_dpp = 0.0, s_dyy = 0.0, s_dgbz = 0.0;
+
+    // ── EKF 更新（复用 EkfUpdateMagYaw1，使用完整 Kalman gain）──
+    if (accept) {
+        // 保存更新前 full K 诊断值
+        if (S_val > 1.0e-12) {
+            Eigen::Matrix<double, kStateRank, 1> K_pre;
+            K_pre.noalias() = P_.template block<kStateRank, 1>(0, kYawIndex) * (H_val / S_val);
+            s_kr  = K_pre(PHI_ID + 0);
+            s_kp  = K_pre(PHI_ID + 1);
+            s_kyf = K_pre(PHI_ID + 2);
+            s_kgz = K_pre(GB_ID + 2);
+            s_drr  = s_kr  * innov_used;
+            s_dpp  = s_kp  * innov_used;
+            s_dyy  = s_kyf * innov_used;
+            s_dgbz = s_kgz * innov_used;
+        }
+
+        // 构造 dz_used，使 helper 内部 innovation = innov_used
+        MeasurementVector<1> dz_used;
+        dz_used(0, 0) = H_val * dx_(kYawIndex) + innov_used;
+        EkfUpdateMagYaw1(dz_used, H_phi_yaw, R_mag);
+    }
+
+    // Diagnostic output (~5 Hz, controlled by AIDED_INS_ENABLE_MAG_EKF_PRINT)
+#if AIDED_INS_ENABLE_MAG_EKF_PRINT
+    {
+        static uint32_t s_mag_diag_cnt = 0u;
+        ++s_mag_diag_cnt;
+        if ((s_mag_diag_cnt % 10u) == 0u) {
+
+            char reason_code;
+            if (reason[0] == 'o') reason_code = 'o';
+            else if (reason[0] == 'g') reason_code = 'g';
+            else if (reason[0] == 'r') reason_code = 'r';
+            else if (reason[0] == 'm') reason_code = 'm';
+            else if (reason[0] == 'S') reason_code = 's';
+            else reason_code = 'u';
+
+            printf("M%lu a%u %c dz%.1f iv%.1f kr%.3f kp%.3f kyf%.3f kgz%.4f drr%.2f dpp%.2f dyy%.2f dgbz%.4f gl%.2f rz%u y%.1f m%.1f h%.1f\r\n",
+                   static_cast<unsigned long>(s_mag_diag_cnt),
+                   static_cast<unsigned int>(accept),
+                   reason_code,
+                   Angle::Rad2Deg(dz(0,0)),
+                   Angle::Rad2Deg(innov),
+                   s_kr, s_kp, s_kyf, s_kgz,
+                   Angle::Rad2Deg(s_drr), Angle::Rad2Deg(s_dpp), Angle::Rad2Deg(s_dyy), Angle::Rad2Deg(s_dgbz),
+                   Angle::Rad2Deg(gate_limit),
+                   static_cast<unsigned int>(rz_triggered),
+                   Angle::Rad2Deg(pvaCur.att.euler(2)),
+                   mag_norm,
+                   h_horiz);
+        }
+    }
+#endif
 
     //磁力计更新之后设置为不可用
     magData_.isUpdate = false;
@@ -1038,6 +1406,20 @@ Aided_INS::KfUpdateType Aided_INS::IsToUpdate(const double imuTime1, const doubl
 
 void Aided_INS::ProcessNewData()
 {
+    // ── Scheduler stats 清零（INS Running 后延迟 2s，仅一次） ──
+    {
+        static bool s_stats_cleared = false;
+        static uint32_t s_running_start_ms = 0u;
+        if (!s_stats_cleared && status_ == InsStatus::Running) {
+            if (s_running_start_ms == 0u) { s_running_start_ms = HAL_GetTick(); }
+            else if (HAL_GetTick() - s_running_start_ms >= 2000u) {
+                Scheduler_ClearAllTaskStats();
+                s_stats_cleared = true;
+                printf("[SCH_RT] stats cleared after INS running\r\n");
+            }
+        }
+    }
+
     // [PROFILE] ProcessNewData 总耗时起点
     const uint64_t t_pnd_start = SystemPort_GetMicros();
 
@@ -1121,6 +1503,29 @@ void Aided_INS::ProcessNewData()
             StateFeedback();
         }
     }
+
+    // ── IMU flow + FB dx_ 诊断（受宏控制，每 200 次 ≈ 1 Hz） ──
+#if AIDED_INS_ENABLE_IMU_FLOW_PRINT || AIDED_INS_ENABLE_FB_DBG_PRINT
+    {
+        static uint32_t s_fc = 0u; ++s_fc;
+        if ((s_fc % 200u) == 0u) {
+            const double prod_dt = imuCur_.time - imuPre_.time;
+#if AIDED_INS_ENABLE_IMU_FLOW_PRINT
+            const uint32_t pnd_us = static_cast<uint32_t>(SystemPort_GetMicros() - t_pnd_start);
+            printf("[IMU_FLOW] n=%lu prod_ts=%.6f cons_dt=%.4f prod_dt=%.4f pnd_us=%lu type=%d\r\n",
+                   static_cast<unsigned long>(s_fc), imuCur_.time, imuCur_.dt,
+                   prod_dt, static_cast<unsigned long>(pnd_us), static_cast<int>(res));
+#endif
+#if AIDED_INS_ENABLE_FB_DBG_PRINT
+            printf("[FB_DBG] n=%lu dx_phi_deg=(%.4f,%.4f,%.4f) dx_gb_dps=(%.4f,%.4f,%.4f) dx_ab=(%.4f,%.4f,%.4f)\r\n",
+                   static_cast<unsigned long>(s_fc),
+                   Angle::Rad2Deg(dx_(PHI_ID+0)), Angle::Rad2Deg(dx_(PHI_ID+1)), Angle::Rad2Deg(dx_(PHI_ID+2)),
+                   dx_(GB_ID+0), dx_(GB_ID+1), dx_(GB_ID+2),
+                   dx_(AB_ID+0), dx_(AB_ID+1), dx_(AB_ID+2));
+#endif
+        }
+    }
+#endif
 
     //更新上一时刻的状态和IMU数据
     pvaPre_ = pvaCur_;
@@ -1381,23 +1786,14 @@ void Aided_INS::BuildMTimesPhiTAndAddQ(const StateMatrix &M, const StateMatrix &
 // --- EkfUpdateAcc3 -----------------------------------------------------------
 //
 // AccUpdate 专用结构化 EKF 更新（Joseph form 展开）。
-// 令完整 H_acc = [0_{3×3}, 0_{3×3}, H_phi, 0_{3×3}, H_ab, 0_{3×3}, H_as]。
+// 完整 H_acc = [0  0  H_phi  0  0  0  0]（仅 PHI 块非零）。
 //
 // 结构化展开：
-//   PHt = P * H_acc^T
-//       = P(:,PHI) * H_phi^T + P(:,AB) * H_ab^T + P(:,AS) * H_as^T       （21×3）
-//
-//   HP  = H_acc * P
-//       = H_phi * P(PHI,:) + H_ab * P(AB,:) + H_as * P(AS,:)             （3×21）
-//
-//   S   = H_acc * PHt + R
-//       = H_phi * PHt(PHI,:) + H_ab * PHt(AB,:) + H_as * PHt(AS,:) + R   （3×3）
-//
+//   PHt = P(:,PHI) * H_phi^T                                            （21×3）
+//   HP  = H_phi * P(PHI,:)                                               （3×21）
+//   S   = H_phi * PHt(PHI,:) + R                                         （3×3）
 //   K   = PHt * S^-1                                                     （21×3）
-//
-//   innovation = dz - H_acc * dx
-//              = dz - (H_phi*dx_phi + H_ab*dx_ab + H_as*dx_as)
-//
+//   innovation = dz - H_phi * dx_phi
 //   dx += K * innovation
 //
 // Joseph form 展开（不假设 P 对称）：
@@ -1407,40 +1803,30 @@ void Aided_INS::BuildMTimesPhiTAndAddQ(const StateMatrix &M, const StateMatrix &
 // ----------------------------------------------------------------------------
 
 void Aided_INS::EkfUpdateAcc3(const MeasurementVector<3> &dz,
-                               const Matrix3d &H_phi, const Matrix3d &H_ab, const Matrix3d &H_as,
+                               const Matrix3d &H_phi,
                                const MeasurementNoise<3> &R)
 {
+    // 完整的 H_acc = [0  0  H_phi  0  0  0  0]（仅 PHI 块非零）
     const uint64_t t0 = SystemPort_GetMicros();
 
-    // 1. PHt = P * H^T（21×3）
+    // 1. PHt = P(:,PHI) * H_phi^T（21×3）
     Eigen::Matrix<double, kStateRank, 3> PHt;
-    const auto P_phi = P_.template block<kStateRank, 3>(0, PHI_ID);
-    const auto P_ab  = P_.template block<kStateRank, 3>(0, AB_ID);
-    const auto P_as  = P_.template block<kStateRank, 3>(0, AS_ID);
-    PHt.noalias() = P_phi * H_phi.transpose() + P_ab * H_ab.transpose() + P_as * H_as.transpose();
+    PHt.noalias() = P_.template block<kStateRank, 3>(0, PHI_ID) * H_phi.transpose();
 
-    // 2. HP = H * P（3×21），不通过 PHt^T
+    // 2. HP = H_phi * P(PHI,:)（3×21）
     Eigen::Matrix<double, 3, kStateRank> HP;
-    HP.noalias() = H_phi * P_.template block<3, kStateRank>(PHI_ID, 0)
-                 + H_ab  * P_.template block<3, kStateRank>(AB_ID, 0)
-                 + H_as  * P_.template block<3, kStateRank>(AS_ID, 0);
+    HP.noalias() = H_phi * P_.template block<3, kStateRank>(PHI_ID, 0);
 
-    // 3. S = H_phi*PHt_PHI + H_ab*PHt_AB + H_as*PHt_AS + R
-    const auto PHt_phi = PHt.template block<3, 3>(PHI_ID, 0);
-    const auto PHt_ab  = PHt.template block<3, 3>(AB_ID, 0);
-    const auto PHt_as  = PHt.template block<3, 3>(AS_ID, 0);
-    Eigen::Matrix3d S = H_phi * PHt_phi + H_ab * PHt_ab + H_as * PHt_as + R;
+    // 3. S = H_phi * PHt(PHI,:) + R
+    Eigen::Matrix3d S = H_phi * PHt.template block<3, 3>(PHI_ID, 0) + R;
 
     const uint64_t t1 = SystemPort_GetMicros();
 
-    // 4. K = PHt * S^-1
+    // 4. K = PHt * S^-1（21×3）
     const Eigen::Matrix<double, kStateRank, 3> K = PHt * S.inverse();
 
     // 5. Innovation
-    const auto dx_phi = dx_.template block<3, 1>(PHI_ID, 0);
-    const auto dx_ab  = dx_.template block<3, 1>(AB_ID, 0);
-    const auto dx_as  = dx_.template block<3, 1>(AS_ID, 0);
-    const MeasurementVector<3> innovation = dz - (H_phi * dx_phi + H_ab * dx_ab + H_as * dx_as);
+    const MeasurementVector<3> innovation = dz - H_phi * dx_.template block<3, 1>(PHI_ID, 0);
 
     // 6. dx += K * innovation
     dx_.noalias() += K * innovation;
@@ -1480,10 +1866,12 @@ void Aided_INS::EkfUpdateAcc3(const MeasurementVector<3> &dz,
 //
 // 当前磁力计只把水平磁航向误差作为 yaw 误差观测：
 //
-//   H_mag = [ 0  0  (0 0 1)  0  0  0  0 ]
-//            P     V   PHI     GB AB GS AS
+//   H_mag = [ 0  0  (0 0 H_phi_yaw)  0  0  0  0 ]
+//            P     V       PHI        GB AB GS AS
 //
-// 因此只需处理 PHI_z（PHI_ID+2）位置的标量 H_phi_yaw = 1。
+// 其中 H_phi_yaw = -1.0，由 dz = psi_IMU - psi_mag 与
+// 偏航姿态失准角 PHI_D 之间的线性关系决定。
+// 本函数不关心 H_phi_yaw 的物理来源，只按传入标量执行结构化 EKF 更新。
 //
 // 结构化展开：
 //   idx = PHI_ID + 2
@@ -1536,6 +1924,32 @@ void Aided_INS::EkfUpdateMagYaw1(const MeasurementVector<1> &dz,
 }
 
 // ============================================================================
+// ResetGyroBiasZCovForMagRecovery — Mag recovery 时膨胀 gyro Z bias 协方差
+// ============================================================================
+
+void Aided_INS::ResetGyroBiasZCovForMagRecovery()
+{
+    /*
+     * PX4 resetGyroBiasZCov() 使用 uncorrelateCovarianceSetVariance<1>()
+     * 对 gyro Z bias 执行去相关并设置方差。
+     *
+     * 本项目映射：
+     *   1. 清零 GBz 行/列交叉协方差；
+     *   2. 设置 GBz 对角方差为 config_.initStateStd.gyrBias.z²；
+     *   3. 不直接修改 imuError_.gyrBias.z。
+     */
+    constexpr int kGBzIdx = GB_ID + 2;
+    const double init_gbz_var = config_.initStateStd.gyrBias(2) * config_.initStateStd.gyrBias(2);
+
+    for (int i = 0; i < kStateRank; ++i) {
+        P_(kGBzIdx, i) = 0.0;
+        P_(i, kGBzIdx) = 0.0;
+    }
+
+    P_(kGBzIdx, kGBzIdx) = init_gbz_var;
+}
+
+// ============================================================================
 // VerifyAccUpdateStructured — AccUpdate 结构化 EKF vs 稠密 Joseph form
 // ============================================================================
 
@@ -1553,8 +1967,6 @@ void Aided_INS::VerifyAccUpdateStructured()
     };
 
     const Matrix3d H_phi = MakeTestBlock3(0.5);
-    const Matrix3d H_ab  = -Matrix3d::Identity();
-    const Matrix3d H_as  = MakeTestBlock3(0.3).diagonal().asDiagonal();
 
     // 非平凡正定 R
     MeasurementNoise<3> R_test = MeasurementNoise<3>::Identity() * 0.01;
@@ -1568,7 +1980,6 @@ void Aided_INS::VerifyAccUpdateStructured()
     StateVector dx_test = StateVector::Zero();
     dx_test(PHI_ID+0) = 0.001;
     dx_test(PHI_ID+1) = -0.002;
-    dx_test(AB_ID+0)  = 0.003;
 
     // 非平凡对称满矩阵 P（用现有验证中的 P_test 构建方式）
     StateMatrix P_test;
@@ -1588,8 +1999,6 @@ void Aided_INS::VerifyAccUpdateStructured()
     MeasurementMatrix<3> H_dense;
     H_dense.setZero();
     H_dense.template block<3, 3>(0, PHI_ID) = H_phi;
-    H_dense.template block<3, 3>(0, AB_ID)  = H_ab;
-    H_dense.template block<3, 3>(0, AS_ID)  = H_as;
 
     const Eigen::Matrix3d S_ref = H_dense * P_ref * H_dense.transpose() + R_test;
     const Eigen::Matrix<double, kStateRank, 3> K_ref = P_ref * H_dense.transpose() * S_ref.inverse();
@@ -1609,7 +2018,7 @@ void Aided_INS::VerifyAccUpdateStructured()
     P_ = P_test;
     dx_ = dx_test;
 
-    EkfUpdateAcc3(dz_test, H_phi, H_ab, H_as, R_test);
+    EkfUpdateAcc3(dz_test, H_phi, R_test);
 
     P_opt = P_;
     dx_opt = dx_;
@@ -1643,7 +2052,7 @@ void Aided_INS::VerifyAccUpdateStructured()
     // 结构化路径（非对称 P）
     P_ = P_nonsym;
     dx_ = dx_test;
-    EkfUpdateAcc3(dz_test, H_phi, H_ab, H_as, R_test);
+    EkfUpdateAcc3(dz_test, H_phi, R_test);
     StateMatrix P_opt_ns = P_;
     StateVector dx_opt_ns = dx_;
     P_ = P_saved;
@@ -1679,7 +2088,8 @@ void Aided_INS::VerifyAccUpdateStructured()
 void Aided_INS::VerifyMagUpdateStructured()
 {
     constexpr int kYawIdx = PHI_ID + 2;
-    constexpr double H_phi_yaw = 1.0;
+    // 与正式 MagUpdate 使用的 H_phi_yaw = -1.0 保持一致
+    constexpr double H_phi_yaw = -1.0;
 
     MeasurementVector<1> dz_test;
     dz_test(0, 0) = 0.05;

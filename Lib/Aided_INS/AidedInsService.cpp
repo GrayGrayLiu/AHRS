@@ -130,12 +130,10 @@ namespace aided_ins_service
             s.acc_accept     = p.acc_accept;
             s.acc_fail_small = p.acc_fail_small;
             s.acc_fail_norm  = p.acc_fail_norm;
-            s.acc_fail_cos   = p.acc_fail_cos;
             s.acc_feedback   = p.acc_feedback;
             s.f_norm      = p.last_f_norm;
             s.f_gravity   = p.last_gravity;
             s.f_norm_diff = p.last_norm_diff;
-            s.f_cos_gn_gb = p.last_cos_gn_gb;
             s.f_f_b[0] = p.last_f_b[0]; s.f_f_b[1] = p.last_f_b[1]; s.f_f_b[2] = p.last_f_b[2];
             s.f_g_b_ByImu[0] = p.last_g_b_ByImu[0]; s.f_g_b_ByImu[1] = p.last_g_b_ByImu[1]; s.f_g_b_ByImu[2] = p.last_g_b_ByImu[2];
             s.ekf_dx_us        = p.ekf_dx_us;
@@ -161,7 +159,6 @@ namespace aided_ins_service
             s.cbn_f[0] = p.cbn_f_b[0]; s.cbn_f[1] = p.cbn_f_b[1]; s.cbn_f[2] = p.cbn_f_b[2];
             s.cbn_f_g[0] = p.cbn_f_plus_g[0]; s.cbn_f_g[1] = p.cbn_f_plus_g[1]; s.cbn_f_g[2] = p.cbn_f_plus_g[2];
             s.cfn_g_norm = p.cbn_f_plus_g_norm;
-            s.cos_fg = p.cos_f_gb;
         }
 
 #if AIDED_INS_ENABLE_COV_HEALTH_CHECK

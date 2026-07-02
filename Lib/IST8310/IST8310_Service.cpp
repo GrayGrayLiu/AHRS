@@ -8,7 +8,7 @@
  *   - 提供 Init() 作为完整硬件初始化入口（placement new + driver.Init()）；
  *   - 提供 Run() 作为非阻塞 scheduler 执行入口（每次最多一次 I2C 事务）；
  *   - sensor-frame → board/body-frame 坐标映射；
- *   - 应用已配置的 hard-iron bias + per-axis scale 校准参数；
+ *   - 应用已配置的 hard-iron bias + symmetric 3×3 scale matrix 校准参数；
  *   - 提供 CopyLatest() 非破坏性缓存读取接口（返回 sensor-frame、
  *     未校准 body-frame、校准后 body-frame 三个坐标系的 sample）。
  *
@@ -40,7 +40,7 @@ enum
 {
     MIN_WAIT_US          =  6000u,   // 低噪声配置下单次测量最小等待，us（手册 Section 3.1.1）
     DATA_TIMEOUT_US      = 20000u,   // DRDY 等待超时，us
-    SAMPLING_PERIOD_US   = 20000u,   // 采样周期，us（50 Hz，初期保守值；后续可按需调整）
+    SAMPLING_PERIOD_US   = 20000u,   // trigger-to-trigger 采样周期，us（目标 50 Hz；实测 sample_rate 以上板统计为准）
     MAX_CONSECUTIVE_ERRORS = 3u,     // 连续错误阈值，超此值进入 fault
 };
 
@@ -84,6 +84,43 @@ uint32_t total_error_counter_{0u};      // 累计 I2C/通信错误数
 uint32_t total_overrun_counter_{0u};    // 累计 DOR 超限数
 
 // ============================================================================
+// 运行期配置寄存器检查（对齐 PX4 IST8310 的 runtime register check）
+// 必须与 IST8310.hpp 中 register_cfg_[] 的 PDCNTL/AVGCNTL 配置保持一致。
+// ============================================================================
+
+struct RuntimeRegCheckEntry
+{
+    IST8310_Regs::Register reg;
+    uint8_t mask;
+    uint8_t expected;
+};
+
+// 仅检查 AVGCNTL(0x41) 和 PDCNTL(0x42)；
+// 不检查 CNTL2（DREN/DRP 不影响 I2C 路径），不检查 CNTL3（AHRS 不使用 16-bit 输出）。
+static constexpr RuntimeRegCheckEntry kRuntimeRegChecks[] = {
+    {
+        IST8310_Regs::Register::PDCNTL,
+        static_cast<uint8_t>(IST8310_Regs::PDCNTL_BITS::PULSE_DURATION_MASK),
+        static_cast<uint8_t>(IST8310_Regs::PDCNTL_BITS::PULSE_DURATION_NORMAL),
+    },
+    {
+        IST8310_Regs::Register::AVGCNTL,
+        static_cast<uint8_t>(IST8310_Regs::AVGCNTL_BITS::Y_AVG_MASK
+                           | IST8310_Regs::AVGCNTL_BITS::XZ_AVG_MASK),
+        static_cast<uint8_t>(IST8310_Regs::AVGCNTL_BITS::Y_AVG_16_TIMES
+                           | IST8310_Regs::AVGCNTL_BITS::XZ_AVG_16_TIMES),
+    },
+};
+
+static constexpr uint32_t RUNTIME_CHECK_INTERVAL = 100u;  // 每 100 次 trigger 检查 1 个寄存器
+static constexpr size_t   RUNTIME_CHECK_COUNT =
+    sizeof(kRuntimeRegChecks) / sizeof(kRuntimeRegChecks[0]);
+
+uint32_t runtime_check_trigger_count_{0u};     // 采样窗口计数；每达到一次 trigger 条件（elapsed >= SAMPLING_PERIOD_US）递增
+uint8_t  runtime_check_index_{0u};             // 下一轮要检查的寄存器下标
+uint32_t total_register_mismatch_counter_{0u}; // 累计寄存器值不匹配次数（仅递增，不清零）
+
+// ============================================================================
 // 通用小工具函数
 // ============================================================================
 
@@ -122,15 +159,38 @@ void TranslateSensorToBody(const int16_t sensor[3], int16_t body[3])
 // 校准应用
 // ============================================================================
 
-// 将未校准 body-frame uT 应用 hard-iron bias + scale 得到校准后 body-frame uT。
+// 将未校准 body-frame uT 应用 hard-iron bias + symmetric 3×3 scale matrix 得到校准后 body-frame uT。
+//
+// 校准模型（对齐 PX4 calibration::Magnetometer::Correct 的 body-frame 版本）：
+//   centered = mag_body_raw - bias_body
+//   mag_body_cal = M_body * centered
+//
+// 其中 M_body 为 3×3 对称矩阵：
+//   [ scale_x     offdiag_xy  offdiag_xz ]
+//   [ offdiag_xy  scale_y     offdiag_yz ]
+//   [ offdiag_xz  offdiag_yz  scale_z     ]
+//
+// 当前默认 offdiag = 0，数学上等价于原 per-axis diagonal scale。
+// 无 PX4 的 rotation（AHRS 已在 sensor→body 映射中完成），无 power compensation。
 void ApplyMagCalibration(const float in_body_uT[3], float out_body_uT[3])
 {
 #if IST8310_ENABLE_MAG_CALIBRATION
-    for (int i = 0; i < 3; ++i) {
-        out_body_uT[i] =
-            (in_body_uT[i] - ist8310_calibration_config::kMagHardIronBiasBody_uT[i])
-            * ist8310_calibration_config::kMagScaleBody[i];
-    }
+    const float centered[3] = {
+        in_body_uT[0] - ist8310_calibration_config::kMagHardIronBiasBody_uT[0],
+        in_body_uT[1] - ist8310_calibration_config::kMagHardIronBiasBody_uT[1],
+        in_body_uT[2] - ist8310_calibration_config::kMagHardIronBiasBody_uT[2],
+    };
+
+    const float sx = ist8310_calibration_config::kMagScaleBody[0];
+    const float sy = ist8310_calibration_config::kMagScaleBody[1];
+    const float sz = ist8310_calibration_config::kMagScaleBody[2];
+    const float oxy = ist8310_calibration_config::kMagOffDiagScaleBody[0];
+    const float oxz = ist8310_calibration_config::kMagOffDiagScaleBody[1];
+    const float oyz = ist8310_calibration_config::kMagOffDiagScaleBody[2];
+
+    out_body_uT[0] = sx  * centered[0] + oxy * centered[1] + oxz * centered[2];
+    out_body_uT[1] = oxy * centered[0] + sy  * centered[1] + oyz * centered[2];
+    out_body_uT[2] = oxz * centered[0] + oyz * centered[1] + sz  * centered[2];
 #else
     for (int i = 0; i < 3; ++i) {
         out_body_uT[i] = in_body_uT[i];
@@ -142,15 +202,43 @@ void ApplyMagCalibration(const float in_body_uT[3], float out_body_uT[3])
 // 非阻塞状态机辅助
 // ============================================================================
 
-// IDLE: 到采样窗口后写 CNTL1 触发单次测量。
+// IDLE: 以 trigger-to-trigger 周期写 CNTL1 触发单次测量。
+//       周期基准为上次 CNTL1 写入时刻 trigger_timestamp_us_（对齐 PX4 IST8310 的 MEASURE 状态语义）。
+//       写 CNTL1 失败也视为一次 trigger attempt，用于限制 I2C 故障时的重试频率。
 void HandleIdle()
 {
-    // 距离上次 sample 完成未到采样周期则直接返回，不做 I2C。
     const uint64_t now_us = TimeBase_Micros();
-    const uint64_t elapsed = now_us - latest_sample_.read_timestamp_us;
+    const uint64_t elapsed = now_us - trigger_timestamp_us_;
 
     if (elapsed < SAMPLING_PERIOD_US) {
         return;
+    }
+
+    // ── 运行期配置寄存器检查，每 100 次 trigger 轮转 1 个寄存器 ──
+    // 检查作为独立 I2C 阶段处理：触发时只执行一次 RegisterRead 就返回，
+    // 下一次 Run() 再写 CNTL1。保证每次 Run() 最多一个 I2C 事务。
+    // 代价是每约 2 秒有一轮 trigger 延后约 1 ms，对 50 Hz 采样无实质影响。
+    ++runtime_check_trigger_count_;
+    if (runtime_check_trigger_count_ >= RUNTIME_CHECK_INTERVAL) {
+        runtime_check_trigger_count_ = 0u;
+
+        const auto &entry = kRuntimeRegChecks[runtime_check_index_];
+        uint8_t value{};
+        const IST8310::Status rd = ist8310->RegisterRead(entry.reg, value);
+
+        if (rd != IST8310::Status::Ok) {
+            RecordError();
+            return;   // I2C 读失败，本轮不写 CNTL1
+        }
+
+        if ((value & entry.mask) != entry.expected) {
+            ++total_register_mismatch_counter_;
+            EnterFault();
+            return;   // 寄存器不匹配，进入 fault，本轮不写 CNTL1
+        }
+
+        runtime_check_index_ = (runtime_check_index_ + 1u) % RUNTIME_CHECK_COUNT;
+        return;   // 检查通过；本轮不写 CNTL1，下一次 Run() 再触发测量
     }
 
     // 写 CNTL1[3:0] = 0x01（Single Measurement），手册 Section 3.1.2。
@@ -158,6 +246,7 @@ void HandleIdle()
         IST8310_Regs::Register::CNTL1,
         static_cast<uint8_t>(IST8310_Regs::CNTL1_BITS::MODE_SINGLE_MEASUREMENT));
 
+    // I2C 写失败也记录 trigger_timestamp_us_，避免故障时高频重试。
     trigger_timestamp_us_ = now_us;
 
     if (status != IST8310::Status::Ok) {
@@ -301,6 +390,9 @@ int Init(I2C_HandleTypeDef *const hi2c, const uint8_t address_7bit,
         latest_sample_  = {};
         trigger_timestamp_us_ = 0u;
         state_          = State::IDLE;
+        runtime_check_trigger_count_ = 0u;
+        runtime_check_index_         = 0u;
+        // total_register_mismatch_counter_ 不清零；与 total_error_counter_ 一样为累计 lifetime counter
         ResetConsecutiveErrors();
         return 0;
     }
@@ -323,6 +415,9 @@ int Init(I2C_HandleTypeDef *const hi2c, const uint8_t address_7bit,
     latest_sample_        = {};
     trigger_timestamp_us_ = 0u;
     state_                = State::IDLE;
+    runtime_check_trigger_count_ = 0u;
+    runtime_check_index_         = 0u;
+    // total_register_mismatch_counter_ 不清零；与 total_error_counter_ 一样为累计 lifetime counter
     ResetConsecutiveErrors();
 
     return 0;

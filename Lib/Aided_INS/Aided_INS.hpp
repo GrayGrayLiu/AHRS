@@ -43,12 +43,14 @@ struct InsProfile
     uint32_t acc_accept{0};
     uint32_t acc_fail_small{0};
     uint32_t acc_fail_norm{0};
-    uint32_t acc_fail_cos{0};
+    uint32_t acc_fail_lpf{0};
+    uint32_t acc_fail_clip{0};
+    uint32_t acc_fail_innov{0};
+    uint32_t acc_fail_s{0};
     uint32_t acc_feedback{0};
     float    last_f_norm{0.0f};
     float    last_gravity{0.0f};
     float    last_norm_diff{0.0f};
-    float    last_cos_gn_gb{0.0f};
     float    last_f_b[3]{0.0f, 0.0f, 0.0f};
     float    last_g_b_ByImu[3]{0.0f, 0.0f, 0.0f};
     // [EKF_DBG] EKFPredict 分段计时
@@ -72,7 +74,6 @@ struct InsProfile
     float    cbn_f_b[3]{0.0f, 0.0f, 0.0f};
     float    cbn_f_plus_g[3]{0.0f, 0.0f, 0.0f};
     float    cbn_f_plus_g_norm{0.0f};
-    float    cos_f_gb{0.0f};
 };
 
 class Aided_INS
@@ -355,10 +356,10 @@ private:
 
     /**
      * @brief AccUpdate 专用结构化 EKF 更新（Joseph form 展开）
-     *        利用 H_acc 只在 PHI/AB/AS 三列有非零 3×3 块的结构。
+     *        利用 H_acc 仅 PHI 3×3 块非零的结构。
      */
     void EkfUpdateAcc3(const MeasurementVector<3> &dz,
-                       const Matrix3d &H_phi, const Matrix3d &H_ab, const Matrix3d &H_as,
+                       const Matrix3d &H_phi,
                        const MeasurementNoise<3> &R);
 
 #if AIDED_INS_ENABLE_STARTUP_VERIFY
@@ -380,6 +381,9 @@ private:
                           double H_phi_z,
                           const MeasurementNoise<1> &R);
 
+    /** @brief Mag recovery 时膨胀 gyro Z bias 协方差对角元 */
+    void ResetGyroBiasZCovForMagRecovery();
+
 #if AIDED_INS_ENABLE_COV_HEALTH_CHECK
     /** @brief 轻量协方差健康检查：NaN/Inf、负对角线、对称性破坏度（纯计数，无 printf） */
     void CheckCovarianceHealth();
@@ -398,6 +402,16 @@ private:
     IMU imuCur_;
     bool imuReady_{false};
     Mag magData_;
+    uint32_t lastMagSampleCounter_{0u};  // 上次接收的 IST8310 sample_counter，用于去重
+    double   magUpdatePrevTime_{0.0};    // 上一帧 MagUpdate 时间(s)，用于计算 dt_mag
+    bool     magUpdateHasPrevTime_{false};
+    int      magRecoveryCnt_{0};          // MagUpdate gate 外 recovery 连续条件计数
+    bool     magRecoveryCovResetDone_{false};
+    int      magNormalFuseCnt_{0};
+
+    // AccUpdate 低通滤波器
+    Vector3d accLpf_{0,0,0};
+    bool     accLpfInitialized_{false};
     GNSS gnssData_;
 
     // IMU状态（位置、速度、姿态和IMU误差）

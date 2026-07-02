@@ -20,6 +20,7 @@
 #include "i2c.h"
 #include "main.h"
 #include <stdio.h>
+#include <cmath>
 
 namespace
 {
@@ -28,6 +29,8 @@ constexpr uint32_t IMU_DEBUG_PERIOD_MS = 1000u;
 constexpr uint32_t INS_DEBUG_PERIOD_MS = 5000u;
 constexpr uint32_t INS_CONSUMER_PERIOD_MS = 1u;
 constexpr uint32_t MAG_TASK_PERIOD_MS = 1u;
+constexpr uint32_t MAG_CAL_DURATION_MS       = 60000u;
+constexpr uint32_t MAG_CAL_PROGRESS_PERIOD_MS = 10000u;
 constexpr uint32_t MAG_DEBUG_PERIOD_MS = 1000u;
 constexpr uint8_t MAG_DEBUG_TASK_ENABLED =
     IST8310_ENABLE_MAG_DEBUG_PRINT ? 1u : 0u;
@@ -39,6 +42,19 @@ constexpr uint32_t IMU_DRDY_DEADLINE_MS = 5u;
 constexpr uint32_t ATTITUDE_TELEMETRY_PERIOD_MS = 40u;  // 25 Hz
 constexpr uint8_t ATTITUDE_TELEMETRY_TASK_ENABLED =
     AIDED_INS_ENABLE_ATTITUDE_TELEMETRY ? 1u : 0u;
+
+// -- candidate summary / recommendation 常量 --
+constexpr float MAG_CAL_SELF_CHECK_MAX_STD_UT    = 5.0F;
+constexpr float MAG_CAL_SELF_CHECK_MIN_MEAN_UT   = 30.0F;
+constexpr float MAG_CAL_SELF_CHECK_MAX_MEAN_UT   = 60.0F;
+constexpr float MAG_CAL_SELF_CHECK_MIN_NORM_UT   = 30.0F;
+constexpr float MAG_CAL_SELF_CHECK_MAX_NORM_UT   = 60.0F;
+constexpr float MAG_CAL_SELF_CHECK_MAX_ERR_RATIO = 0.30F;
+
+constexpr float MAG_CAL_RECOMMEND_STD_RATIO     = 0.90F;
+constexpr float MAG_CAL_MAXERR_SOFT_TOLERANCE   = 0.02F;
+constexpr float MAG_CAL_RANGE_TIE_TOLERANCE_UT  = 0.5F;
+constexpr float MAG_CAL_MAXERR_TIE_TOLERANCE    = 0.005F;
 
 // ============================================================================
 // IMU debug print task — IMU 状态输出
@@ -289,6 +305,26 @@ void AttitudeTelemetryTask(SchedulerTaskId self_id, SchedulerRunReason reason, S
            static_cast<double>(att.pitch_deg),
            static_cast<double>(att.yaw_deg));
 #endif
+
+    // Scheduler stats (~1 Hz, controlled by AIDED_INS_ENABLE_SCHED_STATS_PRINT)
+#if AIDED_INS_ENABLE_SCHED_STATS_PRINT
+    {
+        static uint32_t s_sc = 0u; ++s_sc;
+        if ((s_sc % 25u) == 0u) {
+            const uint8_t n = Scheduler_GetTaskCount();
+            for (uint8_t i = 0u; i < n; ++i) {
+                SchedulerTaskStats st{};
+                if (Scheduler_GetTaskStats(i, &st)) {
+                    printf("[SCH_RT] id=%u run=%lu last_us=%lu max_us=%lu min_us=%lu miss=%lu block=%lu\r\n",
+                           i, static_cast<unsigned long>(st.run_count),
+                           static_cast<unsigned long>(st.last_runtime_us), static_cast<unsigned long>(st.max_runtime_us),
+                           static_cast<unsigned long>(st.min_runtime_us), static_cast<unsigned long>(st.deadline_miss_count),
+                           static_cast<unsigned long>(st.reentry_block_count));
+                }
+            }
+        }
+    }
+#endif
 }
 
 // ============================================================================
@@ -309,7 +345,7 @@ void MagTask(SchedulerTaskId self_id, SchedulerRunReason reason, SchedulerEventM
 }
 
 // ============================================================================
-// IST8310 磁力计校准 task — 按键触发 + 30s 收集 + printf 输出参数
+// IST8310 磁力计校准 task — 按键触发 + 60s 收集 + printf 输出参数
 // ============================================================================
 
 enum class MagCalUiState : uint8_t
@@ -324,7 +360,7 @@ enum class MagCalUiState : uint8_t
 /**
  * @brief  IST8310 磁力计 MCU 端校准 task（10 ms，priority=100）。
  * @note   按键触发（PE15, PULLDOWN, 按下=SET）。
- *         收集 30s body-frame uT sample，计算 hard-iron bias + 三轴 scale。
+ *         收集 60s body-frame uT sample，计算 hard-iron bias + 三轴 scale。
  *         不控制 LED，不访问 driver/I2C，不接 Aided_INS。
  *         校准结果通过 printf 输出，用户手动复制到代码常量后重新编译烧录。
  */
@@ -340,6 +376,42 @@ void MagCalTask(SchedulerTaskId self_id, SchedulerRunReason reason, SchedulerEve
     static uint32_t last_progress_ms = 0u;
 
     const bool key_down = (HAL_GPIO_ReadPin(KEY_GPIO_Port, KEY_Pin) == GPIO_PIN_SET);
+
+#if IST8310_ENABLE_ACCEL_SIDE_PROBE
+    // -- 临时加速度符号 probe：打印 body-frame 比力方向，用于确认 side 判定符号 --
+    // 启用后 mag_cal 任务只做 probe 打印，不进入正常/6-side calibration。
+    {
+        static uint32_t s_probe_last_ms = 0u;
+        if (now_ms - s_probe_last_ms >= 1000u) {  // 1 Hz
+            s_probe_last_ms = now_ms;
+
+            icm42688_service::DeltaSample imu{};
+            if (icm42688_service::GetDeltaLatest(&imu) == ICM42688P::Status::Ok
+                && imu.delta_time_s > 0.0F) {
+                const float acc[3] = {
+                    imu.delta_velocity_m_s[0] / imu.delta_time_s,
+                    imu.delta_velocity_m_s[1] / imu.delta_time_s,
+                    imu.delta_velocity_m_s[2] / imu.delta_time_s,
+                };
+                const float norm = std::sqrt(acc[0] * acc[0] + acc[1] * acc[1] + acc[2] * acc[2]);
+
+                const float abs_x = std::abs(acc[0]), abs_y = std::abs(acc[1]), abs_z = std::abs(acc[2]);
+                const char *dominant = "?";
+                if (abs_x > abs_y && abs_x > abs_z) { dominant = (acc[0] > 0.0f) ? "+X" : "-X"; }
+                else if (abs_y > abs_x && abs_y > abs_z) { dominant = (acc[1] > 0.0f) ? "+Y" : "-Y"; }
+                else { dominant = (acc[2] > 0.0f) ? "+Z" : "-Z"; }
+
+                printf("[acc_probe] dt=%.6f acc_body={%+.2f,%+.2f,%+.2f} norm=%.2f dominant=%s\r\n",
+                       static_cast<double>(imu.delta_time_s),
+                       static_cast<double>(acc[0]), static_cast<double>(acc[1]), static_cast<double>(acc[2]),
+                       static_cast<double>(norm), dominant);
+            } else {
+                printf("[acc_probe] no data\r\n");
+            }
+        }
+    }
+    return;
+#endif
 
     switch (ui_state) {
     case MagCalUiState::Idle:
@@ -365,7 +437,16 @@ void MagCalTask(SchedulerTaskId self_id, SchedulerRunReason reason, SchedulerEve
                 last_progress_ms = now_ms;
                 ui_state = MagCalUiState::Collecting;
                 key_cnt = 0u;
-                printf("[mag_cal] start: 30s, rotate board through all orientations\r\n");
+#if IST8310_ENABLE_SIDE_CALIBRATION
+                ist8310_calibration::ResetSideCalibration();
+                printf("[mag_cal] 6-side calibration, 40 samples/side\r\n");
+#else
+                printf("[mag_cal] start: %lus, rotate board through all orientations\r\n",
+                       static_cast<unsigned long>(MAG_CAL_DURATION_MS / 1000u));
+#endif
+#if IST8310_ENABLE_CAL_CSV_OUTPUT
+                printf("[mag_csv] counter,timestamp_us,body_x_uT,body_y_uT,body_z_uT\r\n");
+#endif
             }
         } else {
             key_cnt = 0u;
@@ -375,23 +456,134 @@ void MagCalTask(SchedulerTaskId self_id, SchedulerRunReason reason, SchedulerEve
     case MagCalUiState::Collecting: {
         // 按键在收集期间被忽略
 
+#if IST8310_ENABLE_SIDE_CALIBRATION
+        // -- 6-side orientation-based calibration --
+        {
+            // Build input: accel
+            ist8310_calibration::SideCalInput in{};
+            in.now_ms = now_ms;
+            icm42688_service::DeltaSample imu{};
+            if (icm42688_service::GetDeltaLatest(&imu) == ICM42688P::Status::Ok
+                && imu.delta_time_s > 0.0F) {
+                in.acc_valid = true;
+                in.acc_body_m_s2[0] = imu.delta_velocity_m_s[0] / imu.delta_time_s;
+                in.acc_body_m_s2[1] = imu.delta_velocity_m_s[1] / imu.delta_time_s;
+                in.acc_body_m_s2[2] = imu.delta_velocity_m_s[2] / imu.delta_time_s;
+                in.gyro_valid = true;
+                in.gyro_sample_counter = imu.sample_counter;
+                in.delta_angle_rad[0] = imu.delta_angle_rad[0];
+                in.delta_angle_rad[1] = imu.delta_angle_rad[1];
+                in.delta_angle_rad[2] = imu.delta_angle_rad[2];
+            }
+
+            // Build input: mag
+            ist8310_service::MagSample s{};
+            if (ist8310_service::CopyLatest(&s) && s.sample_counter != last_sample_counter) {
+                last_sample_counter = s.sample_counter;
+                in.mag_valid = true;
+                in.mag_sample_counter = s.sample_counter;
+                in.mag_body_uT[0] = s.mag_uT_body[0];
+                in.mag_body_uT[1] = s.mag_uT_body[1];
+                in.mag_body_uT[2] = s.mag_uT_body[2];
+            }
+
+            const auto out = ist8310_calibration::UpdateSideCalibration(in);
+
+            switch (out.event) {
+            case ist8310_calibration::SideCalEvent::Prompt:
+                printf("[mag_cal] 请将任意未校准的面朝上，保持静止\r\n");
+                if (out.remaining_prompt && out.remaining_prompt[0]) {
+                    printf("[mag_cal] 未完成：%s\r\n", out.remaining_prompt);
+                }
+                break;
+            case ist8310_calibration::SideCalEvent::Detected:
+                printf("[mag_cal] 检测到：%s\r\n", out.side_label ? out.side_label : "?");
+                printf("[mag_cal] %s，请缓慢旋转板子\r\n", out.prompt);
+                break;
+            case ist8310_calibration::SideCalEvent::Progress:
+                printf("[mag_cal] progress: %s samples=%u/%u t=%lums/%lums total=%lu\r\n",
+                       out.side_label ? out.side_label : "?", out.side_accepted, out.side_target,
+                       static_cast<unsigned long>(out.side_elapsed_ms),
+                       static_cast<unsigned long>(out.side_min_collect_ms),
+                       static_cast<unsigned long>(out.total_accepted));
+                break;
+            case ist8310_calibration::SideCalEvent::SideDone:
+                printf("[mag_cal] progress: %s samples=%u/%u t=%lums/%lums total=%lu\r\n",
+                       out.side_label ? out.side_label : "?", out.side_accepted, out.side_target,
+                       static_cast<unsigned long>(out.side_elapsed_ms),
+                       static_cast<unsigned long>(out.side_min_collect_ms),
+                       static_cast<unsigned long>(out.total_accepted));
+                printf("[mag_cal] 完成：%s\r\n", out.side_label ? out.side_label : "?");
+                break;
+            case ist8310_calibration::SideCalEvent::SideDoneByTimeout:
+                printf("[mag_cal] progress: %s samples=%u/%u total=%lu\r\n",
+                       out.side_label ? out.side_label : "?", out.side_accepted, out.side_target,
+                       static_cast<unsigned long>(out.total_accepted));
+                printf("[mag_cal] 采样窗口结束：%s\r\n", out.side_label ? out.side_label : "?");
+                break;
+            case ist8310_calibration::SideCalEvent::RotationTimeout:
+                printf("[mag_cal] 失败：等待旋转超时，该校准要求旋转\r\n");
+                ui_state = MagCalUiState::Failed;
+                break;
+            case ist8310_calibration::SideCalEvent::SampleTimeout:
+                printf("[mag_cal] 失败：%s 有效样本不足 samples=%u/%u，请重新校准\r\n",
+                       out.side_label ? out.side_label : "?",
+                       out.side_accepted,
+                       out.side_target);
+                ui_state = MagCalUiState::Failed;
+                break;
+            case ist8310_calibration::SideCalEvent::AlreadyDone:
+                printf("[mag_cal] 当前检测到：%s；该面已完成，请换一个未校准的面\r\n",
+                       out.side_label ? out.side_label : "?");
+                if (out.remaining_prompt && out.remaining_prompt[0]) {
+                    printf("[mag_cal] 未完成：%s\r\n", out.remaining_prompt);
+                }
+                break;
+            case ist8310_calibration::SideCalEvent::Complete:
+                printf("[mag_cal] 全部 6 面完成：total=%lu，开始计算\r\n",
+                       static_cast<unsigned long>(out.total_accepted));
+                // fall through to fitting below
+                break;
+            default:
+                break;
+            }
+
+            const bool side_complete = (out.event == ist8310_calibration::SideCalEvent::Complete);
+            if (!side_complete) { break; }
+        }
+
+        const bool should_finish = true;
+#else
+        // -- 60s free rotation calibration (original) --
         // 消费新 sample
         ist8310_service::MagSample s{};
         if (ist8310_service::CopyLatest(&s) && s.sample_counter != last_sample_counter) {
             last_sample_counter = s.sample_counter;
             ist8310_calibration::FeedSample(s.mag_uT_body);
+#if IST8310_ENABLE_CAL_CSV_OUTPUT
+            printf("[mag_csv] %lu,%llu,%.3f,%.3f,%.3f\r\n",
+                   static_cast<unsigned long>(s.sample_counter),
+                   static_cast<unsigned long long>(s.read_timestamp_us),
+                   static_cast<double>(s.mag_uT_body[0]),
+                   static_cast<double>(s.mag_uT_body[1]),
+                   static_cast<double>(s.mag_uT_body[2]));
+#endif
         }
 
         // 进度输出（每 10s 一次）
-        if (now_ms - last_progress_ms >= 10000u) {
+        if (now_ms - last_progress_ms >= MAG_CAL_PROGRESS_PERIOD_MS) {
             last_progress_ms = now_ms;
-            printf("[mag_cal] progress: %lu/30s samples=%lu\r\n",
+            printf("[mag_cal] progress: %lu/%lus samples=%lu\r\n",
                    static_cast<unsigned long>((now_ms - cal_start_ms) / 1000u),
+                   static_cast<unsigned long>(MAG_CAL_DURATION_MS / 1000u),
                    static_cast<unsigned long>(ist8310_calibration::GetSampleCount()));
         }
 
-        // 30s 到期
-        if (now_ms - cal_start_ms >= 30000u) {
+        // 校准时长到期
+        const bool should_finish = (now_ms - cal_start_ms >= MAG_CAL_DURATION_MS);
+#endif // IST8310_ENABLE_SIDE_CALIBRATION
+
+        if (!should_finish) { break; }
             printf("[mag_cal] done: calculating\r\n");
             const auto result = ist8310_calibration::Finish();
 
@@ -401,6 +593,31 @@ void MagCalTask(SchedulerTaskId self_id, SchedulerRunReason reason, SchedulerEve
                        static_cast<double>(result.quality_score),
                        static_cast<double>(result.radius_avg_uT));
                 ui_state = MagCalUiState::Success;
+
+                // ── 可复制 C++ constexpr 参数块（仅成功时输出） ──
+                printf("[mag_cal] // ===== copy to IST8310_Calibration_Config.hpp =====\r\n");
+                printf("[mag_cal] // frame: body-frame (X forward, Y right, Z down)\r\n");
+                printf("[mag_cal] // mapping: body_x=sensor_y, body_y=-sensor_x, body_z=-sensor_z\r\n");
+                printf("[mag_cal] // formula: mag_cal = (mag_body - bias_body) * scale_body\r\n");
+                printf("[mag_cal] // unit: uT\r\n");
+                printf("[mag_cal] // samples=%lu quality=%.2f radius_avg_uT=%.2f\r\n",
+                       static_cast<unsigned long>(result.sample_count),
+                       static_cast<double>(result.quality_score),
+                       static_cast<double>(result.radius_avg_uT));
+                printf("[mag_cal] constexpr float kMagHardIronBiasBody_uT[3] = {\r\n");
+                printf("[mag_cal]     %.2fF, %.2fF, %.2fF,\r\n",
+                       static_cast<double>(result.bias_body_uT[0]),
+                       static_cast<double>(result.bias_body_uT[1]),
+                       static_cast<double>(result.bias_body_uT[2]));
+                printf("[mag_cal] };\r\n");
+                printf("[mag_cal]\r\n");
+                printf("[mag_cal] constexpr float kMagScaleBody[3] = {\r\n");
+                printf("[mag_cal]     %.2fF, %.2fF, %.2fF,\r\n",
+                       static_cast<double>(result.scale_body[0]),
+                       static_cast<double>(result.scale_body[1]),
+                       static_cast<double>(result.scale_body[2]));
+                printf("[mag_cal] };\r\n");
+                printf("[mag_cal] // ===== end copy block =====\r\n");
             } else {
                 printf("[mag_cal] failed samples=%lu\r\n"
                        "[mag_cal] reason: insufficient coverage or invalid scale\r\n",
@@ -408,7 +625,7 @@ void MagCalTask(SchedulerTaskId self_id, SchedulerRunReason reason, SchedulerEve
                 ui_state = MagCalUiState::Failed;
             }
 
-            // 无论成功失败，都打印完整结果供诊断
+            // 诊断统计（无论成功失败都输出）
             printf("[mag_cal] span_body_uT  = { %.2fF, %.2fF, %.2fF };\r\n",
                    static_cast<double>(result.span_body_uT[0]),
                    static_cast<double>(result.span_body_uT[1]),
@@ -421,9 +638,369 @@ void MagCalTask(SchedulerTaskId self_id, SchedulerRunReason reason, SchedulerEve
                    static_cast<double>(result.scale_body[0]),
                    static_cast<double>(result.scale_body[1]),
                    static_cast<double>(result.scale_body[2]));
+            // raw body-frame norm stats (auxiliary only, not ellipsoid-fit residual)
+            printf("[mag_cal] norm_min_uT=%.2f norm_max_uT=%.2f norm_range_ratio=%.3f norm_out_of_range=%lu\r\n",
+                   static_cast<double>(result.norm_min_uT),
+                   static_cast<double>(result.norm_max_uT),
+                   static_cast<double>(result.norm_range_ratio),
+                   static_cast<unsigned long>(result.norm_out_of_range_count));
+
+            // calibrated body-frame norm stats (self-validation: raw samples replayed with computed bias/scale)
+            if (result.cal_norm_valid) {
+                printf("[mag_cal] cal_norm min=%.2f max=%.2f mean=%.2f std=%.2f "
+                       "range_ratio=%.3f max_err=%.3f samples=%lu dropped=%lu\r\n",
+                       static_cast<double>(result.cal_norm_min_uT),
+                       static_cast<double>(result.cal_norm_max_uT),
+                       static_cast<double>(result.cal_norm_mean_uT),
+                       static_cast<double>(result.cal_norm_std_uT),
+                       static_cast<double>(result.cal_norm_range_ratio),
+                       static_cast<double>(result.cal_norm_max_error_ratio),
+                       static_cast<unsigned long>(result.cal_sample_count),
+                       static_cast<unsigned long>(result.cal_sample_dropped_count));
+            }
+
+#if IST8310_ENABLE_ELLIPSOID_FIT
+            // -- B1 / B2a candidate blocks + summary --
+            {
+                const auto (*buf)[3] = ist8310_calibration::GetSampleBuffer();
+                const size_t n = ist8310_calibration::GetSampleBufferCount();
+
+                bool                  has_efit = false;
+                ist8310_calibration::EllipFitResult     efit{};
+                bool                  has_ffit = false;
+                ist8310_calibration::FullEllipFitResult ffit{};
+
+                // -- A1 PX4-style sphere LM init candidate --
+                bool has_sfit = false;
+                ist8310_calibration::SphereLmFitResult sfit{};
+                if (buf != nullptr && n >= 50u) {
+                    sfit = ist8310_calibration::FitSphereLm(buf, n);
+                    has_sfit = true;
+
+                    printf("[mag_cal] // ===== PX4-style sphere LM init candidate =====\r\n");
+                    printf("[mag_cal] // note: radius+offset only; diag/offdiag fixed to identity/zero; not for runtime config\r\n");
+                    printf("[mag_cal] // fit_valid=%u solver_converged=%u iters=%u radius=%.2f cost_px4=%.4f rms=%.3f\r\n",
+                           static_cast<unsigned int>(sfit.valid),
+                           static_cast<unsigned int>(sfit.solver_converged),
+                           static_cast<unsigned int>(sfit.iterations),
+                           static_cast<double>(sfit.radius_uT),
+                           static_cast<double>(sfit.cost_px4_uT),
+                           static_cast<double>(sfit.rms_uT));
+                    printf("[mag_cal] // sphere_lm_offset_body_uT = { %.2fF, %.2fF, %.2fF };\r\n",
+                           static_cast<double>(sfit.offset_body_uT[0]),
+                           static_cast<double>(sfit.offset_body_uT[1]),
+                           static_cast<double>(sfit.offset_body_uT[2]));
+                    printf("[mag_cal] // ===== end sphere LM init candidate =====\r\n");
+                }
+
+                // -- A2 PX4-style ellipsoid LM candidate --
+                if (has_sfit && sfit.valid && buf != nullptr && n >= 100u) {
+                    const auto e2fit = ist8310_calibration::FitEllipsoidLm(buf, n, sfit);
+
+                    printf("[mag_cal] // ===== PX4-style ellipsoid LM candidate (candidate, review before copying) =====\r\n");
+                    printf("[mag_cal] // fit_valid=%u solver_converged=%u iters=%u radius=%.2f cost_px4=%.4f rms=%.3f\r\n",
+                           static_cast<unsigned int>(e2fit.valid),
+                           static_cast<unsigned int>(e2fit.solver_converged),
+                           static_cast<unsigned int>(e2fit.iterations),
+                           static_cast<double>(e2fit.radius_uT),
+                           static_cast<double>(e2fit.cost_px4_uT),
+                           static_cast<double>(e2fit.rms_uT));
+                    printf("[mag_cal] constexpr float kMagHardIronBiasBody_uT[3] = {\r\n");
+                    printf("[mag_cal]     %.2fF, %.2fF, %.2fF,\r\n",
+                           static_cast<double>(e2fit.offset_body_uT[0]),
+                           static_cast<double>(e2fit.offset_body_uT[1]),
+                           static_cast<double>(e2fit.offset_body_uT[2]));
+                    printf("[mag_cal] };\r\n");
+                    printf("[mag_cal]\r\n");
+                    printf("[mag_cal] constexpr float kMagScaleBody[3] = {\r\n");
+                    printf("[mag_cal]     %.2fF, %.2fF, %.2fF,\r\n",
+                           static_cast<double>(e2fit.diag[0]),
+                           static_cast<double>(e2fit.diag[1]),
+                           static_cast<double>(e2fit.diag[2]));
+                    printf("[mag_cal] };\r\n");
+                    printf("[mag_cal]\r\n");
+                    printf("[mag_cal] constexpr float kMagOffDiagScaleBody[3] = {\r\n");
+                    printf("[mag_cal]     %.4fF, %.4fF, %.4fF,\r\n",
+                           static_cast<double>(e2fit.offdiag[0]),
+                           static_cast<double>(e2fit.offdiag[1]),
+                           static_cast<double>(e2fit.offdiag[2]));
+                    printf("[mag_cal] };\r\n");
+                    printf("[mag_cal] // cal_norm min=%.2f max=%.2f mean=%.2f std=%.2f max_err=%.3f\r\n",
+                           static_cast<double>(e2fit.cal_norm_min_uT),
+                           static_cast<double>(e2fit.cal_norm_max_uT),
+                           static_cast<double>(e2fit.cal_norm_mean_uT),
+                           static_cast<double>(e2fit.cal_norm_std_uT),
+                           static_cast<double>(e2fit.cal_norm_max_err));
+                    printf("[mag_cal] // err_percentile p95=%.3f p99=%.3f\r\n",
+                           static_cast<double>(e2fit.cal_norm_p95_err),
+                           static_cast<double>(e2fit.cal_norm_p99_err));
+                    printf("[mag_cal] // max_err_sample index=%lu raw={%.2f,%.2f,%.2f} cal={%.2f,%.2f,%.2f} norm=%.2f abs=%.2f ratio=%.3f\r\n",
+                           static_cast<unsigned long>(e2fit.max_err_sample_index),
+                           static_cast<double>(e2fit.max_err_raw_body_uT[0]),
+                           static_cast<double>(e2fit.max_err_raw_body_uT[1]),
+                           static_cast<double>(e2fit.max_err_raw_body_uT[2]),
+                           static_cast<double>(e2fit.max_err_cal_body_uT[0]),
+                           static_cast<double>(e2fit.max_err_cal_body_uT[1]),
+                           static_cast<double>(e2fit.max_err_cal_body_uT[2]),
+                           static_cast<double>(e2fit.max_err_cal_norm_uT),
+                           static_cast<double>(e2fit.max_err_abs_uT),
+                           static_cast<double>(e2fit.cal_norm_max_err));
+                    printf("[mag_cal] // coverage octants={%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu} min=%lu max=%lu empty=%lu ratio=%.2f\r\n",
+                           static_cast<unsigned long>(e2fit.coverage_octant_count[0]),
+                           static_cast<unsigned long>(e2fit.coverage_octant_count[1]),
+                           static_cast<unsigned long>(e2fit.coverage_octant_count[2]),
+                           static_cast<unsigned long>(e2fit.coverage_octant_count[3]),
+                           static_cast<unsigned long>(e2fit.coverage_octant_count[4]),
+                           static_cast<unsigned long>(e2fit.coverage_octant_count[5]),
+                           static_cast<unsigned long>(e2fit.coverage_octant_count[6]),
+                           static_cast<unsigned long>(e2fit.coverage_octant_count[7]),
+                           static_cast<unsigned long>(e2fit.coverage_min_octant_count),
+                           static_cast<unsigned long>(e2fit.coverage_max_octant_count),
+                           static_cast<unsigned long>(e2fit.coverage_empty_octant_count),
+                           static_cast<double>(e2fit.coverage_octant_ratio));
+                    printf("[mag_cal] // coverage hemi x+=%lu x-=%lu y+=%lu y-=%lu z+=%lu z-=%lu\r\n",
+                           static_cast<unsigned long>(e2fit.coverage_hemi_count[0]),
+                           static_cast<unsigned long>(e2fit.coverage_hemi_count[1]),
+                           static_cast<unsigned long>(e2fit.coverage_hemi_count[2]),
+                           static_cast<unsigned long>(e2fit.coverage_hemi_count[3]),
+                           static_cast<unsigned long>(e2fit.coverage_hemi_count[4]),
+                           static_cast<unsigned long>(e2fit.coverage_hemi_count[5]));
+                    printf("[mag_cal] // coverage unit_axis_min={%.2f,%.2f,%.2f} unit_axis_max={%.2f,%.2f,%.2f} max_err_octant=%u\r\n",
+                           static_cast<double>(e2fit.coverage_axis_min[0]),
+                           static_cast<double>(e2fit.coverage_axis_min[1]),
+                           static_cast<double>(e2fit.coverage_axis_min[2]),
+                           static_cast<double>(e2fit.coverage_axis_max[0]),
+                           static_cast<double>(e2fit.coverage_axis_max[1]),
+                           static_cast<double>(e2fit.coverage_axis_max[2]),
+                           static_cast<unsigned int>(e2fit.max_err_sample_octant));
+                    printf("[mag_cal] // ===== end PX4-style ellipsoid LM candidate =====\r\n");
+                }
+
+                // -- B1 fixed-bias 3x3 candidate --
+                if (buf != nullptr && n >= 50u) {
+                    efit = ist8310_calibration::FitEllipsoidFixedBias(
+                        buf, n, result.min_body_uT, result.max_body_uT);
+                    has_efit = true;
+
+                    printf("[mag_cal] // ===== fixed-bias 3x3 candidate (ellipsoid fit) =====\r\n");
+                    printf("[mag_cal] // fit_valid=%u Q_posdef=%u cond=%.1f\r\n",
+                           static_cast<unsigned int>(efit.valid),
+                           static_cast<unsigned int>(efit.Q_positive_definite),
+                           static_cast<double>(efit.condition_number));
+                    printf("[mag_cal] constexpr float kMagHardIronBiasBody_uT[3] = {\r\n");
+                    printf("[mag_cal]     %.2fF, %.2fF, %.2fF,\r\n",
+                           static_cast<double>(efit.bias_body_uT[0]),
+                           static_cast<double>(efit.bias_body_uT[1]),
+                           static_cast<double>(efit.bias_body_uT[2]));
+                    printf("[mag_cal] };\r\n");
+                    printf("[mag_cal]\r\n");
+                    printf("[mag_cal] constexpr float kMagSoftIronMatrix[3][3] = {\r\n");
+                    for (int row = 0; row < 3; ++row) {
+                        printf("[mag_cal]     { % .4fF, % .4fF, % .4fF },\r\n",
+                               static_cast<double>(efit.matrix_3x3[row][0]),
+                               static_cast<double>(efit.matrix_3x3[row][1]),
+                               static_cast<double>(efit.matrix_3x3[row][2]));
+                    }
+                    printf("[mag_cal] };\r\n");
+                    printf("[mag_cal] // cal_norm min=%.2f max=%.2f mean=%.2f std=%.2f max_err=%.3f\r\n",
+                           static_cast<double>(efit.cal_norm_min_uT),
+                           static_cast<double>(efit.cal_norm_max_uT),
+                           static_cast<double>(efit.cal_norm_mean_uT),
+                           static_cast<double>(efit.cal_norm_std_uT),
+                           static_cast<double>(efit.cal_norm_max_err));
+                }
+
+                // -- B2a full-coupled algebraic candidate --
+                if (buf != nullptr && n >= 100u) {
+                    ffit = ist8310_calibration::FitEllipsoidFullAlgebraic(
+                        buf, n, result.min_body_uT, result.max_body_uT);
+                    has_ffit = true;
+
+                    printf("[mag_cal] // ===== full-coupled algebraic 3x3 candidate =====\r\n");
+                    printf("[mag_cal] // fit_valid=%u solver_converged=%u iters=%u Q_posdef=%u cond=%.1f k=%.6g R0=%.2f R_target=%.2f\r\n",
+                           static_cast<unsigned int>(ffit.valid),
+                           static_cast<unsigned int>(ffit.solver_converged),
+                           static_cast<unsigned int>(ffit.solver_iters),
+                           static_cast<unsigned int>(ffit.Q_positive_definite),
+                           static_cast<double>(ffit.condition_number),
+                           static_cast<double>(ffit.k_raw),
+                           static_cast<double>(ffit.R0_uT),
+                           static_cast<double>(ffit.R_target_uT));
+                    printf("[mag_cal] constexpr float kMagHardIronBiasBody_uT[3] = {\r\n");
+                    printf("[mag_cal]     %.2fF, %.2fF, %.2fF,\r\n",
+                           static_cast<double>(ffit.bias_body_uT[0]),
+                           static_cast<double>(ffit.bias_body_uT[1]),
+                           static_cast<double>(ffit.bias_body_uT[2]));
+                    printf("[mag_cal] };\r\n");
+                    printf("[mag_cal]\r\n");
+                    printf("[mag_cal] constexpr float kMagSoftIronMatrix[3][3] = {\r\n");
+                    for (int row = 0; row < 3; ++row) {
+                        printf("[mag_cal]     { % .4fF, % .4fF, % .4fF },\r\n",
+                               static_cast<double>(ffit.matrix_3x3[row][0]),
+                               static_cast<double>(ffit.matrix_3x3[row][1]),
+                               static_cast<double>(ffit.matrix_3x3[row][2]));
+                    }
+                    printf("[mag_cal] };\r\n");
+                    printf("[mag_cal] // cal_norm min=%.2f max=%.2f mean=%.2f std=%.2f max_err=%.3f\r\n",
+                           static_cast<double>(ffit.cal_norm_min_uT),
+                           static_cast<double>(ffit.cal_norm_max_uT),
+                           static_cast<double>(ffit.cal_norm_mean_uT),
+                           static_cast<double>(ffit.cal_norm_std_uT),
+                           static_cast<double>(ffit.cal_norm_max_err));
+                    printf("[mag_cal] // ===== end full-coupled candidate =====\r\n");
+                } else if (buf != nullptr) {
+                    printf("[mag_cal] // full-coupled algebraic fit skipped: n=%lu < 100\r\n",
+                           static_cast<unsigned long>(n));
+                }
+
+                // -- Candidate summary / recommendation --
+                if (has_efit || has_ffit) {
+                    const bool diag_baseline_ok = result.valid && result.cal_norm_valid;
+
+                    // Diagonal selfcheck
+                    bool diag_selfcheck = false;
+                    if (diag_baseline_ok) {
+                        diag_selfcheck =
+                               result.cal_norm_std_uT         < MAG_CAL_SELF_CHECK_MAX_STD_UT
+                            && result.cal_norm_mean_uT        > MAG_CAL_SELF_CHECK_MIN_MEAN_UT
+                            && result.cal_norm_mean_uT        < MAG_CAL_SELF_CHECK_MAX_MEAN_UT
+                            && result.cal_norm_min_uT         > MAG_CAL_SELF_CHECK_MIN_NORM_UT
+                            && result.cal_norm_max_uT         < MAG_CAL_SELF_CHECK_MAX_NORM_UT
+                            && result.cal_norm_max_error_ratio < MAG_CAL_SELF_CHECK_MAX_ERR_RATIO;
+                    }
+
+                    // recommendation for a single candidate
+                    auto calc_recommend = [&result, diag_baseline_ok](
+                        bool cand_valid,
+                        float cand_std, float cand_max_err,
+                        float cand_min, float cand_max,
+                        bool &std_ok, bool &max_err_ok, bool &max_err_soft,
+                        bool &min_ok, bool &max_ok) -> bool
+                    {
+                        std_ok       = false;
+                        max_err_ok   = false;
+                        max_err_soft = false;
+                        min_ok       = false;
+                        max_ok       = false;
+
+                        if (!diag_baseline_ok) { return false; }
+
+                        std_ok       = cand_std    <= result.cal_norm_std_uT * MAG_CAL_RECOMMEND_STD_RATIO;
+                        max_err_ok   = cand_max_err <= result.cal_norm_max_error_ratio;
+                        max_err_soft = cand_max_err <= result.cal_norm_max_error_ratio + MAG_CAL_MAXERR_SOFT_TOLERANCE;
+                        min_ok       = cand_min    >= result.cal_norm_min_uT;
+                        max_ok       = cand_max    <= result.cal_norm_max_uT;
+                        return cand_valid && std_ok && max_err_ok && min_ok && max_ok;
+                    };
+
+                    // B1 recommendation
+                    bool b1_rec = false;
+                    bool b1_std_ok = false;
+                    bool b1_max_err_ok = false;
+                    bool b1_max_err_soft = false;
+                    bool b1_min_ok = false;
+                    bool b1_max_ok = false;
+                    if (has_efit) {
+                        b1_rec = calc_recommend(efit.valid,
+                            efit.cal_norm_std_uT, efit.cal_norm_max_err,
+                            efit.cal_norm_min_uT, efit.cal_norm_max_uT,
+                            b1_std_ok, b1_max_err_ok, b1_max_err_soft, b1_min_ok, b1_max_ok);
+                    }
+
+                    // B2a recommendation
+                    bool b2_rec = false;
+                    bool b2_std_ok = false;
+                    bool b2_max_err_ok = false;
+                    bool b2_max_err_soft = false;
+                    bool b2_min_ok = false;
+                    bool b2_max_ok = false;
+                    if (has_ffit) {
+                        b2_rec = calc_recommend(ffit.valid,
+                            ffit.cal_norm_std_uT, ffit.cal_norm_max_err,
+                            ffit.cal_norm_min_uT, ffit.cal_norm_max_uT,
+                            b2_std_ok, b2_max_err_ok, b2_max_err_soft, b2_min_ok, b2_max_ok);
+                    }
+
+                    // Select recommended candidate
+                    const char *rec_label = diag_baseline_ok ? "diagonal" : "none";
+                    const char *rec_reason = diag_baseline_ok ? "no_recommended_candidate" : "baseline_invalid";
+                    if (b1_rec && b2_rec) {
+                        // Both recommended: prefer lower max_err, then tighter range, then lower std
+                        const float b1_range = efit.cal_norm_max_uT - efit.cal_norm_min_uT;
+                        const float b2_range = ffit.cal_norm_max_uT - ffit.cal_norm_min_uT;
+                        const float me_diff  = efit.cal_norm_max_err - ffit.cal_norm_max_err;
+
+                        if (me_diff > MAG_CAL_MAXERR_TIE_TOLERANCE) {
+                            rec_label = "full_coupled"; rec_reason = "max_err_better";
+                        } else if (me_diff < -MAG_CAL_MAXERR_TIE_TOLERANCE) {
+                            rec_label = "fixed_bias"; rec_reason = "max_err_better";
+                        } else if (b1_range < b2_range - MAG_CAL_RANGE_TIE_TOLERANCE_UT) {
+                            rec_label = "fixed_bias"; rec_reason = "range_tighter";
+                        } else if (b2_range < b1_range - MAG_CAL_RANGE_TIE_TOLERANCE_UT) {
+                            rec_label = "full_coupled"; rec_reason = "range_tighter";
+                        } else if (efit.cal_norm_std_uT < ffit.cal_norm_std_uT) {
+                            rec_label = "fixed_bias"; rec_reason = "std_lower";
+                        } else if (ffit.cal_norm_std_uT < efit.cal_norm_std_uT) {
+                            rec_label = "full_coupled"; rec_reason = "std_lower";
+                        } else {
+                            rec_label = "ambiguous"; rec_reason = "tie";
+                        }
+                    } else if (b1_rec) {
+                        rec_label = "fixed_bias"; rec_reason = "only_recommended";
+                    } else if (b2_rec) {
+                        rec_label = "full_coupled"; rec_reason = "only_recommended";
+                    }
+
+                    // Print summary
+                    printf("[mag_cal] // ===== candidate summary =====\r\n");
+                    printf("[mag_cal] // samples=%lu norm_out_of_range=%lu\r\n",
+                           static_cast<unsigned long>(result.sample_count),
+                           static_cast<unsigned long>(result.norm_out_of_range_count));
+                    printf("[mag_cal] // diagonal: selfcheck=%s std=%.2f max_err=%.3f min=%.2f max=%.2f\r\n",
+                           !result.valid ? "FAIL" : (!result.cal_norm_valid ? "NO_CAL_NORM" : (diag_selfcheck ? "PASS" : "WARN")),
+                           static_cast<double>(result.cal_norm_std_uT),
+                           static_cast<double>(result.cal_norm_max_error_ratio),
+                           static_cast<double>(result.cal_norm_min_uT),
+                           static_cast<double>(result.cal_norm_max_uT));
+                    if (has_efit) {
+                        printf("[mag_cal] // fixed_bias: valid=%u recommended=%u std=%.2f max_err=%.3f min=%.2f max=%.2f std_ok=%u max_err_ok=%u max_err_soft=%u min_ok=%u max_ok=%u\r\n",
+                               static_cast<unsigned int>(efit.valid),
+                               static_cast<unsigned int>(b1_rec),
+                               static_cast<double>(efit.cal_norm_std_uT),
+                               static_cast<double>(efit.cal_norm_max_err),
+                               static_cast<double>(efit.cal_norm_min_uT),
+                               static_cast<double>(efit.cal_norm_max_uT),
+                               static_cast<unsigned int>(b1_std_ok),
+                               static_cast<unsigned int>(b1_max_err_ok),
+                               static_cast<unsigned int>(b1_max_err_soft),
+                               static_cast<unsigned int>(b1_min_ok),
+                               static_cast<unsigned int>(b1_max_ok));
+                    }
+                    if (has_ffit) {
+                        printf("[mag_cal] // full_coupled: valid=%u recommended=%u std=%.2f max_err=%.3f min=%.2f max=%.2f std_ok=%u max_err_ok=%u max_err_soft=%u min_ok=%u max_ok=%u\r\n",
+                               static_cast<unsigned int>(ffit.valid),
+                               static_cast<unsigned int>(b2_rec),
+                               static_cast<double>(ffit.cal_norm_std_uT),
+                               static_cast<double>(ffit.cal_norm_max_err),
+                               static_cast<double>(ffit.cal_norm_min_uT),
+                               static_cast<double>(ffit.cal_norm_max_uT),
+                               static_cast<unsigned int>(b2_std_ok),
+                               static_cast<unsigned int>(b2_max_err_ok),
+                               static_cast<unsigned int>(b2_max_err_soft),
+                               static_cast<unsigned int>(b2_min_ok),
+                               static_cast<unsigned int>(b2_max_ok));
+                    }
+                    printf("[mag_cal] // recommended=%s reason=%s\r\n", rec_label, rec_reason);
+                    if (result.norm_out_of_range_count > 0u) {
+                        printf("[mag_cal] // note: raw_norm_out_of_range is auxiliary only; hard-iron bias can make raw norm leave nominal field range\r\n");
+                        printf("[mag_cal] // note: use cal_norm/selfcheck/recommended fields for calibration quality\r\n");
+                    }
+                    printf("[mag_cal] // ===== end candidate summary =====\r\n");
+                }
+            }
+#endif
 
             key_cnt = 0u;
-        }
         break;
     }
 
@@ -487,8 +1064,13 @@ void MagDebugTask(SchedulerTaskId self_id, SchedulerRunReason reason, SchedulerE
     }
     s_last_mag_counter = sample.sample_counter;
 
+    const float cal_norm = std::sqrt(
+        sample.mag_uT_body_calibrated[0] * sample.mag_uT_body_calibrated[0] +
+        sample.mag_uT_body_calibrated[1] * sample.mag_uT_body_calibrated[1] +
+        sample.mag_uT_body_calibrated[2] * sample.mag_uT_body_calibrated[2]);
+
     printf("[mag] c=%lu body_raw=%d %d %d body_uT=%.1f %.1f %.1f "
-           "cal_uT=%.1f %.1f %.1f cal=%u "
+           "cal_uT=%.1f %.1f %.1f cal_norm=%.1f cal=%u "
            "sensor_raw=%d %d %d err=%lu ovr=%lu\r\n",
            static_cast<unsigned long>(sample.sample_counter),
            static_cast<int>(sample.raw_body[0]),
@@ -500,6 +1082,7 @@ void MagDebugTask(SchedulerTaskId self_id, SchedulerRunReason reason, SchedulerE
            static_cast<double>(sample.mag_uT_body_calibrated[0]),
            static_cast<double>(sample.mag_uT_body_calibrated[1]),
            static_cast<double>(sample.mag_uT_body_calibrated[2]),
+           static_cast<double>(cal_norm),
            static_cast<unsigned int>(sample.calibration_applied),
            static_cast<int>(sample.raw_sensor[0]),
            static_cast<int>(sample.raw_sensor[1]),
