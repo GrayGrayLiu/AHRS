@@ -152,6 +152,43 @@ void Update()
     const ICM42688P::Status sample_status = icm42688->GetLatest(sample);
     const bool configured = sample_status == ICM42688P::Status::Ok && sample.configured;
 
+    // ── ICM 错误状态变化日志（必须在 configured early return 之前） ──
+    {
+        static ICM42688P::Status s_prev_status = ICM42688P::Status::Ok;
+        static bool s_prev_configured = false;
+
+        const bool is_err  = (icm42688_last_status != ICM42688P::Status::Ok
+                           && icm42688_last_status != ICM42688P::Status::NoData);
+        const bool was_err = (s_prev_status != ICM42688P::Status::Ok
+                           && s_prev_status != ICM42688P::Status::NoData);
+
+        if (is_err && !was_err) {
+            printf("IE,%lu,%d,%d,%lu,%d\r\n",
+                   static_cast<unsigned long>(HAL_GetTick()),
+                   static_cast<int>(icm42688_last_status),
+                   static_cast<int>(sample_status),
+                   static_cast<unsigned long>(sample.sample_counter),
+                   static_cast<int>(sample.data_valid));
+        } else if (!is_err && was_err) {
+            printf("IR,%lu,%d\r\n",
+                   static_cast<unsigned long>(HAL_GetTick()),
+                   static_cast<int>(icm42688_last_status));
+        }
+
+        if (!configured && s_prev_configured) {
+            printf("IL,%lu,%d,%d\r\n",
+                   static_cast<unsigned long>(HAL_GetTick()),
+                   static_cast<int>(icm42688_last_status),
+                   static_cast<int>(sample_status));
+        } else if (configured && !s_prev_configured) {
+            printf("IO,%lu\r\n",
+                   static_cast<unsigned long>(HAL_GetTick()));
+        }
+
+        s_prev_status = icm42688_last_status;
+        s_prev_configured = configured;
+    }
+
     if (!configured) {
         icm42688_running = 0u;
 
