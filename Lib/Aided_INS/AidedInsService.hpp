@@ -68,12 +68,10 @@ namespace aided_ins_service
         uint32_t acc_accept{0};
         uint32_t acc_fail_small{0};
         uint32_t acc_fail_norm{0};
-        uint32_t acc_fail_cos{0};
         uint32_t acc_feedback{0};
         float    f_norm{0.0f};
         float    f_gravity{0.0f};
         float    f_norm_diff{0.0f};
-        float    f_cos_gn_gb{0.0f};
         float    f_f_b[3]{0.0f, 0.0f, 0.0f};
         float    f_g_b_ByImu[3]{0.0f, 0.0f, 0.0f};
         // [EKF_DBG] EKFPredict 分段计时
@@ -103,7 +101,6 @@ namespace aided_ins_service
         float cbn_f[3]{0.0f, 0.0f, 0.0f};
         float cbn_f_g[3]{0.0f, 0.0f, 0.0f};
         float cfn_g_norm{0.0f};
-        float cos_fg{0.0f};
         // [COV_HLTH] 协方差健康状态镜像（always present，macro off 时保持零值）
         bool     cov_has_nan_inf{false};
         bool     cov_has_neg_diag{false};
